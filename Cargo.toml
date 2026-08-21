@@ -25,7 +25,7 @@ ctrlc = { version = "3", features = ["termination"] }
 eframe = "0.31"
 
 zapp-core = { git = "https://github.com/zsa/zapp" }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
