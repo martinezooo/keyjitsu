@@ -1,5 +1,9 @@
 # Keyjitsu ⌨️🥋
 
+[![CI](https://github.com/martinezooo/keyjitsu/actions/workflows/ci.yml/badge.svg)](https://github.com/martinezooo/keyjitsu/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/martinezooo/keyjitsu)](https://github.com/martinezooo/keyjitsu/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Voyager management, a local app. A GUI and CLI manager for the
 [ZSA Voyager](https://www.zsa.io/voyager).
 
@@ -158,9 +162,27 @@ Oryx later would overwrite your keyjitsu changes.
 
 ## Install
 
-There is no signed download yet, since it is a beta (a shippable `.app` would
-need Apple notarization). You build it yourself. You need [Rust](https://rustup.rs).
-The QMK toolchain is only needed later, for local firmware builds (see above).
+### Download (macOS, Apple Silicon)
+
+Every release ships a `Keyjitsu.app` zip and a CLI binary, built by GitHub
+Actions from the tagged source, with a `SHA256SUMS.txt` next to them. Get the
+latest from the [Releases](https://github.com/martinezooo/keyjitsu/releases)
+page, unzip, and drag `Keyjitsu.app` to `/Applications`.
+
+The app is not notarized (that needs a paid Apple developer account), so macOS
+blocks the first launch. Right-click the app and choose Open, or clear the
+quarantine flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Keyjitsu.app
+```
+
+To verify a download, compare `shasum -a 256 <file>` with `SHA256SUMS.txt`.
+
+### Build from source
+
+You need [Rust](https://rustup.rs). The QMK toolchain is only needed later, for
+local firmware builds (see above).
 
 Quick way, if Rust is on your PATH:
 
@@ -185,6 +207,39 @@ and `cargo test` runs the suite.
 macOS is the primary and only tested target. The guard, autolayer, and peek are
 macOS-only. The rest is portable Rust (hidapi with egui/ratatui) but unverified
 elsewhere.
+
+## Privacy and network
+
+keyjitsu has no accounts, no telemetry, and no background services. It talks
+to exactly two places on the network, and both are easy to find in the source:
+
+- `oryx.zsa.io`: an anonymous, read-only fetch of your layout (for the legends),
+  cached on disk after the first time. Local firmware builds fetch the layout's
+  generated source the same way, once. It never writes to Oryx.
+- `api.github.com`: the latest release tag, once at startup (Settings can turn
+  that off) and when you click Check for updates. Nothing is downloaded or
+  installed by itself.
+
+The keyboard guard uses the system `hidutil` tool and needs no special
+permission. Everything keyjitsu stores lives under
+`~/Library/Application Support/keyjitsu/`.
+
+## Uninstall
+
+Quit the app, then:
+
+```sh
+rm -rf /Applications/Keyjitsu.app
+rm -f ~/Library/LaunchAgents/com.keyjitsu.gui.plist    # only if start-at-login was on
+rm -rf ~/Library/Application\ Support/keyjitsu         # settings, profiles, caches
+```
+
+If the guard was on and the app was force-killed, a reboot restores the
+built-in keyboard, and so does this command:
+
+```sh
+hidutil property --matching '{"Product":"Apple Internal Keyboard / Trackpad"}' --set '{"UserKeyMapping":[]}'
+```
 
 ## Acknowledgements
 

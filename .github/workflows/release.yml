@@ -1,0 +1,46 @@
+name: Release
+
+# Builds Keyjitsu.app and the CLI binary from the tagged source on a GitHub
+# runner and attaches them, with SHA256 sums, to the GitHub release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and attach assets to (for example v0.9.2)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon) assets
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the app bundle
+        run: scripts/bundle.sh
+      - name: Package
+        id: pkg
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          BASE="keyjitsu-${TAG}-macos-arm64"
+          ditto -c -k --keepParent target/release/Keyjitsu.app "${BASE}.zip"
+          cp target/release/keyjitsu "${BASE}-cli"
+          shasum -a 256 "${BASE}.zip" "${BASE}-cli" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+      - name: Attach to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.pkg.outputs.tag }}"
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --verify-tag --title "keyjitsu $TAG" --notes "See CHANGELOG.md."
+          gh release upload "$TAG" keyjitsu-*.zip keyjitsu-*-cli SHA256SUMS.txt --clobber

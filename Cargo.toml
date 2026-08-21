@@ -2,7 +2,12 @@
 name = "keyjitsu"
 version = "0.9.2"
 edition = "2021"
-description = "GUI + CLI manager for the ZSA Voyager: live layout, heatmap, per-key RGB & effects, local QMK builds with tap dances, layer minimap — no daemon, no cloud"
+description = "GUI and CLI manager for the ZSA Voyager: live layout, heatmap, per-key RGB and effects, local QMK builds with tap dances, a layer minimap. No daemon, no cloud."
+repository = "https://github.com/martinezooo/keyjitsu"
+homepage = "https://github.com/martinezooo/keyjitsu"
+readme = "README.md"
+keywords = ["zsa", "voyager", "qmk", "keyboard", "macos"]
+categories = ["command-line-utilities", "gui"]
 license = "MIT"
 
 [dependencies]

@@ -3,6 +3,16 @@
 All notable changes to Keyjitsu are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- GitHub Actions: every push is built, linted and tested on macOS and the
+  dependencies are audited. Each tagged release gets a `Keyjitsu.app` zip, a CLI
+  binary and `SHA256SUMS.txt`, all built from the tagged source on a GitHub
+  runner.
+- `SECURITY.md`, Dependabot, and README sections on download and verification,
+  privacy and network use, and uninstalling.
+
 ## [0.9.2] - 2026-08-21
 
 ### Added
