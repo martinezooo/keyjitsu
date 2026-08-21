@@ -20,7 +20,7 @@ ureq = { version = "2", features = ["json"] }
 directories = "5"
 libc = "0.2"
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = "0.29"
 ctrlc = { version = "3", features = ["termination"] }
 eframe = "0.31"
 
