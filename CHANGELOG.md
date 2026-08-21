@@ -6,9 +6,12 @@ All notable changes to Keyjitsu are documented here. This project follows
 ## [Unreleased]
 
 ### Added
-- Settings has a manual **Check for updates** button. It asks GitHub for the
-  latest release only when clicked, tells you whether you are up to date, and
-  links to the release page. Nothing runs automatically.
+- Update check: keyjitsu asks GitHub for the latest release tag once at
+  startup (a toggle in Settings turns this off) and on demand via **Check for
+  updates**. A newer version shows as a small badge at the bottom of the
+  sidebar and a link in Settings. Nothing is downloaded or installed by itself.
+- The sidebar's bottom shows what is on right now: the keyboard guard and the
+  autolayer, next to the optional CPU pill.
 
 ### Changed
 - The **Shortcuts** tab is gone from the main menu. It was a reference list of

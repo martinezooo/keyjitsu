@@ -232,6 +232,9 @@ pub struct Config {
     pub peek: PeekConfig,
     /// Show a live CPU pill in the app header.
     pub show_cpu_header: bool,
+    /// Skip the once-per-launch check for a newer release (on by default so a
+    /// fresh config checks; the user can turn it off in Settings).
+    pub skip_update_check_on_start: bool,
     /// Built-in keyboard guard: re-engage automatically on startup.
     pub guard_enabled: bool,
     /// Autolayer: re-enable the app→layer watcher on startup.

@@ -9,8 +9,9 @@ custom-effect sequencer, an app-aware autolayer, a Karabiner-style
 built-in-keyboard guard, and a transparent layer minimap.
 
 No daemon, no login, no cloud. Everything talks straight to the keyboard over
-raw HID. The only network use is an anonymous read of your Oryx layout, plus
-an update check that runs only when you click it.
+raw HID. The only network use is an anonymous read of your Oryx layout and a
+check for a newer release (once at startup, can be turned off, plus on demand).
+Nothing is downloaded or installed by itself.
 
 > Quit Keymapp before running keyjitsu. The raw HID channel is exclusive.
 
@@ -63,7 +64,7 @@ losing anything.
   it was doing.
 - **Autolayer.** Switch layers by the frontmost app, matched on the bundle id.
 - **Settings.** Local QMK toolchain status and firmware build, the keyboard
-  guard, start-at-login, a manual check for updates, and a shortcut library
+  guard, start-at-login, the update check, and a shortcut library
   (a reference list of ~160 common shortcuts to borrow from, with your own
   entries and hideable built-ins).
 

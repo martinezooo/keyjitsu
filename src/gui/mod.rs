@@ -305,6 +305,8 @@ struct App {
     perf_run: Option<PerfRun>,
     perf_last: Option<perf::Summary>,
     show_cpu_header: bool,
+    /// Check GitHub for a newer release once at startup (Settings toggle).
+    auto_update_check: bool,
     app_started: Instant,
 
     // FX Studio
@@ -640,6 +642,7 @@ impl App {
             perf_run: None,
             perf_last: None,
             show_cpu_header: cfg.show_cpu_header,
+            auto_update_check: !cfg.skip_update_check_on_start,
             app_started: Instant::now(),
             fx_color: [140, 108, 246],
             fx_speed: 1.0,
@@ -656,6 +659,10 @@ impl App {
         // No keyboard yet? Show the last layout from cache instead of a wall of
         // blank keys.
         app.load_last_layout();
+        // One background check for a newer release (opt-out in Settings).
+        if app.auto_update_check {
+            app.update_rx = Some(spawn_update_check());
+        }
         app
     }
 
@@ -2060,9 +2067,36 @@ impl eframe::App for App {
                         }
                     }
                 });
-                // CPU pill pinned to the bottom of the sidebar.
+                // Status chips pinned to the bottom of the sidebar: things
+                // that are "on" right now, plus an update notice.
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(4.0);
+                    if let Some(UpdateCheck::Available { tag, .. }) = &self.update_state {
+                        let tag = tag.clone();
+                        let resp = egui::Frame::new()
+                            .show(ui, |ui| status_pill(ui, &format!("⬆ {tag} available"), pal::AMBER))
+                            .response
+                            .interact(egui::Sense::click())
+                            .on_hover_text("A newer keyjitsu is out. Open Settings for the release link.");
+                        if resp.clicked() {
+                            self.tab = Tab::Tools;
+                        }
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        #[cfg(target_os = "macos")]
+                        if self.guard.is_some() {
+                            egui::Frame::new()
+                                .show(ui, |ui| status_pill(ui, "🔒 guard", pal::GREEN))
+                                .response
+                                .on_hover_text("The built-in keyboard is disabled while the Voyager is connected.");
+                        }
+                        if self.autolayer_enabled {
+                            egui::Frame::new()
+                                .show(ui, |ui| status_pill(ui, "⇆ autolayer", pal::GREEN))
+                                .response
+                                .on_hover_text("Layers follow the frontmost app.");
+                        }
+                    });
                     if self.show_cpu_header {
                         let c = self.perf_live;
                         let resp = egui::Frame::new()
@@ -3067,7 +3101,11 @@ impl App {
         let view = self.view_layer;
         let Some(i) = self.selected_key else {
             ui.add_space(4.0);
-            ui.weak("No key selected - press a key on the keyboard, or click one above.");
+            if self.connected.is_some() {
+                ui.weak("No key selected - press a key on the keyboard, or click one above.");
+            } else {
+                ui.weak("No key selected - click a key above.");
+            }
             ui.add_space(4.0);
             return;
         };
@@ -4756,6 +4794,7 @@ impl App {
         self.rules = cfg.autolayer_rules.clone();
         self.peek = cfg.peek.clone();
         self.show_cpu_header = cfg.show_cpu_header;
+        self.auto_update_check = !cfg.skip_update_check_on_start;
         self.guard_enabled = cfg.guard_enabled;
         self.autolayer_enabled = cfg.autolayer_enabled;
         self.overlay_chord = if cfg.overlay_chord.is_empty() {
@@ -4820,12 +4859,17 @@ impl App {
         ui.label(RichText::new("Updates").strong().color(pal::TEXT));
         ui.label(
             RichText::new(format!(
-                "You are on v{}. Checking asks GitHub for the latest release, only when you click.",
+                "You are on v{}. Checking asks GitHub for the latest release tag. Nothing is downloaded or installed.",
                 env!("CARGO_PKG_VERSION")
             ))
             .size(11.5)
             .color(pal::TEXT_DIM),
         );
+        if toggle_row(ui, "Check for updates when keyjitsu starts", &mut self.auto_update_check) {
+            let mut cfg = config::load();
+            cfg.skip_update_check_on_start = !self.auto_update_check;
+            let _ = config::save(&cfg);
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let busy = self.update_rx.is_some();
@@ -5652,6 +5696,19 @@ mod slot_tests {
 
 #[cfg(test)]
 mod update_check_tests {
+    /// Exercises the real request + parsing used by the button. Needs network,
+    /// so it is ignored by default: `cargo test update_check_live -- --ignored`.
+    #[test]
+    #[ignore]
+    fn update_check_live() {
+        let rx = super::spawn_update_check();
+        let r = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("checker replied");
+        match r {
+            super::UpdateCheck::Error(e) => panic!("update check failed: {e}"),
+            other => eprintln!("LIVE RESULT: {other:?}"),
+        }
+    }
+
     #[test]
     fn version_compare() {
         use super::version_newer;
