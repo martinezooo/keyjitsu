@@ -1,0 +1,163 @@
+Category,Shortcut,Description,Usefulness
+macOS,Cmd + Space,Open Spotlight search / app launcher,High
+macOS,Cmd + Tab,Switch to next application,High
+macOS,Cmd + `,Switch window within current app,High
+macOS,Cmd + W,Close current tab or window,High
+macOS,Cmd + Q,Quit current app,Medium
+macOS,Cmd + H,Hide current app,Medium
+macOS,Cmd + M,Minimize current window,Medium
+macOS,Cmd + ,,Open current app settings/preferences,High
+macOS,Ctrl + Cmd + Q,Lock screen,High
+macOS,Cmd + Shift + 5,Open screenshot / screen recording toolbar,High
+macOS,Cmd + Shift + 4,Take selected-area screenshot,High
+macOS,Cmd + Shift + 3,Take full-screen screenshot,Medium
+No Mouse,Tab,Move focus to next UI element,High
+No Mouse,Shift + Tab,Move focus to previous UI element,High
+No Mouse,Enter,Confirm selected action,High
+No Mouse,Space,Press focused button or toggle checkbox,High
+No Mouse,Esc,Cancel / close dialog / leave mode,High
+No Mouse,Ctrl + F2,Move focus to menu bar,Medium
+No Mouse,Ctrl + F3,Move focus to Dock,Medium
+No Mouse,Ctrl + F4,Move focus to active window or next window area,Medium
+No Mouse,Ctrl + Up,Open Mission Control,High
+No Mouse,Ctrl + Down,Open App Exposé,Medium
+No Mouse,Ctrl + Left,Move to previous desktop/space,High
+No Mouse,Ctrl + Right,Move to next desktop/space,High
+Text Editing,Cmd + Left,Move cursor to beginning of line,High
+Text Editing,Cmd + Right,Move cursor to end of line,High
+Text Editing,Cmd + Up,Move cursor to beginning of document,Medium
+Text Editing,Cmd + Down,Move cursor to end of document,Medium
+Text Editing,Option + Left,Move cursor one word left,High
+Text Editing,Option + Right,Move cursor one word right,High
+Text Editing,Option + Backspace,Delete previous word,High
+Text Editing,Cmd + Backspace,Delete current line/back to line start,High
+Text Editing,Shift + Arrow,Extend selection by character/line,High
+Text Editing,Option + Shift + Left,Select previous word,High
+Text Editing,Option + Shift + Right,Select next word,High
+Text Editing,Cmd + Shift + Left,Select to beginning of line,High
+Text Editing,Cmd + Shift + Right,Select to end of line,High
+Text Editing,Cmd + A,Select all,High
+Text Editing,Cmd + C,Copy,High
+Text Editing,Cmd + V,Paste,High
+Text Editing,Cmd + X,Cut,High
+Text Editing,Cmd + Z,Undo,High
+Text Editing,Cmd + Shift + Z,Redo,High
+Browser,Cmd + L,Focus address/search bar,High
+Browser,Cmd + T,Open new tab,High
+Browser,Cmd + W,Close current tab,High
+Browser,Cmd + Shift + T,Reopen closed tab,High
+Browser,Cmd + R,Reload page,High
+Browser,Cmd + Shift + R,Hard reload page,Medium
+Browser,Cmd + F,Find on page,High
+Browser,Cmd + D,Bookmark current page,Medium
+Browser,Cmd + Option + I,Open Developer Tools,High
+Browser,Cmd + Option + J,Open JavaScript console,Medium
+Browser,Ctrl + Tab,Next browser tab,High
+Browser,Ctrl + Shift + Tab,Previous browser tab,High
+Browser,Cmd + 1,Switch to tab 1,Medium
+Browser,Cmd + 2,Switch to tab 2,Medium
+Browser,Cmd + 9,Switch to last tab,Medium
+Browser,Space,Scroll page down,Medium
+Browser,Shift + Space,Scroll page up,Medium
+VS Code,Cmd + P,Quick open file,High
+VS Code,Cmd + Shift + P,Open command palette,High
+VS Code,Cmd + B,Toggle sidebar,High
+VS Code,Cmd + J,Toggle bottom panel,High
+VS Code,Ctrl + `,Toggle integrated terminal,High
+VS Code,Cmd + Shift + F,Search across project,High
+VS Code,Cmd + F,Find in current file,High
+VS Code,Cmd + /,Toggle line comment,High
+VS Code,Cmd + D,Select next occurrence,High
+VS Code,Cmd + Shift + L,Select all occurrences,High
+VS Code,Option + Up,Move line up,High
+VS Code,Option + Down,Move line down,High
+VS Code,Option + Shift + Up,Copy line up,Medium
+VS Code,Option + Shift + Down,Copy line down,Medium
+VS Code,Cmd + Shift + K,Delete line,High
+VS Code,Cmd + Enter,Insert line below,High
+VS Code,Cmd + Shift + Enter,Insert line above,Medium
+VS Code,F12,Go to definition,High
+VS Code,Option + F12,Peek definition,Medium
+VS Code,Ctrl + -,Go back,High
+VS Code,Ctrl + Shift + -,Go forward,Medium
+Vim,Esc,Return to normal mode / cancel,High
+Vim,H,Move left,High
+Vim,J,Move down,High
+Vim,K,Move up,High
+Vim,L,Move right,High
+Vim,W,Jump to next word,High
+Vim,B,Jump to previous word,High
+Vim,E,Jump to end of word,Medium
+Vim,0,Jump to start of line,High
+Vim,$,Jump to end of line,High
+Vim,GG,Go to top of file,Medium
+Vim,G,Go to bottom of file,Medium
+Vim,DD,Delete current line,High
+Vim,YY,Yank/copy current line,Medium
+Vim,P,Paste,High
+Vim,U,Undo,High
+Vim,Ctrl + R,Redo,High
+Vim,/,Search,High
+Vim,N,Next search result,Medium
+Vim,Shift + N,Previous search result,Medium
+iTerm2,Cmd + T,Open new terminal tab,High
+iTerm2,Cmd + W,Close current tab/window,High
+iTerm2,Cmd + D,Split pane vertically,High
+iTerm2,Cmd + Shift + D,Split pane horizontally,High
+iTerm2,Cmd + Option + Left,Move to left pane,High
+iTerm2,Cmd + Option + Right,Move to right pane,High
+iTerm2,Cmd + Option + Up,Move to upper pane,Medium
+iTerm2,Cmd + Option + Down,Move to lower pane,Medium
+iTerm2,Cmd + [,Previous pane,Medium
+iTerm2,Cmd + ],Next pane,Medium
+iTerm2,Cmd + Shift + Enter,Maximize current pane,High
+iTerm2,Cmd + F,Find in terminal output,Medium
+Shell,Ctrl + A,Move to beginning of shell line,High
+Shell,Ctrl + E,Move to end of shell line,High
+Shell,Ctrl + U,Delete before cursor,High
+Shell,Ctrl + K,Delete after cursor,High
+Shell,Ctrl + W,Delete previous word,High
+Shell,Ctrl + R,Reverse history search,High
+Shell,Ctrl + C,Cancel running command,High
+Shell,Ctrl + D,Exit shell / send EOF,Medium
+Shell,Ctrl + L,Clear terminal screen,High
+Rectangle,Ctrl + Option + Left,Move window to left half,High
+Rectangle,Ctrl + Option + Right,Move window to right half,High
+Rectangle,Ctrl + Option + Up,Move window to top half / maximize depending config,High
+Rectangle,Ctrl + Option + Down,Move window to bottom half / restore depending config,Medium
+Rectangle,Ctrl + Option + Enter,Maximize window,High
+Rectangle,Ctrl + Option + C,Center window,Medium
+Rectangle,Ctrl + Option + U,Upper-left window position,Medium
+Rectangle,Ctrl + Option + I,Upper-right window position,Medium
+Rectangle,Ctrl + Option + J,Lower-left window position,Medium
+Rectangle,Ctrl + Option + K,Lower-right window position,Medium
+Burp,Ctrl + R,Send selected request to Repeater,High
+Burp,Ctrl + I,Send selected request to Intruder,Medium
+Burp,Ctrl + F,Forward intercepted Proxy message,High
+Burp,Ctrl + T,Toggle Proxy interception / common custom hotkey,High
+Burp,Ctrl + Shift + R,Switch to Repeater,High
+Burp,Ctrl + Shift + P,Switch to Proxy,High
+Burp,Ctrl + Shift + T,Switch to Target,Medium
+Burp,Ctrl + Shift + I,Switch to Intruder,Medium
+Burp,Ctrl + U,URL-encode key characters / common custom hotkey,Medium
+Burp,Ctrl + Shift + U,URL-decode / common custom hotkey,Medium
+Pentest,Cmd + Option + I,Open browser DevTools,High
+Pentest,Cmd + L,Focus URL bar for target switching,High
+Pentest,Cmd + Shift + 5,Capture screenshot/video evidence,High
+Pentest,Ctrl + Cmd + Q,Lock screen quickly,High
+QMK,Tap Esc / Hold Ctrl,Dual-role key for Esc on tap and Ctrl on hold,High
+QMK,Tap Space / Hold Layer,Dual-role thumb key for Space and layer access,High
+QMK,Tap Enter / Hold Cmd,Dual-role thumb key for Enter and Cmd,High
+QMK,J + K combo,Combo shortcut often used as Esc,High
+QMK,D + F combo,Combo shortcut often used as Tab or layer action,Medium
+QMK,Double tap key,Tap Dance action for alternate key/function,Medium
+QMK,Hold thumb key,Activate navigation layer,High
+QMK,Hold opposite thumb key,Activate symbol/number layer,High
+Media,Play/Pause,Toggle media playback,Medium
+Media,Next Track,Skip to next track,Medium
+Media,Previous Track,Go to previous track,Medium
+Media,Volume Up,Increase volume,High
+Media,Volume Down,Decrease volume,High
+Media,Mute,Toggle mute,High
+Media,Brightness Up,Increase display brightness,Medium
+Media,Brightness Down,Decrease display brightness,Medium

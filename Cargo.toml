@@ -1,0 +1,33 @@
+[package]
+name = "keyjitsu"
+version = "0.9.0"
+edition = "2021"
+description = "GUI + CLI manager for the ZSA Voyager: live layout, heatmap, per-key RGB & effects, local QMK builds with tap dances, layer minimap — no daemon, no cloud"
+license = "MIT"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hidapi = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+directories = "5"
+libc = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
+ctrlc = { version = "3", features = ["termination"] }
+eframe = "0.31"
+
+zapp-core = { git = "https://github.com/zsa/zapp" }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSDate", "objc2-core-foundation"] }
+
+[profile.release]
+strip = true
+lto = true
