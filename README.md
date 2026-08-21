@@ -4,6 +4,8 @@
 [![Release](https://img.shields.io/github/v/release/martinezooo/keyjitsu)](https://github.com/martinezooo/keyjitsu/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+![Keyjitsu, the Live view: your Voyager layout with real legends and per-key colours](docs/app.png)
+
 Voyager management, a local app. A GUI and CLI manager for the
 [ZSA Voyager](https://www.zsa.io/voyager).
 
