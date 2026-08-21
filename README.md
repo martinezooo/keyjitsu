@@ -9,7 +9,8 @@ custom-effect sequencer, an app-aware autolayer, a Karabiner-style
 built-in-keyboard guard, and a transparent layer minimap.
 
 No daemon, no login, no cloud. Everything talks straight to the keyboard over
-raw HID. The only network use is an anonymous read of your Oryx layout.
+raw HID. The only network use is an anonymous read of your Oryx layout, plus
+an update check that runs only when you click it.
 
 > Quit Keymapp before running keyjitsu. The raw HID channel is exclusive.
 
@@ -58,14 +59,14 @@ losing anything.
   and press effects, plus a step sequencer for your own (paint keys, duplicate
   a step, nudge it around the board, loop). Apply to the whole board, or per
   key from the editor's on-press slot. Board RGB survives restarts.
-- **Shortcuts.** A searchable cheatsheet of ~160 shortcuts (macOS, editors,
+- **Cheatsheet.** A reference library of ~160 common shortcuts (macOS, editors,
   terminals, pentest tools, QMK patterns), with categories, your own entries,
   and hideable built-ins.
 - **Performance** (experimental). keyjitsu samples its own CPU, tagged by what
   it was doing.
 - **Autolayer.** Switch layers by the frontmost app, matched on the bundle id.
 - **Settings.** Local QMK toolchain status and firmware build, the keyboard
-  guard, and start-at-login.
+  guard, start-at-login, and a manual check for updates.
 
 The connection auto-reconnects on unplug, replug, and after flashing.
 

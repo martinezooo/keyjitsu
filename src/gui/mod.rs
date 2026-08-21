@@ -341,6 +341,9 @@ struct App {
     profile_draft: String,
     /// Last autostart toggle error (shown in the App card).
     autostart_error: Option<String>,
+    /// In-flight "check for updates" request (manual, from Settings).
+    update_rx: Option<std::sync::mpsc::Receiver<UpdateCheck>>,
+    update_state: Option<UpdateCheck>,
     draft_sc: config::CustomShortcut,
     /// Active step being painted in the custom-effect editor.
     fx_step: usize,
@@ -569,6 +572,8 @@ impl App {
             keys_adding: false,
             profile_draft: String::new(),
             autostart_error: None,
+            update_rx: None,
+            update_state: None,
             draft_sc: config::CustomShortcut { category: String::new(), keys: String::new(), desc: String::new(), high: true },
             // KEYJITSU_SEL=<key index> preselects a key (QA screenshots).
             selected_key: std::env::var("KEYJITSU_SEL").ok().and_then(|v| v.parse().ok()).filter(|&i| i < key_count),
@@ -1340,9 +1345,18 @@ impl App {
     /// (category chips in the panel) plus the user's own entries.
     fn ui_shortcuts(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
+        ui.label(RichText::new("Cheatsheet").strong().size(21.0).color(pal::TEXT));
+        ui.label(
+            RichText::new(
+                "A reference library of common shortcuts (macOS, editors, terminals, tools) to browse and borrow while you plan a layer. This is not what is on your keyboard: to change keys, use Live.",
+            )
+            .size(12.5)
+            .color(pal::TEXT_DIM),
+        );
+        ui.add_space(10.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("🔎").size(14.0));
-            ui.add(egui::TextEdit::singleline(&mut self.keys_search).hint_text("search shortcuts…").desired_width(240.0));
+            ui.add(egui::TextEdit::singleline(&mut self.keys_search).hint_text("search the cheatsheet…").desired_width(240.0));
             if !self.keys_search.is_empty() && ui.button("✕").clicked() {
                 self.keys_search.clear();
             }
@@ -1989,6 +2003,12 @@ impl eframe::App for App {
         self.drain_events();
         self.reconcile_background_jobs(ctx);
         self.tick_perf();
+        if let Some(rx) = &self.update_rx {
+            if let Ok(r) = rx.try_recv() {
+                self.update_state = Some(r);
+                self.update_rx = None;
+            }
+        }
         // Combo HUD: keep the minimap up while any key is physically held, so
         // long holds don\'t vanish before release.
         if self.peek.show_combo && self.peek.enabled && self.pressed.iter().any(|&p| p) {
@@ -2040,7 +2060,7 @@ impl eframe::App for App {
                         (Tab::Heatmap, "Heatmap", "🔥"),
                         (Tab::Peek, "Peek", "👁"),
                         (Tab::Fx, "FX Studio (exp)", "✨"),
-                        (Tab::Keys, "Shortcuts", "⌘"),
+                        (Tab::Keys, "Cheatsheet", "⌘"),
                         (Tab::Perf, "Performance (exp)", "📈"),
                         (Tab::Auto, "Autolayer", "⇆"),
                         (Tab::Tools, "Settings", "⚙"),
@@ -2674,6 +2694,65 @@ fn set_autostart(on: bool) -> anyhow::Result<()> {
         std::fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+/// Result of a manual "check for updates" against GitHub Releases.
+#[derive(Debug, Clone)]
+pub enum UpdateCheck {
+    UpToDate,
+    Available { tag: String, url: String },
+    Error(String),
+}
+
+const RELEASES_API: &str = "https://api.github.com/repos/martinezooo/keyjitsu/releases/latest";
+
+/// Ask GitHub for the newest release on a background thread. Only ever runs
+/// when the user clicks the button: the app makes no network calls on its own
+/// apart from the anonymous Oryx layout read.
+fn spawn_update_check() -> std::sync::mpsc::Receiver<UpdateCheck> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<UpdateCheck, String> {
+            let resp: serde_json::Value = ureq::get(RELEASES_API)
+                .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
+                .set("Accept", "application/vnd.github+json")
+                .timeout(Duration::from_secs(8))
+                .call()
+                .map_err(|e| e.to_string())?
+                .into_json()
+                .map_err(|e| e.to_string())?;
+            let tag = resp
+                .get("tag_name")
+                .and_then(|t| t.as_str())
+                .ok_or("no tag_name in the response")?
+                .to_string();
+            let url = resp
+                .get("html_url")
+                .and_then(|u| u.as_str())
+                .unwrap_or("https://github.com/martinezooo/keyjitsu/releases")
+                .to_string();
+            Ok(if version_newer(&tag, env!("CARGO_PKG_VERSION")) {
+                UpdateCheck::Available { tag, url }
+            } else {
+                UpdateCheck::UpToDate
+            })
+        })();
+        let _ = tx.send(result.unwrap_or_else(UpdateCheck::Error));
+    });
+    rx
+}
+
+/// `true` if `latest` (e.g. "v0.9.2") is a newer semver than `current`.
+/// Unparseable parts compare as 0, so a weird tag never reports an update.
+fn version_newer(latest: &str, current: &str) -> bool {
+    fn parts(v: &str) -> [u64; 3] {
+        let mut out = [0u64; 3];
+        for (i, p) in v.trim().trim_start_matches('v').split('.').take(3).enumerate() {
+            out[i] = p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
+        }
+        out
+    }
+    parts(latest) > parts(current)
 }
 
 fn status_dot(ui: &mut egui::Ui, ok: bool) {
@@ -4692,6 +4771,51 @@ impl App {
                 .size(11.0)
                 .color(pal::TEXT_DIM),
         );
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Updates").strong().color(pal::TEXT));
+        ui.label(
+            RichText::new(format!(
+                "You are on v{}. Checking asks GitHub for the latest release, only when you click.",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .size(11.5)
+            .color(pal::TEXT_DIM),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let busy = self.update_rx.is_some();
+            if ui.add_enabled(!busy, egui::Button::new("Check for updates")).clicked() {
+                self.update_rx = Some(spawn_update_check());
+                self.update_state = None;
+            }
+            if busy {
+                ui.spinner();
+                ui.label(RichText::new("checking…").size(11.5).color(pal::TEXT_DIM));
+            }
+        });
+        match &self.update_state {
+            Some(UpdateCheck::UpToDate) => {
+                ui.colored_label(pal::GREEN, "You are up to date.");
+            }
+            Some(UpdateCheck::Available { tag, url }) => {
+                let (tag, url) = (tag.clone(), url.clone());
+                ui.colored_label(pal::AMBER, format!("{tag} is available."));
+                ui.horizontal(|ui| {
+                    if ui.button("Open release page").clicked() {
+                        let _ = std::process::Command::new("open").arg(&url).spawn();
+                    }
+                    ui.label(RichText::new("then rebuild: ").size(11.5).color(pal::TEXT_DIM));
+                    ui.code("scripts/bundle.sh --install");
+                });
+            }
+            Some(UpdateCheck::Error(e)) => {
+                ui.colored_label(pal::RED, format!("could not check: {e}"));
+            }
+            None => {}
+        }
     }
 
     fn ui_performance(&mut self, ui: &mut egui::Ui) {
@@ -5481,6 +5605,20 @@ mod slot_tests {
         // Not expressible as MT/LT → None (caller warns + falls back to tap).
         assert_eq!(hold_wrap("KC_B", "KC_A"), None);
         assert_eq!(hold_wrap("OSL(1)", "KC_A"), None);
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    #[test]
+    fn version_compare() {
+        use super::version_newer;
+        assert!(version_newer("v0.9.2", "0.9.1"));
+        assert!(version_newer("1.0.0", "0.9.9"));
+        assert!(!version_newer("v0.9.1", "0.9.1"));
+        assert!(!version_newer("0.9.0", "0.9.1"));
+        assert!(!version_newer("garbage", "0.9.1")); // unparseable never reports an update
+        assert!(version_newer("v0.10.0-beta", "0.9.1")); // pre-release suffix ignored
     }
 }
 

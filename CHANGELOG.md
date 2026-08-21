@@ -3,6 +3,18 @@
 All notable changes to Keyjitsu are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Settings has a manual **Check for updates** button. It asks GitHub for the
+  latest release only when clicked, tells you whether you are up to date, and
+  links to the release page. Nothing runs automatically.
+
+### Changed
+- The **Shortcuts** tab is now **Cheatsheet**, with a heading that says what it
+  is: a reference library of common shortcuts to borrow from when planning a
+  layer, not the keys on your keyboard (those are edited in Live).
+
 ## [0.9.1] - 2026-08-21
 
 ### Added
