@@ -2098,9 +2098,10 @@ impl eframe::App for App {
                 });
         }
 
-        // The keyboard canvas sits on the darkest surface so it reads as a
-        // stage; the chrome (header/inspector) is the raised UI around it.
-        let canvas = egui::Frame::new().fill(if self.tab == Tab::Live { pal::BG } else { pal::SURFACE });
+        // One consistent panel colour across tabs. The keyboard sits on its own
+        // raised card (lighter + a soft shadow), so it still reads as the focus
+        // without a darker background band next to the sidebar.
+        let canvas = egui::Frame::new().fill(pal::SURFACE);
         egui::CentralPanel::default().frame(canvas).show(ctx, |ui| {
             {
                 match self.tab {
