@@ -19,7 +19,7 @@ jobs:
     name: macOS (Apple Silicon) assets
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
