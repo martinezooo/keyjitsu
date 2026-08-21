@@ -2706,7 +2706,14 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(dot, RichText::new("●").size(11.0));
-                    ui.label(RichText::new(text).color(pal::TEXT_DIM));
+                    // Truncate long text (disconnected hint, long layout titles)
+                    // instead of overflowing: content wider than the sidebar
+                    // makes egui reserve the overflow as an unpainted strip
+                    // next to the panel. Full text stays readable on hover.
+                    ui.add(
+                        egui::Label::new(RichText::new(&text).color(pal::TEXT_DIM)).truncate(),
+                    )
+                    .on_hover_text(&text);
                 });
             });
     }
