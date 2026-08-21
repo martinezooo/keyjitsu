@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build Keyjitsu.app — a self-contained macOS bundle around the release binary.
+# Build Keyjitsu.app - a self-contained macOS bundle around the release binary.
 # Usage: scripts/bundle.sh [--install]   (--install copies to /Applications)
 set -eu
 
@@ -30,7 +30,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSHumanReadableCopyright</key><string>MIT — keyjitsu contributors</string>
+    <key>NSHumanReadableCopyright</key><string>MIT - keyjitsu contributors</string>
 </dict>
 </plist>
 PLIST

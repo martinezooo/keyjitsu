@@ -319,7 +319,7 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
             // A cached file that won't open is stale/corrupt - drop it so the
             // next build re-downloads instead of failing forever.
             let _ = std::fs::remove_file(&cache);
-            return Err(anyhow!("cached source is not a valid zip ({e}); removed it - retry the build"));
+            return Err(anyhow!("cached source is not a valid zip ({e}). Removed it, retry the build"));
         }
     };
     let mut out = Vec::new();

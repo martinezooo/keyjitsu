@@ -84,7 +84,7 @@ impl LayoutId {
             }),
             _ => bail!(
                 "keyboard serial {serial:?} does not look like an Oryx layout id \
-                 (expected \"hash/revision\"); pass --url or --hash instead"
+                 (expected \"hash/revision\"). Pass --url or --hash instead"
             ),
         }
     }

@@ -49,7 +49,7 @@ use ui::KeyboardWidget;
     version,
     about = "Serverless CLI for managing the ZSA Voyager keyboard",
     long_about = "Talks directly to the keyboard over raw HID - no Keymapp, no daemon.\n\
-                  Note: quit Keymapp first; the HID channel is exclusive."
+                  Note: quit Keymapp first, the HID channel is exclusive."
 )]
 struct Cli {
     /// Pick a keyboard by (part of) its USB serial number
@@ -177,7 +177,7 @@ enum Cmd {
     /// Smart layers: switch layers based on the frontmost app
     #[cfg(target_os = "macos")]
     Autolayer {
-        /// Mapping like com.apple.Terminal=2 (substring match; repeatable)
+        /// Mapping like com.apple.Terminal=2 (substring match, repeatable)
         #[arg(long = "rule", required = true, value_parser = cmd_autolayer::parse_rule)]
         rules: Vec<(String, u8)>,
         /// How often to check the frontmost app, in milliseconds
@@ -532,7 +532,7 @@ fn print_layout_header(layout: &Layout) {
         layout.title, layout.hash_id, layout.revision.hash_id, layout.geometry
     );
     if layout.geometry != "voyager" {
-        println!("warning: keyjitsu renders the Voyager geometry; this layout is for {:?}", layout.geometry);
+        println!("warning: keyjitsu renders the Voyager geometry, but this layout is for {:?}", layout.geometry);
     }
 }
 

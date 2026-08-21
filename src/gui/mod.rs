@@ -5103,7 +5103,7 @@ impl App {
                 ui.colored_label(pal::RED, e);
             }
             egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
-                ui.weak("Keys are remapped to no-ops with hidutil (no special permission); restored on toggle-off, disconnect, quit - and by any reboot. If keyjitsu is force-killed first, restore by hand:");
+                ui.weak("Keys are remapped to no-ops with hidutil (no special permission). They are restored on toggle-off, disconnect, quit, and by any reboot. If keyjitsu is force-killed first, restore by hand:");
                 let mut cmd = crate::macos_kb::restore_command();
                 ui.add(
                     egui::TextEdit::singleline(&mut cmd)
@@ -5593,7 +5593,7 @@ impl App {
     }
 
     fn flash_controls(&mut self, ui: &mut egui::Ui) {
-        ui.weak("Firmware - separate from the glow above. Changing a key's *function* needs Oryx; this flashes a full layout.");
+        ui.weak("Firmware, separate from the glow above. This flashes a complete firmware file or Oryx URL. To change what keys do, stage edits in Live and use Build & flash.");
         if let Some((_, serial)) = &self.connected {
             ui.label(format!("current firmware/layout: {serial}"));
         }

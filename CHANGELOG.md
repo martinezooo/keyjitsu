@@ -3,7 +3,7 @@
 All notable changes to Keyjitsu are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.2] - 2026-08-21
 
 ### Added
 - Update check: keyjitsu asks GitHub for the latest release tag once at

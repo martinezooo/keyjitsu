@@ -38,7 +38,7 @@ pub fn run(target: Option<&str>, latest: bool, timeout_secs: u64) -> Result<()> 
 
     println!();
     println!("Put the keyboard into bootloader mode now - press its RESET button");
-    println!("(Voyager: the tiny button on the left half; see https://www.zsa.io/flash).");
+    println!("(Voyager: the tiny button on the left half, see https://www.zsa.io/flash).");
     println!("Waiting up to {timeout_secs}s for the bootloader…");
     std::io::stdout().flush().ok();
 
@@ -154,7 +154,7 @@ pub fn firmware_summary(fw: &Firmware) -> String {
             zapp_core::device::ids::friendly_name(*vid, *pid)
         ),
         Firmware::IgnitionDual { primary, alternate } => format!(
-            "Firmware: dual image - {} ({} KiB) + {} ({} KiB); the right one is picked automatically",
+            "Firmware: dual image, {} ({} KiB) + {} ({} KiB). The right one is picked automatically",
             zapp_core::device::ids::friendly_name(primary.vid, primary.pid),
             primary.data.len() / 1024,
             zapp_core::device::ids::friendly_name(alternate.vid, alternate.pid),

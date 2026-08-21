@@ -261,7 +261,7 @@ pub fn load() -> Config {
             let backup = p.with_extension("json.corrupt");
             let _ = std::fs::write(&backup, &bytes);
             eprintln!(
-                "keyjitsu: config.json is unreadable ({e}); backed it up to {} and started from defaults",
+                "keyjitsu: config.json is unreadable ({e}). Backed it up to {} and started from defaults",
                 backup.display()
             );
             Config::default()
