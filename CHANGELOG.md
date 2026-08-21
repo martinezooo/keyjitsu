@@ -3,7 +3,7 @@
 All notable changes to Keyjitsu are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.1] - 2026-08-21
 
 ### Added
 - The keyboard guard can no longer lock you out: the built-in keyboard is
@@ -13,6 +13,18 @@ All notable changes to Keyjitsu are documented here. This project follows
 - Staged per-key remaps and tap dances now **persist across restarts** (saved
   per layout, shown as pending) instead of living only in memory until the
   next build.
+- With no keyboard attached, Live shows the **last layout from the on-disk
+  cache** (never touching the network), so you can view and plan your layout
+  with the board unplugged. On a first run with nothing cached, a short
+  plug-in hint replaces the old wall of blank keys.
+
+### Fixed
+- A transparent vertical strip could appear between the sidebar and the rest
+  of the window while no keyboard was connected: the long connection hint
+  inflated the sidebar panel beyond its fixed width. The pill now truncates
+  (full text on hover).
+- All tabs now share one panel colour, so the Live tab no longer shows a
+  darker band next to the sidebar.
 
 ### Changed
 - Two internal polish passes: de-duplicated helpers (hex parsing, board
