@@ -59,14 +59,13 @@ losing anything.
   and press effects, plus a step sequencer for your own (paint keys, duplicate
   a step, nudge it around the board, loop). Apply to the whole board, or per
   key from the editor's on-press slot. Board RGB survives restarts.
-- **Cheatsheet.** A reference library of ~160 common shortcuts (macOS, editors,
-  terminals, pentest tools, QMK patterns), with categories, your own entries,
-  and hideable built-ins.
 - **Performance** (experimental). keyjitsu samples its own CPU, tagged by what
   it was doing.
 - **Autolayer.** Switch layers by the frontmost app, matched on the bundle id.
 - **Settings.** Local QMK toolchain status and firmware build, the keyboard
-  guard, start-at-login, and a manual check for updates.
+  guard, start-at-login, a manual check for updates, and a shortcut library
+  (a reference list of ~160 common shortcuts to borrow from, with your own
+  entries and hideable built-ins).
 
 The connection auto-reconnects on unplug, replug, and after flashing.
 

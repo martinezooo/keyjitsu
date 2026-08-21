@@ -11,9 +11,13 @@ All notable changes to Keyjitsu are documented here. This project follows
   links to the release page. Nothing runs automatically.
 
 ### Changed
-- The **Shortcuts** tab is now **Cheatsheet**, with a heading that says what it
-  is: a reference library of common shortcuts to borrow from when planning a
-  layer, not the keys on your keyboard (those are edited in Live).
+- The **Shortcuts** tab is gone from the main menu. It was a reference list of
+  common shortcuts, not the keys on your keyboard, and read as if it were. It
+  now lives in **Settings** as a collapsible **Shortcut library** card.
+- Sidebar polish: rows are painted with left-aligned labels (sub-items used to
+  drift right because buttons centre their text), experimental tabs carry a
+  small "exp" badge instead of it being part of the name, and the connection
+  pill says "No keyboard" with the full hint on hover instead of truncating.
 
 ## [0.9.1] - 2026-08-21
 

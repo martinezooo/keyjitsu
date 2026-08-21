@@ -96,7 +96,6 @@ enum Tab {
     Heatmap,
     Peek,
     Fx,
-    Keys,
     Perf,
     Auto,
     Tools,
@@ -544,7 +543,7 @@ impl App {
                 Ok("peek") => Tab::Peek,
                 Ok("layers") => Tab::Layers,
                 Ok("fx") => Tab::Fx,
-                Ok("keys") => Tab::Keys,
+                Ok("keys") | Ok("library") => Tab::Tools,
                 Ok("perf") => Tab::Perf,
                 Ok("autolayer") => Tab::Auto,
                 Ok("tools") | Ok("settings") => Tab::Tools,
@@ -1330,7 +1329,7 @@ impl App {
                     }
                 }
             }
-            Tab::Layers | Tab::Keys | Tab::Perf | Tab::Auto | Tab::Tools => {}
+            Tab::Layers | Tab::Perf | Tab::Auto | Tab::Tools => {}
         }
         ui.add_space(4.0);
     }
@@ -1344,16 +1343,7 @@ impl App {
     /// The Shortcuts tab: a searchable cheatsheet of ready-made shortcuts
     /// (category chips in the panel) plus the user's own entries.
     fn ui_shortcuts(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        ui.label(RichText::new("Cheatsheet").strong().size(21.0).color(pal::TEXT));
-        ui.label(
-            RichText::new(
-                "A reference library of common shortcuts (macOS, editors, terminals, tools) to browse and borrow while you plan a layer. This is not what is on your keyboard: to change keys, use Live.",
-            )
-            .size(12.5)
-            .color(pal::TEXT_DIM),
-        );
-        ui.add_space(10.0);
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("🔎").size(14.0));
             ui.add(egui::TextEdit::singleline(&mut self.keys_search).hint_text("search the cheatsheet…").desired_width(240.0));
@@ -2060,7 +2050,6 @@ impl eframe::App for App {
                         (Tab::Heatmap, "Heatmap", "🔥"),
                         (Tab::Peek, "Peek", "👁"),
                         (Tab::Fx, "FX Studio (exp)", "✨"),
-                        (Tab::Keys, "Cheatsheet", "⌘"),
                         (Tab::Perf, "Performance (exp)", "📈"),
                         (Tab::Auto, "Autolayer", "⇆"),
                         (Tab::Tools, "Settings", "⚙"),
@@ -2146,9 +2135,6 @@ impl eframe::App for App {
                     }
                     Tab::Fx => {
                         egui::ScrollArea::vertical().show(ui, |ui| self.ui_fx_studio(ui));
-                    }
-                    Tab::Keys => {
-                        egui::ScrollArea::vertical().show(ui, |ui| self.ui_shortcuts(ui));
                     }
                     Tab::Perf => {
                         egui::ScrollArea::vertical().show(ui, |ui| self.ui_perf_page(ui));
@@ -2300,38 +2286,71 @@ fn sub_item(ui: &mut egui::Ui, selected: bool, dot: bool, label: &str) -> bool {
     } else {
         (egui::Color32::TRANSPARENT, pal::TEXT_DIM)
     };
-    let mut job = String::new();
-    if dot {
-        job.push_str("● ");
+    let label = if dot { format!("● {label}") } else { label.to_string() };
+    nav_row(ui, 20.0, 16.0, 6.0, fill, text, 11.5, &label, None).clicked()
+}
+
+/// One sidebar row, painted by hand so the label is always left-aligned
+/// (egui buttons centre their text, which made indented sub-items look
+/// ragged) and an optional small badge can sit at the right edge.
+#[allow(clippy::too_many_arguments)]
+fn nav_row(
+    ui: &mut egui::Ui,
+    height: f32,
+    indent: f32,
+    radius: f32,
+    fill: egui::Color32,
+    color: egui::Color32,
+    size: f32,
+    label: &str,
+    badge: Option<&str>,
+) -> egui::Response {
+    let (full, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+    let rect = egui::Rect::from_min_max(full.min + egui::vec2(indent, 0.0), full.max);
+    let fill = if fill == egui::Color32::TRANSPARENT && resp.hovered() {
+        pal::HOVER.gamma_multiply(0.55)
+    } else {
+        fill
+    };
+    let p = ui.painter();
+    if fill != egui::Color32::TRANSPARENT {
+        p.rect_filled(rect, radius, fill);
     }
-    job.push_str(label);
-    let mut clicked = false;
-    ui.horizontal(|ui| {
-        ui.add_space(16.0);
-        let btn = egui::Button::new(RichText::new(job).size(11.5).color(text))
-            .fill(fill)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(egui::CornerRadius::same(6))
-            .min_size(egui::vec2(ui.available_width(), 20.0));
-        clicked = ui.add(btn).clicked();
-    });
-    clicked
+    p.text(
+        egui::pos2(rect.left() + 10.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(size),
+        color,
+    );
+    if let Some(b) = badge {
+        let galley = p.layout_no_wrap(b.to_string(), egui::FontId::proportional(9.5), pal::TEXT_DIM);
+        let pad = egui::vec2(5.0, 2.0);
+        let bsize = galley.size() + pad * 2.0;
+        let brect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - 8.0 - bsize.x, rect.center().y - bsize.y / 2.0),
+            bsize,
+        );
+        p.rect_filled(brect, 4.0, pal::INPUT);
+        p.galley(brect.min + pad, galley, pal::TEXT_DIM);
+    }
+    resp
 }
 
 /// A sidebar navigation row: full-width, filled violet when active.
 fn nav_item(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, icon: &str, name: &str) {
     let active = *current == tab;
+    // "(exp)" in the name becomes a small badge instead of cluttering the label.
+    let (name, badge) = match name.strip_suffix(" (exp)") {
+        Some(n) => (n, Some("exp")),
+        None => (name, None),
+    };
     let (fill, text) = if active {
         (pal::VIOLET, egui::Color32::WHITE)
     } else {
         (egui::Color32::TRANSPARENT, pal::TEXT_MUTED)
     };
-    let btn = egui::Button::new(RichText::new(format!("{icon}  {name}")).size(13.5).color(text))
-        .fill(fill)
-        .stroke(egui::Stroke::NONE)
-        .corner_radius(egui::CornerRadius::same(8))
-        .min_size(egui::vec2(ui.available_width(), 30.0));
-    if ui.add(btn).clicked() {
+    if nav_row(ui, 30.0, 0.0, 8.0, fill, text, 13.5, &format!("{icon}  {name}"), badge).clicked() {
         *current = tab;
     }
     ui.add_space(1.0);
@@ -2775,7 +2794,12 @@ impl App {
                     None => format!("{model} · {serial}"),
                 },
             ),
-            None => (pal::RED, "no keyboard - plug in & quit Keymapp".to_string()),
+            None => (pal::RED, "No keyboard".to_string()),
+        };
+        let hover = if self.connected.is_some() {
+            text.clone()
+        } else {
+            "Plug in your Voyager and quit Keymapp (the HID channel is exclusive).".to_string()
         };
         egui::Frame::new()
             .fill(pal::RAISED)
@@ -2792,7 +2816,7 @@ impl App {
                     ui.add(
                         egui::Label::new(RichText::new(&text).color(pal::TEXT_DIM)).truncate(),
                     )
-                    .on_hover_text(&text);
+                    .on_hover_text(hover);
                 });
             });
     }
@@ -4665,6 +4689,24 @@ impl App {
                     ("Manual start".to_string(), pal::TEXT_DIM)
                 };
                 tool_card(ui, "🚀", "App", "Launch keyjitsu automatically when you log in.", Some(app_pill), self, |ui, app| app.ui_app_card(ui));
+
+                // Reference material, not keyboard state: lives here rather
+                // than in the main menu so it can't be mistaken for the keys
+                // on the board.
+                tool_card(
+                    ui,
+                    "📚",
+                    "Shortcut library",
+                    "A reference list of common shortcuts (macOS, editors, terminals, tools) to borrow from when planning a layer. Not what is on your keyboard: edit keys in Live.",
+                    Some(("Reference".to_string(), pal::TEXT_DIM)),
+                    self,
+                    |ui, app| {
+                        egui::CollapsingHeader::new("Browse the library")
+                            .id_salt("shortcut_library")
+                            .default_open(false)
+                            .show(ui, |ui| app.ui_shortcuts(ui));
+                    },
+                );
                 ui.add_space(10.0);
             });
         });
