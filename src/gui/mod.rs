@@ -2390,6 +2390,17 @@ fn nav_item(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, icon: &str, name: &s
     ui.add_space(1.0);
 }
 
+/// Standard page header: a title and one short subtitle line. Every page
+/// that has a header uses this, so type and spacing stay identical.
+fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
+    ui.add_space(8.0);
+    ui.label(RichText::new(title).strong().size(21.0).color(pal::TEXT));
+    if !subtitle.is_empty() {
+        ui.label(RichText::new(subtitle).size(12.5).color(pal::TEXT_DIM));
+    }
+    ui.add_space(12.0);
+}
+
 /// A titled card grouping settings (no App needed, unlike `section`).
 fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
@@ -2872,13 +2883,7 @@ impl App {
             ui.add_space(pad);
             ui.vertical(|ui| {
                 ui.set_width(w - 24.0);
-                ui.label(RichText::new("Layers").strong().size(21.0).color(pal::TEXT));
-                ui.label(
-                    RichText::new("Every layer of your layout. Oryx layers are the base; ★ layers are yours - authored and built locally.")
-                        .size(12.5)
-                        .color(pal::TEXT_DIM),
-                );
-                ui.add_space(14.0);
+                page_header(ui, "Layers", "Oryx layers are the base. ★ layers are yours, built locally.");
 
                 if self.layout.is_none() {
                     card(ui, "No layout", |ui| {
@@ -3015,6 +3020,10 @@ impl App {
         let chrome = 88.0; // edit bar + canvas margins/shadow
         let unit_h = ((avail_h - chrome).max(120.0)) / rows;
         let board_w = (unit_h.clamp(34.0, 62.0) * cols + 48.0).min(ui.available_width());
+        // Centre the canvas in the leftover height, so a small inspector does
+        // not leave a large dead area under the board.
+        let board_h = unit_h.clamp(34.0, 62.0) * rows + 32.0;
+        ui.add_space(((avail_h - chrome - board_h) / 2.0).max(0.0));
 
         let view = self.view_layer;
         // Mirror the LEDs: while the animation engine drives the keyboard, show
@@ -4257,21 +4266,11 @@ impl App {
         // "board RGB" (sidebar) = the application panel: what the physical
         // keyboard actually runs, moved here from Tools.
         if self.fx_lib == FxLib::Apply {
-            ui.label(
-                RichText::new("What the board runs right now - constant background effect plus the global press reaction.")
-                    .size(12.0)
-                    .color(pal::TEXT_DIM),
-            );
-            ui.add_space(8.0);
+            page_header(ui, "FX Studio", "What the board runs right now: the constant effect plus the global press reaction.");
             card(ui, "Board RGB", |ui| self.ui_rgb_effects(ui));
             return;
         }
-        ui.label(
-            RichText::new("Sandbox - pick an effect, tune its color, test it in the preview or on the board.")
-                .size(12.0)
-                .color(pal::TEXT_DIM),
-        );
-        ui.add_space(8.0);
+        page_header(ui, "FX Studio", "Pick an effect, tune it, and test it in the preview or on the board.");
 
         // --- Library: one category at a time (picked in the sidebar), so the
         //     list stays a single short row of chips.
@@ -4306,6 +4305,7 @@ impl App {
                                 self.fx_t0 = Instant::now();
                             }
                         }
+                        ui.label(RichText::new("🌐 = whole board").size(10.5).color(pal::TEXT_DIM));
                     });
                 }
                 FxLib::Apply => unreachable!(),
@@ -4403,10 +4403,10 @@ impl App {
             if is_press {
                 ui.add_space(8.0);
                 let on = self.connected.is_some();
-                if ui
+                let test = ui
                     .add_enabled(on, egui::Button::new(RichText::new("⚡ Test on keyboard").color(Color32::WHITE)).fill(pal::VIOLET))
-                    .clicked()
-                {
+                    .on_disabled_hover_text("Plug in the Voyager to test on it");
+                if test.clicked() {
                     if let (FxSel::Press(e), Ok(mut a)) = (self.fx_sel, self.anim.lock()) {
                         let now = Instant::now();
                         let seed = std::time::SystemTime::now()
@@ -4417,17 +4417,13 @@ impl App {
                         a.events.push(FxEvent { key: 16, effect: e, color: self.fx_color, at: now, seed, seq: None });
                     }
                 }
-                if !on {
-                    ui.label(RichText::new("connect the keyboard to test on it").size(11.0).color(pal::TEXT_DIM));
-                }
             }
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
-            ui.label(RichText::new("USE IT").size(10.5).color(pal::TEXT_DIM));
             ui.label(
-                RichText::new("per key: Live → click a key → On press\nwhole board: Tools → RGB effects")
-                    .size(11.5)
+                RichText::new("Use it per key in Live (key → On press), or board-wide under board RGB (left).")
+                    .size(11.0)
                     .color(pal::TEXT_MUTED),
             );
         });
@@ -4701,9 +4697,7 @@ impl App {
             ui.add_space(x);
             ui.vertical(|ui| {
                 ui.set_width(w - 24.0);
-                ui.label(RichText::new("Settings").strong().size(21.0).color(pal::TEXT));
-                ui.label(RichText::new("Firmware, guard, profiles and app housekeeping.").size(12.5).color(pal::TEXT_DIM));
-                ui.add_space(14.0);
+                page_header(ui, "Settings", "Firmware, guard, profiles and app housekeeping.");
 
                 let fw_pill = if self.env.is_ready() {
                     ("Ready".to_string(), pal::GREEN)
@@ -5142,11 +5136,17 @@ impl App {
 
             let names: Vec<String> = (0..self.layer_count()).map(|n| self.layer_name(n)).collect();
             let mut remove: Option<usize> = None;
+            if self.rules.is_empty() {
+                ui.label(RichText::new("No rules yet. Add one from a running app below.").size(12.0).color(pal::TEXT_DIM));
+                ui.add_space(2.0);
+            }
             egui::Grid::new("rules").num_columns(3).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.strong("app (bundle id contains)");
-                ui.strong("switch to layer");
-                ui.strong("");
-                ui.end_row();
+                if !self.rules.is_empty() {
+                    ui.strong("app (bundle id contains)");
+                    ui.strong("switch to layer");
+                    ui.strong("");
+                    ui.end_row();
+                }
                 for (i, rule) in self.rules.iter_mut().enumerate() {
                     if ui.add(egui::TextEdit::singleline(&mut rule.bundle).desired_width(240.0)).changed() {
                         self.rules_dirty = true;
@@ -5214,20 +5214,7 @@ impl App {
     /// The Peek tab: a clean, vertically-stacked settings page for the layer
     /// minimap. Changes preview live.
     fn ui_peek_page(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("👁").size(22.0));
-            ui.add_space(4.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new("Layer peek").strong().size(20.0).color(pal::TEXT));
-                ui.label(
-                    RichText::new("A transparent, click-through minimap that flashes when a layer activates.")
-                        .size(12.5)
-                        .color(pal::TEXT_MUTED),
-                );
-            });
-        });
-        ui.add_space(12.0);
+        page_header(ui, "Peek", "A transparent, click-through minimap that flashes when a layer activates.");
 
         let mut c = self.peek.clone();
         // Preview on top (full width), then options left / appearance+position
@@ -5256,13 +5243,12 @@ impl App {
     }
 
     fn peek_settings_card(&mut self, ui: &mut egui::Ui, c: &mut PeekConfig) {
-        card(ui, "Options", |ui| {
-            // Shortcut lives with the options (a bound Voyager key shows the
-            // minimap while held, independent of the auto-peek toggles).
+        card(ui, "Behaviour", |ui| {
+            // A bound Voyager key shows the minimap while held, independent of
+            // the auto-peek toggles.
             group_header(ui, "Shortcut", "");
             self.peek_shortcut_row(ui);
-
-            group_header(ui, "Options", "");
+            ui.add_space(6.0);
             toggle_row(ui, "Enable layer peek", &mut c.enabled);
             ui.add_enabled_ui(c.enabled, |ui| {
                 toggle_row(ui, "Only outside the base layer", &mut c.only_non_base);
@@ -5386,7 +5372,7 @@ impl App {
             self.render_peek_into(ui, rect.shrink(14.0), c);
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("📌 Keep preview visible").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
+                if ui.button("📌 Keep preview visible").clicked() {
                     let snap = c.clone();
                     self.arm_preview(&snap, 5000);
                 }
@@ -5396,7 +5382,6 @@ impl App {
                     *c = PeekConfig { monitor, offset, ..PeekConfig::default() };
                 }
             });
-            ui.weak("Shown over a checkerboard to represent your desktop showing through.");
         });
     }
 

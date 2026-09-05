@@ -5,6 +5,17 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- UI review pass. One shared page header on every page (Layers, Peek, FX
+  Studio, Settings), so type and spacing stop drifting. The Live board floats
+  centred in the leftover height instead of leaving a dead area. Peek loses a
+  duplicated Options heading and an explainer sentence, its pin button is no
+  longer styled as a primary action, and the settings card is now Behaviour.
+  FX Studio gets a real header, a "whole board" legend for the globe marker,
+  one-line usage hints with the stale Tools reference fixed, and a disabled
+  Test button with a hover hint instead of a standing caption. Autolayer shows
+  an empty state instead of a header-only table.
+
 ### Added
 - GitHub Actions: every push is built, linted and tested on macOS and the
   dependencies are audited. Each tagged release gets a `Keyjitsu.app` zip, a CLI
