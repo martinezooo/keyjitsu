@@ -97,7 +97,7 @@ shows your layout, all locally on macOS. This table compares the two desktop app
 | Live layer minimap | ✅ a plain always-on-top window | ✅ **Peek** |
 | Minimap: transparent + click-through | ❌ (cannot be made see-through) | ✅ opacity slider, ignores the mouse |
 | Minimap: position and triggers | drag the window | ✅ per-monitor anchor, shown on a key or chord, auto-hide, monochrome, combo and timing readout |
-| ⭐ **Rest the Voyager on top of the MacBook keyboard** (built-in ignored, no ghost presses) | ❌ | ✅ guard, cannot lock you out |
+| ⭐ **Rest the Voyager on top of the MacBook keyboard** (built-in ignored, no ghost presses) | ❌ | ✅ guard + a self-test to confirm it, cannot lock you out |
 | Autolayer (switch layers by app) | ❌ | ✅ |
 | CLI / scripting | Zapp CLI + API | ✅ built-in CLI |
 | Platforms | ✅ Windows, macOS, Linux | macOS only (tested) |
@@ -158,6 +158,13 @@ Oryx later would overwrite your keyjitsu changes.
   special permission needed). It can't lock you out: the built-in comes back
   around the lock screen and after any reboot, and is restored on toggle-off,
   disconnect, and quit. Engaged only while a ZSA keyboard is present.
+  keyjitsu verifies with hidutil itself that the remap actually applied
+  (rather than trusting a successful exit code), and Settings has a
+  **"Test the guard"** button that listens system-wide for a moment to
+  confirm no key press gets through. On some Macs, hidutil's remap reaches
+  the keyboard's "Service" HID layer but not a separate raw "Device" layer
+  that can still deliver key presses: run the test on your own Mac if you
+  plan to rely on the guard, and don't treat it as absolute.
 - **Storage.** Everything lives under `~/Library/Application Support/keyjitsu/`:
   `config.json` (all settings), `profiles/*.json` (named snapshots), heatmap
   stats, and cached layouts and sources.

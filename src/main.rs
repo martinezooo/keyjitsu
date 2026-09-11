@@ -19,6 +19,8 @@ mod macos_display;
 #[cfg(target_os = "macos")]
 mod macos_kb;
 #[cfg(target_os = "macos")]
+mod macos_guard_test;
+#[cfg(target_os = "macos")]
 mod macos_lockwatch;
 #[cfg(target_os = "macos")]
 mod macos_overlay;

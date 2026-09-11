@@ -286,6 +286,19 @@ struct App {
     // Tools tab
     #[cfg(target_os = "macos")]
     guard: Option<crate::macos_kb::BuiltinKeyboardGuard>,
+    /// Ground truth from hidutil (not just "did the command error"),
+    /// refreshed every few seconds while the guard should be on.
+    #[cfg(target_os = "macos")]
+    guard_hidutil_ok: bool,
+    #[cfg(target_os = "macos")]
+    guard_checked: Instant,
+    /// The manual "press a key on the MacBook" self-test: in flight or done.
+    #[cfg(target_os = "macos")]
+    guard_test_rx: Option<std::sync::mpsc::Receiver<crate::macos_guard_test::GuardTestOutcome>>,
+    #[cfg(target_os = "macos")]
+    guard_test_result: Option<crate::macos_guard_test::GuardTestOutcome>,
+    #[cfg(target_os = "macos")]
+    guard_test_started: Option<Instant>,
     guard_enabled: bool,
     guard_error: Option<String>,
     rules: Vec<AutolayerRule>,
@@ -627,6 +640,16 @@ impl App {
             combo_log: std::collections::VecDeque::new(),
             #[cfg(target_os = "macos")]
             guard: None,
+            #[cfg(target_os = "macos")]
+            guard_hidutil_ok: false,
+            #[cfg(target_os = "macos")]
+            guard_checked: Instant::now(),
+            #[cfg(target_os = "macos")]
+            guard_test_rx: None,
+            #[cfg(target_os = "macos")]
+            guard_test_result: None,
+            #[cfg(target_os = "macos")]
+            guard_test_started: None,
             guard_enabled: cfg.guard_enabled,
             guard_error: None,
             rules: cfg.autolayer_rules,
@@ -1939,6 +1962,10 @@ impl App {
                     Ok(g) => {
                         self.guard_error = None;
                         self.guard = Some(g);
+                        // seize_builtin() only returns Ok after verifying with
+                        // hidutil itself, so this is already ground-truthed.
+                        self.guard_hidutil_ok = true;
+                        self.guard_checked = Instant::now();
                     }
                     Err(e) => {
                         self.guard_error = Some(format!("{e:#}"));
@@ -1947,6 +1974,16 @@ impl App {
                 }
             } else if !want && self.guard.is_some() {
                 self.guard = None;
+                self.guard_hidutil_ok = false;
+            }
+
+            // Ground-truth recheck: hidutil can silently drop a remap (a
+            // sleep/wake cycle, an OS update) without our own flag ever
+            // noticing. Re-verify periodically and try one silent reapply
+            // before telling the UI it's broken.
+            if self.guard.is_some() && self.guard_checked.elapsed() > Duration::from_secs(5) {
+                self.guard_hidutil_ok = crate::macos_kb::recheck();
+                self.guard_checked = Instant::now();
             }
         }
 
@@ -2004,6 +2041,14 @@ impl eframe::App for App {
             if let Ok(r) = rx.try_recv() {
                 self.update_state = Some(r);
                 self.update_rx = None;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(rx) = &self.guard_test_rx {
+            if let Ok(r) = rx.try_recv() {
+                self.guard_test_result = Some(r);
+                self.guard_test_rx = None;
+                self.guard_test_started = None;
             }
         }
         // Combo HUD: keep the minimap up while any key is physically held, so
@@ -2085,10 +2130,12 @@ impl eframe::App for App {
                     ui.horizontal_wrapped(|ui| {
                         #[cfg(target_os = "macos")]
                         if self.guard.is_some() {
-                            egui::Frame::new()
-                                .show(ui, |ui| status_pill(ui, "🔒 guard", pal::GREEN))
-                                .response
-                                .on_hover_text("The built-in keyboard is disabled while the Voyager is connected.");
+                            let (label, color, hover) = if self.guard_hidutil_ok {
+                                ("🔒 guard", pal::GREEN, "hidutil's remap is applied. Use \"Test the guard\" in Settings for a definitive check.")
+                            } else {
+                                ("⚠ guard", pal::RED, "hidutil no longer reports the remap as applied. Open Settings to check.")
+                            };
+                            egui::Frame::new().show(ui, |ui| status_pill(ui, label, color)).response.on_hover_text(hover);
                         }
                         if self.autolayer_enabled {
                             egui::Frame::new()
@@ -5091,10 +5138,17 @@ impl App {
                 let _ = config::save(&cfg);
             }
             if let Some(g) = &self.guard {
-                ui.colored_label(pal::GREEN, format!("🔒 disabled: {}", g.describe()));
+                if self.guard_hidutil_ok {
+                    ui.colored_label(pal::GREEN, format!("🔒 remap applied: {}", g.describe()));
+                } else {
+                    ui.colored_label(pal::RED, format!("⚠ hidutil no longer reports the remap as applied on {} - reapply failed. Toggle the guard off and on.", g.describe()));
+                }
             }
             if let Some(e) = &self.guard_error {
                 ui.colored_label(pal::RED, e);
+            }
+            if self.guard.is_some() {
+                self.ui_guard_test(ui);
             }
             egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
                 ui.weak("Keys are remapped to no-ops with hidutil (no special permission). They are restored on toggle-off, disconnect, quit, and by any reboot. If keyjitsu is force-killed first, restore by hand:");
@@ -5108,6 +5162,81 @@ impl App {
         }
         #[cfg(not(target_os = "macos"))]
         ui.weak("(macOS only)");
+    }
+
+    /// The functional self-test: hidutil can report its remap as fully
+    /// applied while the built-in keyboard still leaks key presses through a
+    /// lower HID layer hidutil cannot reach (confirmed on real hardware).
+    /// This listens system-wide for a moment to give a real yes/no answer.
+    #[cfg(target_os = "macos")]
+    fn ui_guard_test(&mut self, ui: &mut egui::Ui) {
+        use crate::macos_guard_test::GuardTestOutcome;
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(RichText::new("Does it actually work?").strong().size(12.5).color(pal::TEXT));
+        ui.label(
+            RichText::new("hidutil can report the remap as applied while the built-in keyboard still leaks presses through a lower HID layer hidutil cannot reach. This listens for a moment to give a real answer.")
+                .size(11.0)
+                .color(pal::TEXT_DIM),
+        );
+        ui.add_space(4.0);
+        if self.guard_test_rx.is_some() {
+            let left = self
+                .guard_test_started
+                .map(|t| 6u64.saturating_sub(t.elapsed().as_secs()))
+                .unwrap_or(0);
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.colored_label(pal::AMBER, format!("Press any key on the MacBook's OWN keyboard now ({left}s)... not the Voyager."));
+            });
+            return;
+        }
+        match self.guard_test_result {
+            Some(GuardTestOutcome::Blocked) => {
+                ui.colored_label(pal::GREEN, "✓ Confirmed: no key reached the system during the test.");
+                if ui.button("Test again").clicked() {
+                    self.start_guard_test();
+                }
+            }
+            Some(GuardTestOutcome::Leaked) => {
+                ui.colored_label(pal::RED, "⚠ A key press got through - the built-in keyboard is NOT fully blocked.");
+                ui.label(
+                    RichText::new("Known limitation on some Macs: hidutil's remap doesn't reach every layer the built-in keyboard uses. Don't rely on the guard alone - keep the Voyager clear of accidental presses.")
+                        .size(11.0)
+                        .color(pal::TEXT_MUTED),
+                );
+                if ui.button("Test again").clicked() {
+                    self.start_guard_test();
+                }
+            }
+            Some(GuardTestOutcome::PermissionNeeded) => {
+                ui.colored_label(pal::AMBER, "Needs the Input Monitoring permission to test.");
+                ui.horizontal(|ui| {
+                    if ui.button("Open Input Monitoring settings").clicked() {
+                        let _ = std::process::Command::new("open")
+                            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+                            .spawn();
+                    }
+                    if ui.button("Test again").clicked() {
+                        self.start_guard_test();
+                    }
+                });
+                ui.label(RichText::new("Enable keyjitsu there, then quit and reopen keyjitsu before testing again.").size(11.0).color(pal::TEXT_MUTED));
+            }
+            None => {
+                if ui.add(egui::Button::new(RichText::new("⚡ Test the guard").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
+                    self.start_guard_test();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn start_guard_test(&mut self) {
+        self.guard_test_result = None;
+        self.guard_test_started = Some(Instant::now());
+        self.guard_test_rx = Some(crate::macos_guard_test::spawn_test(Duration::from_secs(6)));
     }
 
     fn ui_autolayer(&mut self, ui: &mut egui::Ui) {

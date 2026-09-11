@@ -32,6 +32,13 @@ const HID_KB_USAGE_PAGE: u64 = 0x7_0000_0000;
 /// Absolute path so a Finder-launched `.app` with a sanitized PATH still finds
 /// it (a failed spawn here would leave the keyboard disabled).
 const HIDUTIL: &str = "/usr/bin/hidutil";
+/// If hidutil reports fewer matched-device mapping entries than this, treat
+/// the remap as not really applied. We write 228 entries (0x04..=0xE7); this
+/// leaves slack for a macOS version with a slightly different usage range
+/// while still catching two real, observed failure modes: hidutil matching
+/// zero devices (silent success - the product name doesn't match on this
+/// Mac) and a genuinely empty mapping.
+const MIN_EXPECTED_MAPPING_ENTRIES: usize = 200;
 
 /// True while a guard mapping is applied - read by the signal handler so it can
 /// restore before the process dies.
@@ -155,6 +162,43 @@ pub fn ensure_input_monitoring() -> Result<()> {
     Ok(())
 }
 
+/// Ground truth from the OS: how many mapping entries hidutil currently
+/// reports across every device matching `MATCH`. `hidutil property --set`
+/// returns success even when it matched zero devices, so "the command didn't
+/// error" was never proof anything actually changed - this asks hidutil what
+/// it thinks is really in effect right now.
+fn hidutil_applied_entry_count() -> usize {
+    let out = Command::new(HIDUTIL).args(["property", "--matching", MATCH, "--get", "UserKeyMapping"]).output();
+    match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).matches("HIDKeyboardModifierMappingSrc").count(),
+        _ => 0,
+    }
+}
+
+/// Does hidutil currently report our remap as applied to at least one
+/// matched device? This only rules out the "matched nothing" failure mode.
+/// It is NOT proof the built-in keyboard is actually silenced: confirmed on
+/// a real Mac, hidutil only reaches the "Service" HID layer
+/// (`AppleHIDKeyboardEventDriverV2`), while the built-in keyboard also has a
+/// separate raw "Device" layer (`AppleHIDTransportHIDDevice`, visible via
+/// `hidutil list` but not writable through `hidutil property`) that can
+/// still deliver key presses. Use [`crate::macos_guard_test::test_builtin_leaks`]
+/// for a real answer.
+pub fn verify_hidutil_applied() -> bool {
+    hidutil_applied_entry_count() >= MIN_EXPECTED_MAPPING_ENTRIES
+}
+
+/// Periodic health check while the guard should be on: re-verify with
+/// hidutil and, if the OS silently dropped the remap (observed after some
+/// sleep/wake cycles), try to reapply once. Returns the verified state after
+/// any reapply attempt; a no-op returning `true` if the guard isn't wanted.
+pub fn recheck() -> bool {
+    if !GUARD_WANTED.load(Ordering::SeqCst) {
+        return true;
+    }
+    verify_hidutil_applied() || (hidutil_set(&disable_mapping()).is_ok() && verify_hidutil_applied())
+}
+
 pub fn seize_builtin() -> Result<BuiltinKeyboardGuard> {
     // Arm the safety net BEFORE the dangerous call: mark active + write the
     // marker first, so any crash/kill in the disabling window is still
@@ -163,7 +207,7 @@ pub fn seize_builtin() -> Result<BuiltinKeyboardGuard> {
     GUARD_WANTED.store(true, Ordering::SeqCst);
     let marked = write_marker();
     match hidutil_set(&disable_mapping()) {
-        Ok(()) => {
+        Ok(()) if verify_hidutil_applied() => {
             if !marked {
                 eprintln!(
                     "keyjitsu: warning - couldn't write the guard marker; a hard kill (SIGKILL) \
@@ -171,6 +215,13 @@ pub fn seize_builtin() -> Result<BuiltinKeyboardGuard> {
                 );
             }
             Ok(BuiltinKeyboardGuard(()))
+        }
+        Ok(()) => {
+            // hidutil exited 0 but applied the remap to no device - a real,
+            // observed failure mode (e.g. the product name doesn't match on
+            // this Mac). Don't report success on the strength of an exit code.
+            clear_marker();
+            bail!("hidutil accepted the remap but applied it to no device (the built-in keyboard's name may not match on this Mac)");
         }
         Err(e) => {
             // Disabling failed - unwind the armed state so we don't leave a

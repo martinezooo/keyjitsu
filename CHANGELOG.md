@@ -5,6 +5,20 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- The keyboard guard now verifies with hidutil itself that the remap really
+  applied, instead of trusting a successful exit code (hidutil can return
+  success while matching zero devices). It also rechecks every few seconds
+  while engaged and tries a silent reapply if the OS drops it.
+- Settings has a **"Test the guard"** button: a read-only, system-wide listen
+  for a few seconds to confirm no key press from the built-in keyboard gets
+  through, since hidutil reporting its remap as applied is not proof the
+  keyboard is actually silenced (on some Macs the remap reaches the
+  keyboard's "Service" HID layer but not a separate raw "Device" layer that
+  can still deliver presses). Needs the Input Monitoring permission, asked
+  for only when the test runs. The sidebar's guard chip turns into a warning
+  if hidutil's own report drifts from what the guard expects.
+
 ### Changed
 - UI review pass. One shared page header on every page (Layers, Peek, FX
   Studio, Settings), so type and spacing stop drifting. The Live board floats
