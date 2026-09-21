@@ -33,7 +33,7 @@ pub struct Revision {
     pub layers: Vec<Layer>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layer {
     pub title: Option<String>,
     pub position: u8,
@@ -45,7 +45,7 @@ pub struct Layer {
 }
 
 /// One key of one layer, as Oryx models it.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct OryxKey {
     pub tap: Option<KeyAction>,
@@ -57,7 +57,7 @@ pub struct OryxKey {
     pub glow_color: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct KeyAction {
     /// QMK keycode (`KC_A`) or a layer-switch family (`TO`, `MO`, `LT`, …).

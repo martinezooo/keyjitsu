@@ -3147,7 +3147,15 @@ impl App {
             }
         });
         let glow = anim_frame.unwrap_or_else(|| self.glow_colors(view));
-        let layer = self.layer_def(view);
+        // Staged (not yet built) edits show as "staged: ..." in the editor
+        // panel below, but the real Oryx layer data drives the board's own
+        // legends - so a staged combo looked assigned but invisible on the
+        // keyboard itself. Preview it there too: same label text as the
+        // editor's chip (slot_chip_label), just overlaid on a cloned layer.
+        let real_layer = self.layer_def(view);
+        let has_staged = self.key_edits.keys().any(|&(l, _)| l == view) || self.key_dances.keys().any(|&(l, _)| l == view);
+        let overlay_owned: Option<Layer> = if has_staged { real_layer.map(|l| self.apply_staged_preview(l.clone(), view)) } else { None };
+        let layer = overlay_owned.as_ref().or(real_layer);
         let sel = self.selected_key;
         // The keyboard sits on its own raised canvas card with a soft top
         // sheen + shadow, so it reads as the main object.
@@ -3746,6 +3754,37 @@ impl App {
     }
 
     /// Human chip label for a slot's working keycode ("MO → VimLife", "⇧"…).
+    /// Overlay every staged (not yet built) edit for `view` onto a cloned
+    /// layer, so the board preview matches what the editor panel already
+    /// shows as "staged: ...". `custom_label` is checked before anything
+    /// else a key might carry, so this cleanly overrides tap/hold legends
+    /// without needing to reconstruct Oryx's own KeyAction/layer fields.
+    fn apply_staged_preview(&self, mut layer: Layer, view: u8) -> Layer {
+        for (&(l, i), code) in &self.key_edits {
+            if l == view {
+                if let Some(k) = layer.keys.get_mut(i) {
+                    k.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
+                }
+            }
+        }
+        for (&(l, i), slots) in &self.key_dances {
+            if l == view {
+                if let Some(k) = layer.keys.get_mut(i) {
+                    let label = slots
+                        .iter()
+                        .flatten()
+                        .map(|c| self.slot_chip_label(c).replace('\n', " then "))
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    if !label.is_empty() {
+                        k.custom_label = Some(label);
+                    }
+                }
+            }
+        }
+        layer
+    }
+
     fn slot_chip_label(&self, code: &str) -> String {
         for p in ["MO", "OSL", "TO", "TG", "TT", "DF", "LT"] {
             if let Some(rest) = code.strip_prefix(p).and_then(|r| r.strip_prefix('(')) {
