@@ -239,6 +239,10 @@ struct App {
     build_log: String,
     build_busy: bool,
     build_flash_after: bool,
+    /// True while the in-flight flash is a direct continuation of OUR just-
+    /// completed build (not the separate "flash any file/URL" modal), so
+    /// only THAT completion clears the staged edits it just applied.
+    flash_is_build_continuation: bool,
     last_build_bin: Option<std::path::PathBuf>,
     build_cancel: Arc<AtomicBool>,
     /// Build/flash progress modal: open, current phase, 0..1 progress, and a
@@ -267,6 +271,13 @@ struct App {
     picker_combo_mods: [bool; 4],
     picker_combo_base: Option<(&'static str, &'static str)>,
     picker_combo_search: String,
+    /// A slot's stored code can hold more than one step ("KC_A\nKC_B" -
+    /// "then press another key"), tapped in order when the gesture fires.
+    /// `Some(i)` while the picker is open to REPLACE step `i` of the
+    /// current slot (instead of the whole slot); `picker_append` while open
+    /// to ADD a new step at the end.
+    picker_step_index: Option<usize>,
+    picker_append: bool,
 
     // Key behavior (tap/hold/one-shot)
 
@@ -616,12 +627,15 @@ impl App {
             picker_combo_mods: [false; 4],
             picker_combo_base: None,
             picker_combo_search: String::new(),
+            picker_step_index: None,
+            picker_append: false,
             edit_synced: None,
             key_dances: HashMap::new(),
             build_rx: None,
             build_log: String::new(),
             build_busy: false,
             build_flash_after: true,
+            flash_is_build_continuation: false,
             build_open: false,
             build_phase: String::new(),
             build_progress: 0.0,
@@ -1826,8 +1840,13 @@ impl App {
                             h.record(self.active_layer, idx, key_count);
                             let _ = h.autosave();
                         }
-                        // Pressing a key selects it for the config panel below.
-                        if self.selected_key != Some(idx) {
+                        // Pressing a key selects it for the config panel
+                        // below - but not while the Assign picker is open for
+                        // a different key: an incidental physical press (or
+                        // typing that lands on the board instead of a search
+                        // field) would otherwise silently swap which key's
+                        // editor is underneath the modal.
+                        if !self.picker_open && self.selected_key != Some(idx) {
                             self.selected_key = Some(idx);
                             self.edit_color = self.current_key_srgb(self.view_layer, idx);
                             self.sync_editor_from_key(self.view_layer, idx);
@@ -1880,6 +1899,16 @@ impl App {
                     self.build_phase = "Flashed ✓".into();
                     self.build_progress = 1.0;
                     self.build_result = Some(Ok("Firmware flashed - the keyboard will reconnect.".into()));
+                    // Only OUR build-then-flash continuation clears the
+                    // staged edits it just applied - a flash from the
+                    // separate "any file/URL" modal must not silently wipe
+                    // edits that were never part of it.
+                    if self.flash_is_build_continuation {
+                        self.flash_is_build_continuation = false;
+                        self.key_edits.clear();
+                        self.key_dances.clear();
+                        self.save_staged();
+                    }
                 }
                 Some(FlashState::Failed(e)) => {
                     self.build_busy = false;
@@ -1909,6 +1938,7 @@ impl App {
                             self.build_log.push_str("✓ compiled - flashing…\n");
                             self.flash_state = None;
                             self.flash_cancel = Arc::new(AtomicBool::new(false));
+                            self.flash_is_build_continuation = true;
                             self.flash_rx = Some(worker::spawn_flash(
                                 Some(bin.to_string_lossy().into_owned()),
                                 false,
@@ -3249,7 +3279,10 @@ impl App {
                                 self.sync_editor_from_key(view, i);
                             }
                         } else if let Some(sc) = &staged {
-                            ui.colored_label(pal::AMBER, format!("staged: {sc} (#{pos})"));
+                            // A multi-step macro's steps are newline-joined in
+                            // storage; keep this compact status strip one line.
+                            let sc_display = sc.replace('\n', " → ");
+                            ui.colored_label(pal::AMBER, format!("staged: {sc_display} (#{pos})"));
                             if ui.small_button("✕").on_hover_text("unstage").clicked() {
                                 self.key_edits.remove(&(view, i));
                                 self.save_staged();
@@ -3299,17 +3332,60 @@ impl App {
                         ui.label(RichText::new(SLOT_LABELS[slot]).size(12.0).strong().color(pal::TEXT));
                     });
 
-                // Key chip - click to change via the picker.
-                let chip = match &self.edit_slots[slot] {
-                    Some(c) => self.slot_chip_label(c),
-                    None => "- pick…".to_string(),
+                // Key chip(s) - click one to change it via the picker. A slot
+                // can hold more than one step ("then press another key"),
+                // tapped in order when the gesture fires; each step gets its
+                // own chip so it can be changed or removed on its own.
+                let steps: Vec<String> = match &self.edit_slots[slot] {
+                    Some(c) => c.split('\n').map(str::to_string).collect(),
+                    None => Vec::new(),
                 };
-                let chip_btn = egui::Button::new(RichText::new(chip).size(13.0).color(pal::TEXT))
-                    .fill(pal::INPUT)
-                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
-                    .min_size(egui::vec2(96.0, 22.0));
-                if ui.add(chip_btn).on_hover_text("click to pick a key").clicked() {
-                    open_picker = Some(slot);
+                let mut remove_step: Option<usize> = None;
+                ui.horizontal_wrapped(|ui| {
+                    if steps.is_empty() {
+                        let chip_btn = egui::Button::new(RichText::new("- pick…").size(13.0).color(pal::TEXT))
+                            .fill(pal::INPUT)
+                            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                            .min_size(egui::vec2(96.0, 22.0));
+                        if ui.add(chip_btn).on_hover_text("click to pick a key").clicked() {
+                            open_picker = Some(slot);
+                            self.picker_step_index = None;
+                            self.picker_append = false;
+                        }
+                    } else {
+                        for (step_i, s) in steps.iter().enumerate() {
+                            if step_i > 0 {
+                                ui.label(RichText::new("then").size(10.5).color(pal::TEXT_DIM));
+                            }
+                            let chip_btn = egui::Button::new(RichText::new(self.slot_chip_label(s)).size(13.0).color(pal::TEXT))
+                                .fill(pal::INPUT)
+                                .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                                .min_size(egui::vec2(80.0, 22.0));
+                            if ui.add(chip_btn).on_hover_text("click to change this step").clicked() {
+                                open_picker = Some(slot);
+                                self.picker_step_index = Some(step_i);
+                                self.picker_append = false;
+                            }
+                            if steps.len() > 1 && ui.small_button("✕").on_hover_text("remove this step").clicked() {
+                                remove_step = Some(step_i);
+                            }
+                        }
+                    }
+                    if ui
+                        .small_button("+")
+                        .on_hover_text("then press another key (taps in order when this fires)")
+                        .clicked()
+                    {
+                        open_picker = Some(slot);
+                        self.picker_step_index = None;
+                        self.picker_append = true;
+                    }
+                });
+                if let Some(step_i) = remove_step {
+                    let mut steps = steps.clone();
+                    steps.remove(step_i);
+                    self.edit_slots[slot] = if steps.is_empty() { None } else { Some(steps.join("\n")) };
+                    self.stage_slots(view, i);
                 }
 
                 if first {
@@ -3437,6 +3513,8 @@ impl App {
             self.picker_combo_mods = [false; 4];
             self.picker_combo_base = None;
             self.picker_combo_search.clear();
+            self.picker_step_index = None;
+            self.picker_append = false;
         }
         for w in warns {
             ui.colored_label(pal::AMBER, RichText::new(w).size(11.0));
@@ -3965,9 +4043,23 @@ impl App {
 
         if let Some(code) = pick {
             // The picked code lands in whichever slot row opened the picker;
-            // the buildable keycode is recomposed from all slots.
+            // the buildable keycode is recomposed from all slots. A slot can
+            // hold more than one step ("KC_A\nKC_B", tapped in order): append
+            // a new one, replace one step in place, or (the common case)
+            // replace the whole slot.
             let slot = self.picker_slot.min(3);
-            self.edit_slots[slot] = Some(code);
+            if self.picker_append {
+                let existing = self.edit_slots[slot].clone().unwrap_or_default();
+                self.edit_slots[slot] = Some(if existing.is_empty() { code } else { format!("{existing}\n{code}") });
+            } else if let Some(step) = self.picker_step_index {
+                let mut steps: Vec<String> = self.edit_slots[slot].as_deref().unwrap_or_default().split('\n').map(str::to_string).collect();
+                if step < steps.len() {
+                    steps[step] = code;
+                }
+                self.edit_slots[slot] = Some(steps.join("\n"));
+            } else {
+                self.edit_slots[slot] = Some(code);
+            }
             self.slot_added[slot] = false;
             self.stage_slots(view, key);
             open = false;
@@ -5897,6 +5989,7 @@ impl App {
             {
                 self.flash_state = None;
                 self.flash_cancel = Arc::new(AtomicBool::new(false));
+                self.flash_is_build_continuation = false;
                 self.flash_rx =
                     Some(worker::spawn_flash(None, true, self.flash_cancel.clone(), ui.ctx().clone()));
             }
@@ -5904,6 +5997,7 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.flash_state = None;
                 self.flash_cancel = Arc::new(AtomicBool::new(false));
+                self.flash_is_build_continuation = false;
                 self.flash_rx = Some(worker::spawn_flash(
                     Some(self.flash_input.trim().to_string()),
                     false,

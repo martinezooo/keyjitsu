@@ -145,23 +145,45 @@ pub fn build(
         .ok_or_else(|| anyhow!("no keymap.c in the generated source"))?;
     let rules_mk = take_file(&mut files, "rules.mk").unwrap_or_default();
 
+    // A multi-step slot ("KC_A\nKC_B", staged from more than one "then press
+    // another key") going into a PLAIN LAYOUT position - not a tap-dance,
+    // which taps its own multi-step slots directly in the generated case
+    // body - needs a custom keycode plus generated process_record_user to
+    // fire the taps: collect those here, substituting the position's
+    // keycode with the generated MACRO_KJ_{id} name.
+    let mut macros: Vec<keymap::MacroSpec> = Vec::new();
+    let mut macro_for = |code: &str| -> String {
+        if !code.contains('\n') {
+            return code.to_string();
+        }
+        let id = macros.len();
+        let steps: Vec<String> = code.split('\n').map(str::to_string).collect();
+        macros.push(keymap::MacroSpec { id, steps });
+        format!("MACRO_KJ_{id}")
+    };
+
     log(format!("Applying {} key change(s) to keymap.c…", edits.len()));
     let km_edits: Vec<keymap::Edit> = edits
         .iter()
         .map(|e| keymap::Edit {
             layer: e.layer,
             position: e.position,
-            keycode: e.keycode.clone(),
+            keycode: macro_for(&e.keycode),
         })
         .collect();
     let mut patched = keymap::apply_edits(&keymap_c, &km_edits)?;
     for nl in new_layers {
         log(format!("Adding layer [{}] ({} keys)…", nl.position, nl.keys.len()));
-        patched = keymap::add_layer(&patched, nl.position, &nl.keys)?;
+        let keys: Vec<(usize, String)> = nl.keys.iter().map(|(pos, code)| (*pos, macro_for(code))).collect();
+        patched = keymap::add_layer(&patched, nl.position, &keys)?;
     }
     if !dances.is_empty() {
         log(format!("Generating {} tap dance(s)…", dances.len()));
         patched = keymap::apply_dances(&patched, dances)?;
+    }
+    if !macros.is_empty() {
+        log(format!("Generating {} multi-key macro(s)…", macros.len()));
+        patched = keymap::apply_macros(&patched, &macros)?;
     }
 
     // Enable any QMK features the new keycodes rely on (Oryx often ships these

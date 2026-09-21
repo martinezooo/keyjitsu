@@ -46,6 +46,13 @@ fn is_layer_switch(code: &str) -> bool {
 /// Layer-switch families become real layer ops (a raw `register_code16(MO(1))`
 /// would NOT switch layers); everything else is a plain keycode.
 fn action_stmts(code: &str) -> (String, String) {
+    // A multi-step macro (see MacroSpec): tap every step fully, in order, the
+    // moment the dance resolves - nothing is left held, so there is no
+    // release-side statement.
+    if code.contains('\n') {
+        let taps: String = code.split('\n').map(|c| format!("tap_code16({c}); ")).collect();
+        return (taps.trim_end().to_string(), String::new());
+    }
     // Momentary-style: on at press, off at release.
     for pfx in ["MO(", "OSL("] {
         if let Some(n) = code.strip_prefix(pfx).and_then(|r| r.strip_suffix(')')) {
@@ -159,7 +166,7 @@ uint8_t dance_step(tap_dance_state_t *state) {
                 }
                 // The fast-double-tap arm only makes sense for plain keycodes,
                 // never a layer-switch family (they aren't register_code16-able).
-                if double_single && !is_layer_switch(c) {
+                if double_single && !is_layer_switch(c) && !c.contains('\n') {
                     fin.push_str(&format!("        case DOUBLE_SINGLE_TAP: tap_code16({c}); register_code16({c}); break;
 "));
                     rst.push_str(&format!("        case DOUBLE_SINGLE_TAP: unregister_code16({c}); break;
@@ -256,6 +263,63 @@ fn apply_dance_tapping_term(source: &str, n: usize) -> String {
         ));
         out
     }
+}
+
+/// One generated macro: a custom keycode that, on press, taps every step in
+/// `steps` fully (each a complete press+release via `tap_code16`), in order.
+/// Used for a key whose Tap (or Hold/Double-tap/Tap-hold) slot has more than
+/// one step but ISN'T going through the tap-dance machinery - i.e. a plain
+/// `LAYOUT` position, not a `TD()`. Unlike a dance, there is no tap/hold
+/// ambiguity to resolve, so this fires the instant the key is pressed.
+#[derive(Debug, Clone)]
+pub struct MacroSpec {
+    pub id: usize,
+    pub steps: Vec<String>,
+}
+
+/// Generate `MACRO_KJ_{id}` custom keycodes plus a `process_record_user` case
+/// per macro that taps its steps in order. Creates the custom-keycode enum
+/// and `process_record_user` fresh each build (the Oryx source keyjitsu
+/// starts from never has either), extending an existing
+/// `process_record_user` if the source unexpectedly already has one rather
+/// than silently dropping it.
+pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
+    if macros.is_empty() {
+        return Ok(source.to_string());
+    }
+    let mut out = source.to_string();
+
+    // 1. The custom-keycode enum, anchored at SAFE_RANGE.
+    let mut names = String::new();
+    for (i, m) in macros.iter().enumerate() {
+        if i == 0 {
+            names.push_str(&format!("    MACRO_KJ_{} = SAFE_RANGE,\n", m.id));
+        } else {
+            names.push_str(&format!("    MACRO_KJ_{},\n", m.id));
+        }
+    }
+    let km = out.find("const uint16_t PROGMEM keymaps").ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
+    out.insert_str(km, &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"));
+
+    // 2. One `case MACRO_KJ_i:` per macro, tapping its steps on press.
+    let mut cases = String::new();
+    for m in macros {
+        let taps: String = m.steps.iter().map(|s| format!("tap_code16({s}); ")).collect();
+        cases.push_str(&format!(
+            "        case MACRO_KJ_{}:\n            if (record->event.pressed) {{ {} }}\n            return false;\n",
+            m.id,
+            taps.trim_end()
+        ));
+    }
+    if let Some(f) = out.find("bool process_record_user(uint16_t keycode, keyrecord_t *record) {") {
+        let body_start = out[f..].find('{').map(|r| f + r + 1).ok_or_else(|| anyhow!("malformed process_record_user"))?;
+        out.insert_str(body_start, &format!("\n    switch (keycode) {{\n{cases}        default: break;\n    }}\n"));
+    } else {
+        out.push_str(&format!(
+            "\nbool process_record_user(uint16_t keycode, keyrecord_t *record) {{\n    switch (keycode) {{\n{cases}    }}\n    return true;\n}}\n"
+        ));
+    }
+    Ok(out)
 }
 
 /// Apply all `edits` to `source` (the text of a `keymap.c`), returning the new
@@ -458,6 +522,49 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
   ),
 };
 "#;
+
+    #[test]
+    fn macro_generates_enum_and_process_record_user() {
+        let edits = [Edit { layer: 0, position: 1, keycode: "MACRO_KJ_0".into() }];
+        let patched = apply_edits(SAMPLE, &edits).unwrap();
+        let macros = [MacroSpec { id: 0, steps: vec!["LGUI(KC_C)".into(), "KC_BSPC".into()] }];
+        let out = apply_macros(&patched, &macros).unwrap();
+        // Position 1 points at our custom keycode.
+        let layer0 = &out[out.find("[0]").unwrap()..out.find("[1]").unwrap()];
+        assert!(layer0.contains("MACRO_KJ_0"));
+        // The enum anchors at SAFE_RANGE, and process_record_user taps both
+        // steps in order on press, then eats the keycode (returns false).
+        assert!(out.contains("enum keyjitsu_macro_keycodes"));
+        assert!(out.contains("MACRO_KJ_0 = SAFE_RANGE"));
+        assert!(out.contains("case MACRO_KJ_0:"));
+        let case = &out[out.find("case MACRO_KJ_0:").unwrap()..];
+        let tap_c = case.find("tap_code16(LGUI(KC_C));").unwrap();
+        let tap_bspc = case.find("tap_code16(KC_BSPC);").unwrap();
+        assert!(tap_c < tap_bspc, "steps must fire in the order they were staged");
+        assert!(case.contains("return false;"), "the macro keycode itself must not also register");
+        // Defined before first use (process_record_user references it).
+        assert!(out.find("enum keyjitsu_macro_keycodes").unwrap() < out.find("process_record_user").unwrap());
+    }
+
+    #[test]
+    fn no_macros_leaves_source_untouched() {
+        assert_eq!(apply_macros(SAMPLE, &[]).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn dance_case_taps_multi_step_slot_in_order() {
+        // A dance's SINGLE_TAP with a two-step macro ("KC_A\nKC_B") should
+        // tap both, in order, instead of the plain register/unregister pair
+        // a single keycode gets.
+        let d = DanceSpec { layer: 0, position: 1, tap: Some("KC_A\nKC_B".into()), ..Default::default() };
+        let out = apply_dances(SAMPLE, std::slice::from_ref(&d)).unwrap();
+        let fin = &out[out.find("dance_kj_0_finished").unwrap()..];
+        assert!(fin.contains("case SINGLE_TAP: tap_code16(KC_A); tap_code16(KC_B); break;"));
+        // No release-side statement for a multi-step tap: nothing was left held.
+        let rst = &out[out.find("dance_kj_0_reset").unwrap()..];
+        let rst_body = &rst[..rst.find('}').unwrap_or(rst.len())];
+        assert!(!rst_body.contains("unregister_code16(KC_A)"));
+    }
 
     #[test]
     fn counts_top_level_slots_with_nested_commas() {
