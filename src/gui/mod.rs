@@ -262,6 +262,11 @@ struct App {
     picker_cat: usize,
     picker_search: String,
     picker_layer_arg: u8,
+    /// "Build a combo" tab: [ctrl, shift, alt, gui] toggles, the chosen base
+    /// key (code, label), and a small local search for it.
+    picker_combo_mods: [bool; 4],
+    picker_combo_base: Option<(&'static str, &'static str)>,
+    picker_combo_search: String,
 
     // Key behavior (tap/hold/one-shot)
 
@@ -608,6 +613,9 @@ impl App {
             edit_slots: [None, None, None, None],
             slot_added: [false; 4],
             picker_slot: 0,
+            picker_combo_mods: [false; 4],
+            picker_combo_base: None,
+            picker_combo_search: String::new(),
             edit_synced: None,
             key_dances: HashMap::new(),
             build_rx: None,
@@ -2248,6 +2256,27 @@ impl eframe::App for App {
 
 /// Render a wrapped grid of keycode buttons; sets `pick` to the chosen code.
 /// For templated (layer) entries, `{n}` is replaced with `layer_arg`.
+/// One row in a shortcut-library listing: a clickable button that assigns
+/// the converted QMK code, or - when the entry isn't one key press (a
+/// sequence, combo, or tap/hold description) - a disabled button with a
+/// hover explaining why. Shared by the picker's dedicated library tab and
+/// its search results, so both list the same way.
+fn shortcut_pick_row(ui: &mut egui::Ui, keys: &str, desc: &str, pick: &mut Option<String>) {
+    match crate::shortcuts::to_qmk_code(keys) {
+        Some(code) => {
+            if ui.button(format!("{keys} - {desc}")).clicked() {
+                *pick = Some(code);
+            }
+        }
+        None => {
+            ui.add_enabled(false, egui::Button::new(format!("{keys} - {desc}")))
+                .on_disabled_hover_text(
+                    "Not a single key press (a sequence, combo, or tap/hold description) - can't be assigned directly.",
+                );
+        }
+    }
+}
+
 fn keycode_grid(
     ui: &mut egui::Ui,
     keys: &[keycodes::KeyDef],
@@ -3405,6 +3434,9 @@ impl App {
             self.picker_slot = slot;
             self.picker_open = true;
             self.picker_search.clear();
+            self.picker_combo_mods = [false; 4];
+            self.picker_combo_base = None;
+            self.picker_combo_search.clear();
         }
         for w in warns {
             ui.colored_label(pal::AMBER, RichText::new(w).size(11.0));
@@ -3740,11 +3772,102 @@ impl App {
                 let query = self.picker_search.trim().to_lowercase();
                 if query.is_empty() {
                     // Category tabs.
+                    let library_tab = keycodes::CATALOG.len();
+                    let combo_tab = library_tab + 1;
                     ui.horizontal_wrapped(|ui| {
                         for (idx, cat) in keycodes::CATALOG.iter().enumerate() {
                             ui.selectable_value(&mut self.picker_cat, idx, cat.name);
                         }
+                        ui.selectable_value(&mut self.picker_cat, library_tab, "📚 Shortcuts");
+                        ui.selectable_value(&mut self.picker_cat, combo_tab, "🛠 Combo");
                     });
+                    if self.picker_cat == combo_tab {
+                        // Build a shortcut that isn't already in the library:
+                        // toggle modifiers, pick one base key, assign the
+                        // result. Modifier order has no effect on what the
+                        // OS receives (they're held together, not sequenced),
+                        // so there's no ordering to get "right" here.
+                        ui.separator();
+                        ui.label(RichText::new("Hold these, then press the key:").size(12.0).color(pal::TEXT_DIM));
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.picker_combo_mods[0], "Ctrl");
+                            ui.checkbox(&mut self.picker_combo_mods[1], "Shift");
+                            ui.checkbox(&mut self.picker_combo_mods[2], "Opt/Alt");
+                            ui.checkbox(&mut self.picker_combo_mods[3], "Cmd/Win");
+                        });
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Base key").size(12.0).color(pal::TEXT_DIM));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.picker_combo_search)
+                                .hint_text("search a key…")
+                                .desired_width(220.0),
+                        );
+                        let q = self.picker_combo_search.trim().to_lowercase();
+                        if !q.is_empty() {
+                            egui::ScrollArea::vertical().max_height(130.0).show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for cat in keycodes::CATALOG.iter().filter(|c| !c.templated) {
+                                        for k in cat.keys {
+                                            if (k.label.to_lowercase().contains(&q) || k.code.to_lowercase().contains(&q))
+                                                && ui.selectable_label(self.picker_combo_base.map(|(c, _)| c) == Some(k.code), k.label).clicked()
+                                            {
+                                                self.picker_combo_base = Some((k.code, k.label));
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(8.0);
+                        ui.separator();
+                        let [ctrl, shift, alt, gui] = self.picker_combo_mods;
+                        if let Some((base_code, base_label)) = self.picker_combo_base {
+                            let preview = crate::shortcuts::compose_label(ctrl, shift, alt, gui, base_label);
+                            let code = crate::shortcuts::compose(ctrl, shift, alt, gui, base_code);
+                            ui.label(RichText::new(format!("{preview}  →  {code}")).monospace().color(pal::TEXT));
+                            if ui
+                                .add(egui::Button::new(RichText::new(format!("Assign {preview}")).color(Color32::WHITE)).fill(pal::VIOLET))
+                                .clicked()
+                            {
+                                pick = Some(code);
+                            }
+                        } else {
+                            ui.weak("Search and pick a base key above.");
+                        }
+                        return;
+                    }
+                    if self.picker_cat == library_tab {
+                        // Browse the shortcut library directly (no typing
+                        // needed): grouped the same way as the Cheatsheet,
+                        // skipping entries you hid there.
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            if !self.custom_shortcuts.is_empty() {
+                                ui.label(RichText::new("Your shortcuts").weak().size(11.0));
+                                for c in &self.custom_shortcuts {
+                                    shortcut_pick_row(ui, &c.keys, &c.desc, &mut pick);
+                                }
+                                ui.add_space(6.0);
+                            }
+                            let mut last_cat = "";
+                            for d in crate::shortcuts::builtin() {
+                                let id = format!("{}|{}|{}", d.category, d.keys, d.desc);
+                                if self.hidden_shortcuts.contains(&id) {
+                                    continue;
+                                }
+                                if d.category != last_cat {
+                                    ui.add_space(6.0);
+                                    ui.label(RichText::new(&d.category).weak().size(11.0));
+                                    last_cat = &d.category;
+                                }
+                                shortcut_pick_row(ui, &d.keys, &d.desc, &mut pick);
+                            }
+                        });
+                        // The library tab has no layer/keycode grid below
+                        // it; `pick` (if set) is applied by the shared code
+                        // after this closure returns, same as every other tab.
+                        return;
+                    }
                     let cat = &keycodes::CATALOG[self.picker_cat.min(keycodes::CATALOG.len() - 1)];
                     let templated = cat.templated;
                     let cat_keys = cat.keys;
@@ -3821,17 +3944,7 @@ impl App {
                             ui.separator();
                             ui.label(RichText::new("📚 From your shortcut library").weak().size(11.0));
                             for (keys, desc, _cat) in lib_hits.iter().take(12) {
-                                match crate::shortcuts::to_qmk_code(keys) {
-                                    Some(code) => {
-                                        if ui.button(format!("{keys} - {desc}")).clicked() {
-                                            pick = Some(code);
-                                        }
-                                    }
-                                    None => {
-                                        ui.add_enabled(false, egui::Button::new(format!("{keys} - {desc}")))
-                                            .on_disabled_hover_text("Not a single key press (a sequence, combo, or tap/hold description) - can't be assigned directly.");
-                                    }
-                                }
+                                shortcut_pick_row(ui, keys, desc, &mut pick);
                             }
                             if lib_hits.len() > 12 {
                                 ui.weak(format!("+{} more - refine your search", lib_hits.len() - 12));

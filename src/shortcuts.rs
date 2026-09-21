@@ -106,6 +106,47 @@ fn base_key_code(word: &str) -> Option<&'static str> {
         .map(|k| k.code)
 }
 
+/// Build a QMK modifier-chord code directly from toggle state (used by the
+/// picker's "Build a combo" tab, for a shortcut that isn't already in the
+/// library). The wrap order has no effect on what the OS receives -
+/// modifiers are held simultaneously, not sequenced - so a fixed, readable
+/// order is used regardless of which order the toggles were clicked in.
+pub fn compose(ctrl: bool, shift: bool, alt: bool, gui: bool, base_code: &str) -> String {
+    let mut code = base_code.to_string();
+    if shift {
+        code = format!("LSFT({code})");
+    }
+    if alt {
+        code = format!("LALT({code})");
+    }
+    if ctrl {
+        code = format!("LCTL({code})");
+    }
+    if gui {
+        code = format!("LGUI({code})");
+    }
+    code
+}
+
+/// Human-readable label for [`compose`]'s result, for a live preview.
+pub fn compose_label(ctrl: bool, shift: bool, alt: bool, gui: bool, base_label: &str) -> String {
+    let mut parts = Vec::new();
+    if ctrl {
+        parts.push("Ctrl");
+    }
+    if shift {
+        parts.push("Shift");
+    }
+    if alt {
+        parts.push("Opt");
+    }
+    if gui {
+        parts.push("Cmd");
+    }
+    parts.push(base_label);
+    parts.join(" + ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +191,17 @@ mod tests {
         let all = builtin();
         let ok = all.iter().filter(|s| to_qmk_code(&s.keys).is_some()).count();
         assert!(ok * 100 / all.len() >= 75, "only {ok}/{} converted", all.len());
+    }
+
+    #[test]
+    fn compose_builds_expected_codes() {
+        // Fixed wrap order (shift, alt, ctrl, gui, inner to outer): QMK
+        // doesn't care which modifier wraps which - they're held
+        // simultaneously, not sequenced - so this need not match
+        // to_qmk_code's own (also valid) ordering byte-for-byte.
+        assert_eq!(compose(false, true, false, true, "KC_4"), "LGUI(LSFT(KC_4))");
+        assert_eq!(compose(true, false, false, true, "KC_Q"), "LGUI(LCTL(KC_Q))");
+        assert_eq!(compose(false, false, false, false, "KC_TAB"), "KC_TAB");
     }
 
     #[test]
