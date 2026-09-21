@@ -81,6 +81,7 @@ pub const CATALOG: &[Category] = &[
             k!("LCTL(KC_A)", "Select all"), k!("LCTL(KC_S)", "Save"),
             k!("LGUI(KC_C)", "⌘C"), k!("LGUI(KC_V)", "⌘V"),
             k!("LGUI(KC_Z)", "⌘Z"), k!("LGUI(KC_SPACE)", "Spotlight"),
+            k!("LALT(KC_TAB)", "⌥Tab"), k!("LGUI(KC_TAB)", "⌘Tab"),
         ],
     },
     Category {

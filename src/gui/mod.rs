@@ -3794,6 +3794,58 @@ impl App {
                                 .collect();
                             keycode_grid(ui, &refs, cat.templated, arg, &lname, &mut pick);
                         }
+
+                        // Shortcut library: the same search also matches your
+                        // Cheatsheet entries, so a combo you already have
+                        // written down ("Cmd+Shift+4 - screenshot") can be
+                        // assigned in one click instead of hand-typing QMK's
+                        // modifier syntax. Custom entries first, then the
+                        // built-ins (skipping ones you hid from the Cheatsheet).
+                        let lib_matches = |c: &str, k: &str, d: &str| {
+                            k.to_lowercase().contains(&query) || d.to_lowercase().contains(&query) || c.to_lowercase().contains(&query)
+                        };
+                        let mut lib_hits: Vec<(&str, &str, &str)> = Vec::new();
+                        for c in &self.custom_shortcuts {
+                            if lib_matches(&c.category, &c.keys, &c.desc) {
+                                lib_hits.push((&c.keys, &c.desc, &c.category));
+                            }
+                        }
+                        for d in crate::shortcuts::builtin() {
+                            let id = format!("{}|{}|{}", d.category, d.keys, d.desc);
+                            if !self.hidden_shortcuts.contains(&id) && lib_matches(&d.category, &d.keys, &d.desc) {
+                                lib_hits.push((&d.keys, &d.desc, &d.category));
+                            }
+                        }
+                        if !lib_hits.is_empty() {
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.label(RichText::new("📚 From your shortcut library").weak().size(11.0));
+                            for (keys, desc, _cat) in lib_hits.iter().take(12) {
+                                match crate::shortcuts::to_qmk_code(keys) {
+                                    Some(code) => {
+                                        if ui.button(format!("{keys} - {desc}")).clicked() {
+                                            pick = Some(code);
+                                        }
+                                    }
+                                    None => {
+                                        ui.add_enabled(false, egui::Button::new(format!("{keys} - {desc}")))
+                                            .on_disabled_hover_text("Not a single key press (a sequence, combo, or tap/hold description) - can't be assigned directly.");
+                                    }
+                                }
+                            }
+                            if lib_hits.len() > 12 {
+                                ui.weak(format!("+{} more - refine your search", lib_hits.len() - 12));
+                            }
+                        }
+
+                        let custom_code = self.picker_search.trim().to_string();
+                        if !custom_code.is_empty() {
+                            ui.add_space(8.0);
+                            ui.separator();
+                            if ui.button(RichText::new(format!("⚡ Use custom code: {custom_code}")).color(pal::VIOLET_HI)).clicked() {
+                                pick = Some(custom_code);
+                            }
+                        }
                     });
                 }
             });

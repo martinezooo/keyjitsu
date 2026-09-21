@@ -43,6 +43,69 @@ pub fn builtin() -> &'static [ShortcutDef] {
     })
 }
 
+/// Best-effort conversion of a human shortcut string ("Cmd + Shift + 4") into
+/// a QMK keycode ("LGUI(LSFT(KC_4))"), so an entry from the shortcut library
+/// can be assigned to a key slot directly instead of hand-typing QMK's
+/// modifier-wrapper syntax. Reuses `keycodes::CATALOG` as the single source
+/// of KC_ codes - only modifier words and a few label-wording differences
+/// between the two lists are defined here.
+///
+/// Returns `None` for anything that isn't a single chord of modifiers plus
+/// one base key: double-key sequences ("GG", "DD"), simultaneous-key combos
+/// ("J + K combo"), and tap/hold descriptions ("Tap Esc / Hold Ctrl") aren't
+/// one key press, so there is no code to generate - the entry is still
+/// readable in the cheatsheet, just not one-click assignable.
+pub fn to_qmk_code(keys: &str) -> Option<String> {
+    let parts: Vec<&str> = keys.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let (base, mods) = parts.split_last()?;
+    let base_code = base_key_code(base)?;
+    let mut code = base_code.to_string();
+    for m in mods.iter().rev() {
+        code = format!("{}({code})", modifier_wrapper(m)?);
+    }
+    Some(code)
+}
+
+fn modifier_wrapper(word: &str) -> Option<&'static str> {
+    match word.to_lowercase().as_str() {
+        "cmd" | "gui" | "win" | "super" => Some("LGUI"),
+        "ctrl" | "control" => Some("LCTL"),
+        "option" | "opt" | "alt" => Some("LALT"),
+        "shift" => Some("LSFT"),
+        _ => None,
+    }
+}
+
+/// Look up one base key by its shortcut-library wording in
+/// `keycodes::CATALOG`'s labels (case-insensitive), applying a small alias
+/// table first where the library's wording differs from the picker's terser
+/// labels (both name the same keycodes). Numpad and templated (layer)
+/// entries are excluded so a plain digit resolves to the top-row key, not
+/// the numpad.
+fn base_key_code(word: &str) -> Option<&'static str> {
+    let alias = match word {
+        "Up" => "↑",
+        "Down" => "↓",
+        "Left" => "←",
+        "Right" => "→",
+        "Backspace" => "Bksp",
+        "Delete" => "Del",
+        "Escape" => "Esc",
+        "Next Track" => "Next",
+        "Previous Track" => "Prev",
+        "Volume Up" => "Vol +",
+        "Volume Down" => "Vol -",
+        "Brightness Up" => "Bright +",
+        "Brightness Down" => "Bright -",
+        other => other,
+    };
+    crate::keycodes::CATALOG
+        .iter()
+        .filter(|c| !c.templated && c.name != "Numpad")
+        .find_map(|c| c.keys.iter().find(|k| k.label.eq_ignore_ascii_case(alias)))
+        .map(|k| k.code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,6 +124,32 @@ mod tests {
         let hit = builtin().iter().find(|s| s.desc.contains("settings/preferences")).unwrap();
         assert_eq!(hit.keys, "Cmd + ,");
         assert!(hit.high);
+    }
+
+    #[test]
+    fn library_converts_to_qmk() {
+        assert_eq!(to_qmk_code("Cmd + Shift + 4").as_deref(), Some("LGUI(LSFT(KC_4))"));
+        assert_eq!(to_qmk_code("Ctrl + Cmd + Q").as_deref(), Some("LCTL(LGUI(KC_Q))"));
+        assert_eq!(to_qmk_code("Tab").as_deref(), Some("KC_TAB"));
+        assert_eq!(to_qmk_code("Cmd + ,").as_deref(), Some("LGUI(KC_COMMA)"));
+        assert_eq!(to_qmk_code("Cmd + Up").as_deref(), Some("LGUI(KC_UP)"));
+        assert_eq!(to_qmk_code("Play/Pause").as_deref(), Some("KC_MPLY"));
+        assert_eq!(to_qmk_code("Volume Up").as_deref(), Some("KC_VOLU"));
+        // Not a single key press: no code to generate.
+        assert_eq!(to_qmk_code("GG"), None);
+        assert_eq!(to_qmk_code("J + K combo"), None);
+        assert_eq!(to_qmk_code("Tap Esc / Hold Ctrl"), None);
+        assert_eq!(to_qmk_code("Shift + Arrow"), None);
+    }
+
+    #[test]
+    fn most_of_the_library_converts() {
+        // Not every entry is a single chord (see the failing cases above),
+        // but the large majority should be - this guards against an alias
+        // regression silently breaking the whole conversion path.
+        let all = builtin();
+        let ok = all.iter().filter(|s| to_qmk_code(&s.keys).is_some()).count();
+        assert!(ok * 100 / all.len() >= 75, "only {ok}/{} converted", all.len());
     }
 
     #[test]

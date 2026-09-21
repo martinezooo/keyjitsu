@@ -116,6 +116,17 @@ pub fn action_label(a: &KeyAction) -> String {
 
 /// Short human label for a QMK keycode.
 pub fn keycode_label(code: &str) -> String {
+    for (pfx, sym) in [
+        ("LALT(", "⌥"), ("RALT(", "⌥"),
+        ("LGUI(", "⌘"), ("RGUI(", "⌘"),
+        ("LCTL(", "⌃"), ("RCTL(", "⌃"),
+        ("LSFT(", "⇧"), ("RSFT(", "⇧"),
+    ] {
+        if let Some(inner) = code.strip_prefix(pfx).and_then(|r| r.strip_suffix(')')) {
+            return format!("{sym}{}", keycode_label(inner));
+        }
+    }
+
     let stripped = code.strip_prefix("KC_").unwrap_or(code);
     // Single letters and digits map to themselves.
     if stripped.len() == 1 {
