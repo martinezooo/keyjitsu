@@ -1,4 +1,4 @@
-//! Codec for the ZSA "Oryx" raw-HID protocol (v4).
+//! Codec for the ZSA "Oryx" raw-HID protocol (v5).
 //!
 //! Wire format (both directions): 32-byte reports over QMK raw HID
 //! (usage page 0xFF60, usage 0x61). `bytes[0]` is the command/event id,
@@ -11,7 +11,7 @@ pub const REPORT_SIZE: usize = 32;
 /// Stop/padding byte.
 pub const STOP: u8 = 0xFE;
 /// Protocol version this crate implements.
-pub const PROTOCOL_VERSION: u8 = 4;
+pub const PROTOCOL_VERSION: u8 = 5;
 
 /// Host → keyboard command ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub enum CommandId {
     UpdateBrightness = 0x08,
     SetRgbLedAll = 0x09,
     StatusLedControl = 0x0A,
+    SetAutomouse = 0x0B,
+    GetAutomouse = 0x0C,
     // Encoded as a fully 0xFE-padded packet (see `Command::encode`), so the
     // variant itself is never constructed; kept to document the wire id.
     #[allow(dead_code)]
@@ -66,6 +68,10 @@ pub enum Command {
     StatusLedControl(bool),
     /// `up = true` increases brightness, `false` decreases.
     UpdateBrightness { up: bool },
+    /// Enable/disable automouse for a ZSA pointing device index.
+    SetAutomouse { device: u8, enabled: bool },
+    /// Query trackball/trackpad automouse state.
+    GetAutomouse,
     GetProtocolVersion,
 }
 
@@ -83,6 +89,8 @@ impl Command {
             Command::SetStatusLed { led, on } => packet(C::SetStatusLed, &[led, on as u8]),
             Command::StatusLedControl(on) => packet(C::StatusLedControl, &[on as u8]),
             Command::UpdateBrightness { up } => packet(C::UpdateBrightness, &[up as u8]),
+            Command::SetAutomouse { device, enabled } => packet(C::SetAutomouse, &[device, enabled as u8]),
+            Command::GetAutomouse => packet(C::GetAutomouse, &[]),
             // A fully 0xFE-padded packet doubles as the version probe.
             Command::GetProtocolVersion => [STOP; REPORT_SIZE],
         }
@@ -108,6 +116,8 @@ pub enum Event {
     ToggleSmartLayer(u8),
     TriggerSmartLayer(u8),
     StatusLedControl(bool),
+    /// Current automouse state: (trackball, trackpad).
+    Automouse { trackball: bool, trackpad: bool },
     /// Response to `GetProtocolVersion`.
     ProtocolVersion(u8),
     Error(Vec<u8>),
@@ -128,6 +138,7 @@ mod event_id {
     pub const TOGGLE_SMART_LAYER: u8 = 0x09;
     pub const TRIGGER_SMART_LAYER: u8 = 0x0A;
     pub const STATUS_LED_CONTROL: u8 = 0x0B;
+    pub const AUTOMOUSE: u8 = 0x0C;
     pub const PROTOCOL_VERSION: u8 = 0xFE;
     pub const ERROR: u8 = 0xFF;
 }
@@ -222,7 +233,21 @@ mod tests {
 
     #[test]
     fn decode_protocol_version() {
-        assert_eq!(Event::decode(&report(0xFE, &[4])), Some(Event::ProtocolVersion(4)));
+        assert_eq!(Event::decode(&report(0xFE, &[5])), Some(Event::ProtocolVersion(5)));
+    }
+
+    #[test]
+    fn encode_automouse_commands() {
+        assert_eq!(&Command::SetAutomouse { device: 1, enabled: true }.encode()[..3], &[0x0B, 1, 1]);
+        assert_eq!(Command::GetAutomouse.encode()[0], 0x0C);
+    }
+
+    #[test]
+    fn decode_automouse_event() {
+        assert_eq!(
+            Event::decode(&report(0x0C, &[1, 0])),
+            Some(Event::Automouse { trackball: true, trackpad: false })
+        );
     }
 
     #[test]
