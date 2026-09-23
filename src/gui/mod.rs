@@ -24,6 +24,7 @@ use std::time::Instant;
 use crate::config::{
     self, AutolayerRule, GlowOverride, HAlign, PeekConfig, StagedDance, StagedEdit, VAlign,
 };
+use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
 use crate::legend::{self, labels_for};
@@ -192,6 +193,9 @@ struct App {
 
     connected: Option<(String, String)>, // (model, serial/layout-id)
     layout: Option<Layout>,
+    /// Exact state declared by the currently connected Keyjitsu-built firmware.
+    /// This is device truth, not a user profile/snapshot.
+    firmware_state: Option<FirmwareState>,
     heat: Option<HeatmapStore>,
 
     active_layer: u8,
@@ -563,6 +567,7 @@ impl App {
             cmd_tx,
             connected: None,
             layout: None,
+            firmware_state: None,
             heat: None,
             active_layer: 0,
             view_layer: 0,
@@ -877,19 +882,41 @@ impl App {
         if self.layout.is_some() {
             return;
         }
-        // Prefer the remembered serial; fall back to any layout already cached
-        // (covers users who cached a layout before this feature existed).
-        let found = config::load()
-            .last_layout
-            .and_then(|s| LayoutId::from_serial(&s).ok())
-            .and_then(|id| crate::oryx_api::cached_layout(&id, "voyager").map(|l| (id, l)))
-            .or_else(|| crate::oryx_api::any_cached_layout("voyager"));
-        let Some((id, layout)) = found else { return };
+        // Prefer the remembered DEVICE identity; fall back to any Oryx layout
+        // already cached (covers users who cached a layout before this feature
+        // existed). A Keyjitsu state marker belongs to the device identity, not
+        // to a user profile, so an offline Live view can still show the last
+        // firmware state we actually observed.
+        let remembered = config::load().last_layout;
+        let found = remembered
+            .as_deref()
+            .and_then(|serial| {
+                LayoutId::from_serial(serial)
+                    .ok()
+                    .and_then(|id| crate::oryx_api::cached_layout(&id, "voyager").map(|l| (Some(serial.to_string()), id, l)))
+            })
+            .or_else(|| crate::oryx_api::any_cached_layout("voyager").map(|(id, l)| (None, id, l)));
+        let Some((serial, id, mut layout)) = found else { return };
+
+        self.firmware_state = serial
+            .as_deref()
+            .and_then(firmware_state::state_id_from_serial)
+            .and_then(FirmwareState::load)
+            .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+        if let Some(state) = &self.firmware_state {
+            Self::apply_firmware_state(&mut layout, state);
+        }
         self.layout = Some(layout);
         self.hydrate_glow(&id.hash); // also sets self.layout_hash
         self.hydrate_key_fx(&id.hash);
-        self.hydrate_custom_layers(&id.hash);
+        if let Some(state) = &self.firmware_state {
+            self.custom_layers = state.custom_layers.clone();
+            self.rebuild_synth_layers();
+        } else {
+            self.hydrate_custom_layers(&id.hash);
+        }
         self.hydrate_staged(&id.hash);
+        self.drop_applied_from_staged();
         self.heat = HeatmapStore::load(&id.hash, self.geometry().len()).ok();
         self.push_anim_base();
     }
@@ -971,6 +998,40 @@ impl App {
             .filter(|f| f.layout == hash)
             .map(|f| ((f.layer, f.key as usize), (f.trigger, f.effect, f.color, f.custom.clone())))
             .collect();
+    }
+
+    /// Apply the state reported by a Keyjitsu-built firmware to an Oryx layout.
+    /// The USB serial selects this state, so this reflects the connected device,
+    /// not whichever profile/config happens to be open locally.
+    fn apply_firmware_state(layout: &mut Layout, state: &FirmwareState) {
+        for e in &state.edits {
+            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == e.layer) {
+                if let Some(key) = layer.keys.get_mut(e.key as usize) {
+                    *key = synth_key(&e.code);
+                }
+            }
+        }
+        for d in &state.dances {
+            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == d.layer) {
+                if let Some(key) = layer.keys.get_mut(d.key as usize) {
+                    *key = synth_slots(&d.slots);
+                }
+            }
+        }
+    }
+
+    /// If a reconnect proves that staged edits are already present in the
+    /// running firmware, they are no longer pending. This also heals the case
+    /// where the app was killed after flashing but before it could clear them.
+    fn drop_applied_from_staged(&mut self) {
+        let Some(state) = self.firmware_state.clone() else { return };
+        self.key_edits.retain(|&(layer, key), code| {
+            !state.edits.iter().any(|e| e.layer == layer && e.key as usize == key && e.code.as_str() == code.as_str())
+        });
+        self.key_dances.retain(|&(layer, key), slots| {
+            !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots.as_slice() == slots.as_slice())
+        });
+        self.save_staged();
     }
 
     /// Load this layout's staged (not-yet-built) remaps and tap dances into the
@@ -1764,8 +1825,17 @@ impl App {
                         self.heat = HeatmapStore::load(&id.hash, key_count).ok();
                         self.hydrate_glow(&id.hash);
                         self.hydrate_key_fx(&id.hash);
-                        self.hydrate_custom_layers(&id.hash);
+                        self.firmware_state = firmware_state::state_id_from_serial(&serial)
+                            .and_then(FirmwareState::load)
+                            .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+                        if let Some(state) = &self.firmware_state {
+                            self.custom_layers = state.custom_layers.clone();
+                            self.rebuild_synth_layers();
+                        } else {
+                            self.hydrate_custom_layers(&id.hash);
+                        }
                         self.hydrate_staged(&id.hash);
+                        self.drop_applied_from_staged();
                         // Remember it so the Live view can show this layout from
                         // cache next time, before any keyboard is plugged in.
                         let mut cfg = config::load();
@@ -1773,16 +1843,27 @@ impl App {
                             cfg.last_layout = Some(serial.clone());
                             let _ = config::save(&cfg);
                         }
+                    } else {
+                        self.firmware_state = None;
                     }
                     self.connected = Some((model, serial));
                     self.push_anim_base();
                 }
                 DevEvent::LayoutLoaded(layout) => {
-                    self.layout = Some(*layout);
-                    // Oryx layer count is known now - re-place custom layers.
-                    if let Some(hash) = self.layout_hash.clone() {
-                        self.hydrate_custom_layers(&hash);
+                    let mut layout = *layout;
+                    if let Some(state) = &self.firmware_state {
+                        Self::apply_firmware_state(&mut layout, state);
                     }
+                    self.layout = Some(layout);
+                    // Oryx layer count is known now - re-place custom layers.
+                    if self.firmware_state.is_none() {
+                        if let Some(hash) = self.layout_hash.clone() {
+                            self.hydrate_custom_layers(&hash);
+                        }
+                    } else {
+                        self.rebuild_synth_layers();
+                    }
+                    self.edit_synced = None;
                     self.push_anim_base();
                 }
                 DevEvent::Disconnected => {
@@ -2773,6 +2854,20 @@ fn renumber_layer_ref(code: &str, del: u8) -> String {
 /// Turn a QMK keycode string into an `OryxKey` for display: layer-switch
 /// families render as `CODE → layer` (via the layer field), everything else
 /// as its plain legend. A dual-role `LT(n,tap)` shows the tap with a hold hint.
+fn synth_slots(slots: &[Option<String>; 4]) -> OryxKey {
+    let mut key = OryxKey::default();
+    let action = |code: &Option<String>| -> Option<KeyAction> {
+        let code = code.as_deref()?;
+        let synthesized = synth_key(code);
+        synthesized.tap.or(synthesized.hold)
+    };
+    key.tap = action(&slots[0]);
+    key.hold = action(&slots[1]);
+    key.double_tap = action(&slots[2]);
+    key.tap_hold = action(&slots[3]);
+    key
+}
+
 fn synth_key(code: &str) -> OryxKey {
     let mut k = OryxKey::default();
     for fam in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
@@ -4301,9 +4396,70 @@ impl App {
         let Some((_, serial)) = &self.connected else { return };
         let Ok(id) = LayoutId::from_serial(serial) else { return };
         let n_keys = self.geometry().len();
-        // Translate (layer, visual key) edits into (layer, LAYOUT position).
-        let edits: Vec<KeyEdit> = self
-            .key_edits
+
+        // A rebuild must start from what is ACTUALLY running on the keyboard,
+        // not from the original Oryx layout. Otherwise changing one key after a
+        // previous Keyjitsu flash would silently drop all older Keyjitsu edits.
+        let mut full_edits: HashMap<(u8, usize), String> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state.edits.iter().map(|e| ((e.layer, e.key as usize), e.code.clone())).collect()
+            })
+            .unwrap_or_default();
+        let mut full_dances: HashMap<(u8, usize), [Option<String>; 4]> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state.dances.iter().map(|d| ((d.layer, d.key as usize), d.slots.clone())).collect()
+            })
+            .unwrap_or_default();
+
+        for (&pos, code) in &self.key_edits {
+            full_dances.remove(&pos);
+            full_edits.insert(pos, code.clone());
+        }
+        for (&pos, slots) in &self.key_dances {
+            full_edits.remove(&pos);
+            full_dances.insert(pos, slots.clone());
+        }
+
+        let state = FirmwareState::new(
+            id.hash.clone(),
+            id.revision.clone(),
+            full_edits.iter().map(|(&(layer, key), code)| FirmwareEdit {
+                layer,
+                key: key as u16,
+                code: code.clone(),
+            }).collect(),
+            full_dances.iter().map(|(&(layer, key), slots)| FirmwareDance {
+                layer,
+                key: key as u16,
+                slots: slots.clone(),
+            }).collect(),
+            self.custom_layers.clone(),
+        );
+        let state_id = match state.save() {
+            Ok(id) => id,
+            Err(e) => {
+                self.build_open = true;
+                self.build_busy = false;
+                self.build_phase = "Failed".into();
+                self.build_result = Some(Err(format!("could not persist firmware identity: {e:#}")));
+                return;
+            }
+        };
+        let firmware_serial = format!(
+            "{}/{}{}{}",
+            id.hash,
+            id.revision,
+            firmware_state::SERIAL_MARKER,
+            state_id
+        );
+
+        // Translate the complete effective state (layer, visual key) into QMK
+        // LAYOUT positions for the local source patcher.
+        let edits: Vec<KeyEdit> = full_edits
             .iter()
             .filter(|(&(_, key), _)| key < n_keys)
             .map(|(&(layer, key), code)| KeyEdit {
@@ -4312,8 +4468,7 @@ impl App {
                 keycode: code.clone(),
             })
             .collect();
-        let dances: Vec<crate::keymap::DanceSpec> = self
-            .key_dances
+        let dances: Vec<crate::keymap::DanceSpec> = full_dances
             .iter()
             .filter(|(&(_, key), _)| key < n_keys)
             .map(|(&(layer, key), slots)| crate::keymap::DanceSpec {
@@ -4365,6 +4520,7 @@ impl App {
             edits,
             dances,
             new_layers,
+            Some(firmware_serial),
             self.build_cancel.clone(),
             self.egui_ctx.clone(),
         ));

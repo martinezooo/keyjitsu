@@ -264,7 +264,9 @@ pub fn spawn_flash(
                     fraction: frac(bytes_written, total_bytes),
                 },
                 P::Resetting => FlashState::Working { phase: "Restarting keyboard", fraction: 1.0 },
-                P::Complete => FlashState::Done,
+                // zapp also returns Ok(()) after this callback. Keep the callback
+                // as progress only and emit the terminal Done exactly once below.
+                P::Complete => FlashState::Working { phase: "Complete", fraction: 1.0 },
             };
             let _ = tx.send(state);
             ctx.request_repaint();

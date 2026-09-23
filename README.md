@@ -140,17 +140,21 @@ dances, compiles with `qmk`, and flashes over the Voyager's bootloader. No ZSA
 account needed.
 
 Your edits live in that local firmware, not in Oryx. keyjitsu only reads your
-layout from Oryx (anonymously) for the legends. It never writes back to the
-portal. So remapping here does not carry over to Oryx, and re-flashing from
-Oryx later would overwrite your keyjitsu changes.
+base layout from Oryx (anonymously). A Keyjitsu-built firmware carries a compact
+state id in the firmware serial, so after reconnect or app restart Live
+reconstructs the exact Keyjitsu-authored state reported by the keyboard instead
+of treating the last saved app config as device truth. It never writes back to
+the portal. So remapping here does not carry over to Oryx, and re-flashing from
+Oryx later would overwrite your Keyjitsu changes.
 
 ## How it works
 
 - **Protocol.** ZSA's open Oryx raw-HID protocol v4 (32-byte reports, usage
   page `0xFF60`), as published in [zsa/qmk_modules](https://github.com/zsa/qmk_modules).
-- **Legends.** Your layout is identified by the id in the keyboard's USB serial
-  (`hash/revision`), fetched from the Oryx GraphQL API, then cached under
-  `~/Library/Application Support/keyjitsu/`.
+- **Layout state.** Stock Oryx firmware identifies itself as `hash/revision`.
+  Keyjitsu-built firmware extends that identity with a local state id. The base
+  revision is fetched from the Oryx GraphQL API and the exact Keyjitsu changes
+  are reconstructed from the matching local firmware-state record.
 - **Flashing.** Uses ZSA's own open-source [zapp](https://github.com/zsa/zapp)
   (`zapp-core`, MIT + Commons Clause) for the DFU/Ignition bootloaders and dual
   STM32+GD32 images. You press the reset button, then keyjitsu waits and flashes.
@@ -166,8 +170,9 @@ Oryx later would overwrite your keyjitsu changes.
   that can still deliver key presses: run the test on your own Mac if you
   plan to rely on the guard, and don't treat it as absolute.
 - **Storage.** Everything lives under `~/Library/Application Support/keyjitsu/`:
-  `config.json` (all settings), `profiles/*.json` (named snapshots), heatmap
-  stats, and cached layouts and sources.
+  `config.json` (app settings), `profiles/*.json` (named user snapshots),
+  `firmware-states/*.json` (automatic records keyed by the identity reported
+  by Keyjitsu-built firmware), heatmap stats, and cached layouts and sources.
 
 ## Install
 

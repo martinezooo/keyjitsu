@@ -8,6 +8,7 @@ mod cmd_live;
 mod cmd_overlay;
 mod config;
 mod device;
+mod firmware_state;
 mod gui;
 mod keycodes;
 mod keymap;
@@ -423,7 +424,7 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
         .collect::<Result<Vec<_>>>()?;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let bin = localbuild::build(&revision, &edits, &dances, &new_layers, &cancel, &|line| println!("{line}"))?;
+    let bin = localbuild::build(&revision, &edits, &dances, &new_layers, None, &cancel, &|line| println!("{line}"))?;
     println!("\n✓ built: {}", bin.display());
     Ok(())
 }
