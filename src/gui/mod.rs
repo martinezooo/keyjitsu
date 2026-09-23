@@ -1004,10 +1004,10 @@ impl App {
     fn drop_applied_from_staged(&mut self) {
         let Some(state) = self.firmware_state.clone() else { return };
         self.key_edits.retain(|&(layer, key), code| {
-            !state.edits.iter().any(|e| e.layer == layer && e.key as usize == key && e.code == *code)
+            !state.edits.iter().any(|e| e.layer == layer && e.key as usize == key && e.code.as_str() == code.as_str())
         });
         self.key_dances.retain(|&(layer, key), slots| {
-            !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots == *slots)
+            !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots.as_slice() == slots.as_slice())
         });
         self.save_staged();
     }
