@@ -8,6 +8,7 @@ mod cmd_live;
 mod cmd_overlay;
 mod config;
 mod device;
+mod firmware_state;
 mod gui;
 mod keycodes;
 mod keymap;
