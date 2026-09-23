@@ -882,19 +882,41 @@ impl App {
         if self.layout.is_some() {
             return;
         }
-        // Prefer the remembered serial; fall back to any layout already cached
-        // (covers users who cached a layout before this feature existed).
-        let found = config::load()
-            .last_layout
-            .and_then(|s| LayoutId::from_serial(&s).ok())
-            .and_then(|id| crate::oryx_api::cached_layout(&id, "voyager").map(|l| (id, l)))
-            .or_else(|| crate::oryx_api::any_cached_layout("voyager"));
-        let Some((id, layout)) = found else { return };
+        // Prefer the remembered DEVICE identity; fall back to any Oryx layout
+        // already cached (covers users who cached a layout before this feature
+        // existed). A Keyjitsu state marker belongs to the device identity, not
+        // to a user profile, so an offline Live view can still show the last
+        // firmware state we actually observed.
+        let remembered = config::load().last_layout;
+        let found = remembered
+            .as_deref()
+            .and_then(|serial| {
+                LayoutId::from_serial(serial)
+                    .ok()
+                    .and_then(|id| crate::oryx_api::cached_layout(&id, "voyager").map(|l| (Some(serial.to_string()), id, l)))
+            })
+            .or_else(|| crate::oryx_api::any_cached_layout("voyager").map(|(id, l)| (None, id, l)));
+        let Some((serial, id, mut layout)) = found else { return };
+
+        self.firmware_state = serial
+            .as_deref()
+            .and_then(firmware_state::state_id_from_serial)
+            .and_then(FirmwareState::load)
+            .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+        if let Some(state) = &self.firmware_state {
+            Self::apply_firmware_state(&mut layout, state);
+        }
         self.layout = Some(layout);
         self.hydrate_glow(&id.hash); // also sets self.layout_hash
         self.hydrate_key_fx(&id.hash);
-        self.hydrate_custom_layers(&id.hash);
+        if let Some(state) = &self.firmware_state {
+            self.custom_layers = state.custom_layers.clone();
+            self.rebuild_synth_layers();
+        } else {
+            self.hydrate_custom_layers(&id.hash);
+        }
         self.hydrate_staged(&id.hash);
+        self.drop_applied_from_staged();
         self.heat = HeatmapStore::load(&id.hash, self.geometry().len()).ok();
         self.push_anim_base();
     }
