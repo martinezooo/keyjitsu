@@ -11,6 +11,13 @@ use crate::config::CustomLayer;
 use crate::oryx_api::cache_dir;
 
 pub const STATE_ID_HEX_LEN: usize = 10;
+pub const SERIAL_MARKER: &str = "~kj";
+
+/// Extract the Keyjitsu firmware-state marker from the USB serial, if present.
+pub fn state_id_from_serial(serial: &str) -> Option<&str> {
+    let (_, tail) = serial.rsplit_once(SERIAL_MARKER)?;
+    (tail.len() == STATE_ID_HEX_LEN && tail.bytes().all(|b| b.is_ascii_hexdigit())).then_some(tail)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirmwareEdit {
