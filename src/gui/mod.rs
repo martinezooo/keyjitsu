@@ -1803,8 +1803,17 @@ impl App {
                         self.heat = HeatmapStore::load(&id.hash, key_count).ok();
                         self.hydrate_glow(&id.hash);
                         self.hydrate_key_fx(&id.hash);
-                        self.hydrate_custom_layers(&id.hash);
+                        self.firmware_state = firmware_state::state_id_from_serial(&serial)
+                            .and_then(FirmwareState::load)
+                            .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+                        if let Some(state) = &self.firmware_state {
+                            self.custom_layers = state.custom_layers.clone();
+                            self.rebuild_synth_layers();
+                        } else {
+                            self.hydrate_custom_layers(&id.hash);
+                        }
                         self.hydrate_staged(&id.hash);
+                        self.drop_applied_from_staged();
                         // Remember it so the Live view can show this layout from
                         // cache next time, before any keyboard is plugged in.
                         let mut cfg = config::load();
@@ -1812,16 +1821,27 @@ impl App {
                             cfg.last_layout = Some(serial.clone());
                             let _ = config::save(&cfg);
                         }
+                    } else {
+                        self.firmware_state = None;
                     }
                     self.connected = Some((model, serial));
                     self.push_anim_base();
                 }
                 DevEvent::LayoutLoaded(layout) => {
-                    self.layout = Some(*layout);
-                    // Oryx layer count is known now - re-place custom layers.
-                    if let Some(hash) = self.layout_hash.clone() {
-                        self.hydrate_custom_layers(&hash);
+                    let mut layout = *layout;
+                    if let Some(state) = &self.firmware_state {
+                        Self::apply_firmware_state(&mut layout, state);
                     }
+                    self.layout = Some(layout);
+                    // Oryx layer count is known now - re-place custom layers.
+                    if self.firmware_state.is_none() {
+                        if let Some(hash) = self.layout_hash.clone() {
+                            self.hydrate_custom_layers(&hash);
+                        }
+                    } else {
+                        self.rebuild_synth_layers();
+                    }
+                    self.edit_synced = None;
                     self.push_anim_base();
                 }
                 DevEvent::Disconnected => {
@@ -2812,6 +2832,20 @@ fn renumber_layer_ref(code: &str, del: u8) -> String {
 /// Turn a QMK keycode string into an `OryxKey` for display: layer-switch
 /// families render as `CODE → layer` (via the layer field), everything else
 /// as its plain legend. A dual-role `LT(n,tap)` shows the tap with a hold hint.
+fn synth_slots(slots: &[Option<String>; 4]) -> OryxKey {
+    let mut key = OryxKey::default();
+    let action = |code: &Option<String>| -> Option<KeyAction> {
+        let code = code.as_deref()?;
+        let synthesized = synth_key(code);
+        synthesized.tap.or(synthesized.hold)
+    };
+    key.tap = action(&slots[0]);
+    key.hold = action(&slots[1]);
+    key.double_tap = action(&slots[2]);
+    key.tap_hold = action(&slots[3]);
+    key
+}
+
 fn synth_key(code: &str) -> OryxKey {
     let mut k = OryxKey::default();
     for fam in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
