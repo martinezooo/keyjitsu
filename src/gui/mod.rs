@@ -24,6 +24,7 @@ use std::time::Instant;
 use crate::config::{
     self, AutolayerRule, GlowOverride, HAlign, PeekConfig, StagedDance, StagedEdit, VAlign,
 };
+use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
 use crate::legend::{self, labels_for};
@@ -192,6 +193,9 @@ struct App {
 
     connected: Option<(String, String)>, // (model, serial/layout-id)
     layout: Option<Layout>,
+    /// Exact state declared by the currently connected Keyjitsu-built firmware.
+    /// This is device truth, not a user profile/snapshot.
+    firmware_state: Option<FirmwareState>,
     heat: Option<HeatmapStore>,
 
     active_layer: u8,
@@ -563,6 +567,7 @@ impl App {
             cmd_tx,
             connected: None,
             layout: None,
+            firmware_state: None,
             heat: None,
             active_layer: 0,
             view_layer: 0,
@@ -971,6 +976,40 @@ impl App {
             .filter(|f| f.layout == hash)
             .map(|f| ((f.layer, f.key as usize), (f.trigger, f.effect, f.color, f.custom.clone())))
             .collect();
+    }
+
+    /// Apply the state reported by a Keyjitsu-built firmware to an Oryx layout.
+    /// The USB serial selects this state, so this reflects the connected device,
+    /// not whichever profile/config happens to be open locally.
+    fn apply_firmware_state(layout: &mut Layout, state: &FirmwareState) {
+        for e in &state.edits {
+            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == e.layer) {
+                if let Some(key) = layer.keys.get_mut(e.key as usize) {
+                    *key = synth_key(&e.code);
+                }
+            }
+        }
+        for d in &state.dances {
+            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == d.layer) {
+                if let Some(key) = layer.keys.get_mut(d.key as usize) {
+                    *key = synth_slots(&d.slots);
+                }
+            }
+        }
+    }
+
+    /// If a reconnect proves that staged edits are already present in the
+    /// running firmware, they are no longer pending. This also heals the case
+    /// where the app was killed after flashing but before it could clear them.
+    fn drop_applied_from_staged(&mut self) {
+        let Some(state) = self.firmware_state.clone() else { return };
+        self.key_edits.retain(|&(layer, key), code| {
+            !state.edits.iter().any(|e| e.layer == layer && e.key as usize == key && e.code == *code)
+        });
+        self.key_dances.retain(|&(layer, key), slots| {
+            !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots == *slots)
+        });
+        self.save_staged();
     }
 
     /// Load this layout's staged (not-yet-built) remaps and tap dances into the
