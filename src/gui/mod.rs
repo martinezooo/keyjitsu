@@ -4374,9 +4374,70 @@ impl App {
         let Some((_, serial)) = &self.connected else { return };
         let Ok(id) = LayoutId::from_serial(serial) else { return };
         let n_keys = self.geometry().len();
-        // Translate (layer, visual key) edits into (layer, LAYOUT position).
-        let edits: Vec<KeyEdit> = self
-            .key_edits
+
+        // A rebuild must start from what is ACTUALLY running on the keyboard,
+        // not from the original Oryx layout. Otherwise changing one key after a
+        // previous Keyjitsu flash would silently drop all older Keyjitsu edits.
+        let mut full_edits: HashMap<(u8, usize), String> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state.edits.iter().map(|e| ((e.layer, e.key as usize), e.code.clone())).collect()
+            })
+            .unwrap_or_default();
+        let mut full_dances: HashMap<(u8, usize), [Option<String>; 4]> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state.dances.iter().map(|d| ((d.layer, d.key as usize), d.slots.clone())).collect()
+            })
+            .unwrap_or_default();
+
+        for (&pos, code) in &self.key_edits {
+            full_dances.remove(&pos);
+            full_edits.insert(pos, code.clone());
+        }
+        for (&pos, slots) in &self.key_dances {
+            full_edits.remove(&pos);
+            full_dances.insert(pos, slots.clone());
+        }
+
+        let state = FirmwareState::new(
+            id.hash.clone(),
+            id.revision.clone(),
+            full_edits.iter().map(|(&(layer, key), code)| FirmwareEdit {
+                layer,
+                key: key as u16,
+                code: code.clone(),
+            }).collect(),
+            full_dances.iter().map(|(&(layer, key), slots)| FirmwareDance {
+                layer,
+                key: key as u16,
+                slots: slots.clone(),
+            }).collect(),
+            self.custom_layers.clone(),
+        );
+        let state_id = match state.save() {
+            Ok(id) => id,
+            Err(e) => {
+                self.build_open = true;
+                self.build_busy = false;
+                self.build_phase = "Failed".into();
+                self.build_result = Some(Err(format!("could not persist firmware identity: {e:#}")));
+                return;
+            }
+        };
+        let firmware_serial = format!(
+            "{}/{}{}{}",
+            id.hash,
+            id.revision,
+            firmware_state::SERIAL_MARKER,
+            state_id
+        );
+
+        // Translate the complete effective state (layer, visual key) into QMK
+        // LAYOUT positions for the local source patcher.
+        let edits: Vec<KeyEdit> = full_edits
             .iter()
             .filter(|(&(_, key), _)| key < n_keys)
             .map(|(&(layer, key), code)| KeyEdit {
@@ -4385,8 +4446,7 @@ impl App {
                 keycode: code.clone(),
             })
             .collect();
-        let dances: Vec<crate::keymap::DanceSpec> = self
-            .key_dances
+        let dances: Vec<crate::keymap::DanceSpec> = full_dances
             .iter()
             .filter(|(&(_, key), _)| key < n_keys)
             .map(|(&(layer, key), slots)| crate::keymap::DanceSpec {
@@ -4438,6 +4498,7 @@ impl App {
             edits,
             dances,
             new_layers,
+            Some(firmware_serial),
             self.build_cancel.clone(),
             self.egui_ctx.clone(),
         ));
