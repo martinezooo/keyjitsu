@@ -184,8 +184,11 @@ pub fn build(
         patched = keymap::apply_dances(&patched, dances)?;
     }
     if let Some(serial) = firmware_serial {
-        if serial.contains(['"','\n','\r']) {
-            bail!("invalid firmware serial");
+        // Oryx returns SERIAL_NUMBER inside a fixed 32-byte raw-HID report:
+        // byte 0 is the event id and one byte is the stop marker, leaving at
+        // most 30 visible serial bytes.
+        if serial.len() > 30 || serial.contains(['"','\n','\r']) {
+            bail!("invalid firmware serial (must be <= 30 ASCII-safe bytes)");
         }
         let cfg = files.iter_mut().find(|(n, _)| n == "config.h")
             .ok_or_else(|| anyhow!("generated source has no config.h for firmware identity"))?;
