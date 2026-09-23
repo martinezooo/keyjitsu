@@ -78,10 +78,16 @@ pub struct LayoutId {
 impl LayoutId {
     pub fn from_serial(serial: &str) -> Result<LayoutId> {
         match serial.split_once('/') {
-            Some((h, r)) if !h.is_empty() && !r.is_empty() => Ok(LayoutId {
-                hash: h.to_string(),
-                revision: r.to_string(),
-            }),
+            Some((h, r)) if !h.is_empty() && !r.is_empty() => {
+                let revision = r.split_once(crate::firmware_state::SERIAL_MARKER).map(|(rev, _)| rev).unwrap_or(r);
+                if revision.is_empty() {
+                    bail!("keyboard serial {serial:?} has an empty revision before the Keyjitsu state marker");
+                }
+                Ok(LayoutId {
+                    hash: h.to_string(),
+                    revision: revision.to_string(),
+                })
+            },
             _ => bail!(
                 "keyboard serial {serial:?} does not look like an Oryx layout id \
                  (expected \"hash/revision\"). Pass --url or --hash instead"
@@ -214,6 +220,9 @@ mod tests {
         let id = LayoutId::from_serial("xBrnx/wODgzD").unwrap();
         assert_eq!(id.hash, "xBrnx");
         assert_eq!(id.revision, "wODgzD");
+        let keyed = LayoutId::from_serial("xBrnx/wODgzD~kj0123456789").unwrap();
+        assert_eq!(keyed.hash, "xBrnx");
+        assert_eq!(keyed.revision, "wODgzD");
         assert!(LayoutId::from_serial("garbage").is_err());
     }
 
