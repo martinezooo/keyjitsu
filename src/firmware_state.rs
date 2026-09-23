@@ -106,6 +106,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_state_marker_only_when_complete() {
+        assert_eq!(state_id_from_serial("abc/rev~kj0123456789"), Some("0123456789"));
+        assert_eq!(state_id_from_serial("abc/rev"), None);
+        assert_eq!(state_id_from_serial("abc/rev~kj123"), None);
+        assert_eq!(state_id_from_serial("abc/rev~kj012345678z"), None);
+    }
+
+    #[test]
     fn state_id_is_order_independent_for_key_entries() {
         let a = FirmwareState::new(
             "layout".into(),
