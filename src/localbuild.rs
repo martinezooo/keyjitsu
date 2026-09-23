@@ -100,6 +100,7 @@ pub fn spawn_build(
     edits: Vec<KeyEdit>,
     dances: Vec<crate::keymap::DanceSpec>,
     new_layers: Vec<NewLayer>,
+    firmware_serial: Option<String>,
     cancel: Arc<AtomicBool>,
     ctx: egui::Context,
 ) -> Receiver<BuildMsg> {
@@ -109,7 +110,7 @@ pub fn spawn_build(
             let _ = tx.send(BuildMsg::Log(s));
             ctx.request_repaint();
         };
-        match build(&revision, &edits, &dances, &new_layers, &cancel, &log) {
+        match build(&revision, &edits, &dances, &new_layers, firmware_serial.as_deref(), &cancel, &log) {
             Ok(bin) => {
                 let _ = tx.send(BuildMsg::Built(bin));
             }
@@ -127,6 +128,7 @@ pub fn build(
     edits: &[KeyEdit],
     dances: &[crate::keymap::DanceSpec],
     new_layers: &[NewLayer],
+    firmware_serial: Option<&str>,
     cancel: &Arc<AtomicBool>,
     log: &dyn Fn(String),
 ) -> Result<PathBuf> {
@@ -180,6 +182,19 @@ pub fn build(
     if !dances.is_empty() {
         log(format!("Generating {} tap dance(s)…", dances.len()));
         patched = keymap::apply_dances(&patched, dances)?;
+    }
+    if let Some(serial) = firmware_serial {
+        if serial.contains(['"','\n','\r']) {
+            bail!("invalid firmware serial");
+        }
+        let cfg = files.iter_mut().find(|(n, _)| n == "config.h")
+            .ok_or_else(|| anyhow!("generated source has no config.h for firmware identity"))?;
+        let mut text = String::from_utf8_lossy(&cfg.1).into_owned();
+        text.push_str("\n// Keyjitsu: identify the exact authored state running on the keyboard.\n");
+        text.push_str("#undef SERIAL_NUMBER\n");
+        text.push_str(&format!("#define SERIAL_NUMBER \"{}\"\n", serial));
+        cfg.1 = text.into_bytes();
+        log(format!("Embedded firmware state identity: {serial}"));
     }
     if !macros.is_empty() {
         log(format!("Generating {} multi-key macro(s)…", macros.len()));
