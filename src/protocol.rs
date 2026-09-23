@@ -167,6 +167,10 @@ impl Event {
             E::STATUS_LED_CONTROL => {
                 Event::StatusLedControl(params.first().copied().unwrap_or(0) != 0)
             }
+            E::AUTOMOUSE => Event::Automouse {
+                trackball: params.first().copied().unwrap_or(0) != 0,
+                trackpad: params.get(1).copied().unwrap_or(0) != 0,
+            },
             E::PROTOCOL_VERSION => Event::ProtocolVersion(params.first().copied().unwrap_or(0)),
             E::ERROR => Event::Error(params.to_vec()),
             other => Event::Unknown { id: other, params: params.to_vec() },
