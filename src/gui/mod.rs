@@ -410,6 +410,8 @@ struct App {
     profile_draft: String,
     profile_error: Option<String>,
     persist_error: Option<String>,
+    /// Last failure while opening/revealing a build-related path.
+    file_action_error: Option<String>,
     /// Last autostart toggle error (shown in the App card).
     autostart_error: Option<String>,
     /// In-flight "check for updates" request (manual, from Settings).
@@ -653,6 +655,7 @@ impl App {
             profile_draft: String::new(),
             profile_error: None,
             persist_error: config_load_error,
+            file_action_error: None,
             autostart_error: None,
             update_rx: None,
             update_state: None,
@@ -6733,7 +6736,15 @@ impl App {
             }
             if ui.button("📂 Open firmware folder").clicked() {
                 if let Some(d) = &self.env.firmware_dir {
-                    let _ = crate::platform::reveal_path(&d.join("keyboards/zsa/voyager/keymaps/keyjitsu"));
+                    match crate::platform::reveal_path(
+                        &d.join("keyboards/zsa/voyager/keymaps/keyjitsu"),
+                    ) {
+                        Ok(()) => self.file_action_error = None,
+                        Err(e) => {
+                            self.file_action_error =
+                                Some(format!("could not open firmware folder: {e:#}"));
+                        }
+                    }
                 }
             }
             if ui.button("↻ Recheck").clicked() {
@@ -6747,12 +6758,22 @@ impl App {
             }
         });
 
+        if let Some(e) = &self.file_action_error {
+            ui.colored_label(pal::RED, e);
+        }
+
         if let Some(bin) = self.last_build_bin.clone() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.colored_label(pal::GREEN, "✓ built");
                 if ui.link(RichText::new(bin.display().to_string()).size(11.5).monospace()).clicked() {
-                    let _ = crate::platform::reveal_path(&bin);
+                    match crate::platform::reveal_path(&bin) {
+                        Ok(()) => self.file_action_error = None,
+                        Err(e) => {
+                            self.file_action_error =
+                                Some(format!("could not open build location: {e:#}"));
+                        }
+                    }
                 }
                 let can_flash = self.last_build_state_id.is_some()
                     && !self.build_busy
