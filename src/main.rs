@@ -14,6 +14,7 @@ mod keycodes;
 mod keymap;
 mod localbuild;
 mod perf;
+mod platform;
 mod shortcuts;
 #[cfg(target_os = "macos")]
 mod macos_display;
