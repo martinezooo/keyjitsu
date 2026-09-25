@@ -1387,34 +1387,54 @@ impl App {
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
                     let clone = format!("{active_label} copy");
-                    self.snapshot_profile(&clone);
+                    let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
+                    let result = self.snapshot_profile(&current).and_then(|_| self.snapshot_profile(&clone));
+                    self.profile_error = result.err().map(|e| format!("could not clone profile: {e:#}"));
                     ui.close_menu();
                 }
                 if active.is_some() && ui.button(format!("🗑 Delete '{active_label}'")).clicked() {
-                    if let Some(dir) = profiles_dir() {
-                        let _ = std::fs::remove_file(dir.join(format!("{}.json", safe_profile_name(&active_label))));
+                    let deleted = active_label.clone();
+                    self.switch_profile(None);
+                    if self.active_profile.is_none() {
+                        if let Some(dir) = profiles_dir() {
+                            if let Err(e) = std::fs::remove_file(dir.join(format!("{}.json", safe_profile_name(&deleted)))) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    self.profile_error = Some(format!("could not delete {deleted}: {e}"));
+                                }
+                            }
+                        }
                     }
-                    self.active_profile = None;
-                    let mut cfg = config::load();
-                    cfg.active_profile = None;
-                    let _ = config::save(&cfg);
                     ui.close_menu();
                 }
             });
         });
+        if let Some(e) = &self.profile_error {
+            ui.colored_label(pal::RED, RichText::new(e).size(10.5));
+        }
         if self.prof_new_open {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.profile_draft).hint_text("name…").desired_width(96.0));
                 let ok = !self.profile_draft.trim().is_empty();
                 if ui.add_enabled(ok, egui::Button::new("✓")).clicked() {
                     let name = self.profile_draft.trim().to_string();
-                    self.snapshot_profile(&name);
-                    self.active_profile = Some(name.clone());
-                    let mut cfg = config::load();
-                    cfg.active_profile = Some(name);
-                    let _ = config::save(&cfg);
-                    self.prof_new_open = false;
-                    self.profile_draft.clear();
+                    let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
+                    let result = self
+                        .snapshot_profile(&current)
+                        .and_then(|_| self.snapshot_profile(&name))
+                        .and_then(|_| {
+                            let mut cfg = config::load();
+                            cfg.active_profile = Some(name.clone());
+                            config::save(&cfg)
+                        });
+                    match result {
+                        Ok(()) => {
+                            self.active_profile = Some(name);
+                            self.profile_error = None;
+                            self.prof_new_open = false;
+                            self.profile_draft.clear();
+                        }
+                        Err(e) => self.profile_error = Some(format!("could not create profile: {e:#}")),
+                    }
                 }
                 if ui.button("✕").clicked() {
                     self.prof_new_open = false;
