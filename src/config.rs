@@ -398,9 +398,10 @@ pub fn load_checked() -> Result<Config> {
     let bytes = match std::fs::read(&p) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut cfg = Config::default();
-            cfg.schema_version = CURRENT_SCHEMA_VERSION;
-            return Ok(cfg);
+            return Ok(Config {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                ..Config::default()
+            });
         }
         Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
     };
@@ -473,9 +474,11 @@ mod tests {
 
     #[test]
     fn profile_does_not_overwrite_device_state() {
-        let mut cfg = Config::default();
-        cfg.last_layout = Some("layout/rev~kj0123456789".into());
-        cfg.qmk_firmware_dir = Some("/qmk".into());
+        let mut cfg = Config {
+            last_layout: Some("layout/rev~kj0123456789".into()),
+            qmk_firmware_dir: Some("/qmk".into()),
+            ..Config::default()
+        };
         cfg.staged_edits.push(StagedEdit {
             layout: "layout".into(),
             layer: 0,
@@ -508,9 +511,11 @@ mod tests {
 
     #[test]
     fn profile_default_new_default_roundtrip_preserves_device_truth() {
-        let mut cfg = Config::default();
-        cfg.last_layout = Some("layout/rev~kj0123456789".into());
-        cfg.qmk_firmware_dir = Some("/qmk".into());
+        let mut cfg = Config {
+            last_layout: Some("layout/rev~kj0123456789".into()),
+            qmk_firmware_dir: Some("/qmk".into()),
+            ..Config::default()
+        };
         cfg.staged_edits.push(StagedEdit {
             layout: "layout".into(),
             layer: 0,
@@ -616,8 +621,10 @@ mod tests {
 
     #[test]
     fn rejects_newer_config_schema() {
-        let mut cfg = Config::default();
-        cfg.schema_version = CURRENT_SCHEMA_VERSION + 1;
+        let cfg = Config {
+            schema_version: CURRENT_SCHEMA_VERSION + 1,
+            ..Config::default()
+        };
         assert!(migrate(cfg).is_err());
     }
 }

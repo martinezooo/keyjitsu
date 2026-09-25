@@ -209,7 +209,6 @@ fn device_loop(
         {
             return;
         }
-        was_connected = true;
         for event in initial_events {
             if etx.send(DevEvent::Hid(event)).is_err() {
                 kb.disconnect();
@@ -529,15 +528,10 @@ pub fn spawn_autolayer(
             }
         }
         if let Some(prev) = active_rule_layer {
-            if cmd_tx
-                .send(KbCmd::SetLayer {
-                    on: false,
-                    layer: prev,
-                })
-                .is_err()
-            {
-                return;
-            }
+            let _ = cmd_tx.send(KbCmd::SetLayer {
+                on: false,
+                layer: prev,
+            });
         }
     });
     AutolayerHandle {

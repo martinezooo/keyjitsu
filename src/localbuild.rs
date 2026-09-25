@@ -469,7 +469,7 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
     let mut out = Vec::new();
     let mut extracted_bytes = 0u64;
     for i in 0..zip.len() {
-        let mut f = zip.by_index(i).context("reading source zip")?;
+        let f = zip.by_index(i).context("reading source zip")?;
         if !f.is_file() {
             continue;
         }

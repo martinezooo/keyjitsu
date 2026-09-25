@@ -803,7 +803,8 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
             "case SINGLE_TAP: register_code16(KC_A); unregister_code16(KC_A); register_code16(KC_B); unregister_code16(KC_B); break;"
         ));
         // No reset-side statement for a multi-step action: each step completed.
-        let rst = &out[out.find("dance_kj_0_reset").unwrap()..];
+        let reset_def = "void dance_kj_0_reset(tap_dance_state_t *state, void *user_data) {";
+        let rst = &out[out.find(reset_def).unwrap()..];
         let rst_body = &rst[..rst.find('}').unwrap_or(rst.len())];
         assert!(!rst_body.contains("unregister_code16(KC_A)"));
     }

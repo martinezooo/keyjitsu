@@ -86,11 +86,13 @@ pub enum Command {
         up: bool,
     },
     /// Enable/disable automouse for a ZSA pointing device index.
+    #[allow(dead_code)]
     SetAutomouse {
         device: u8,
         enabled: bool,
     },
     /// Query trackball/trackpad automouse state.
+    #[allow(dead_code)]
     GetAutomouse,
     GetProtocolVersion,
 }

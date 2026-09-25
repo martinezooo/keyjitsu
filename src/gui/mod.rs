@@ -11,6 +11,9 @@ mod worker;
 pub use rgb_anim::{CustomFx, Effect, FxStep, FxTrigger, PressEffect};
 
 use std::collections::HashMap;
+
+type FirmwareEdits = HashMap<(u8, usize), String>;
+type FirmwareDances = HashMap<(u8, usize), [Option<String>; 4]>;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -400,7 +403,6 @@ struct App {
     show_cpu_header: bool,
     /// Check GitHub for a newer release once at startup (Settings toggle).
     auto_update_check: bool,
-    app_started: Instant,
 
     // FX Studio
     fx_sel: FxSel,
@@ -852,7 +854,6 @@ impl App {
             perf_last: None,
             show_cpu_header: cfg.show_cpu_header,
             auto_update_check: !cfg.skip_update_check_on_start,
-            app_started: Instant::now(),
             fx_color: [140, 108, 246],
             fx_speed: 1.0,
             fx_bright: 0.9,
@@ -989,12 +990,7 @@ impl App {
         Some(out)
     }
 
-    fn effective_firmware_maps(
-        &self,
-    ) -> (
-        HashMap<(u8, usize), String>,
-        HashMap<(u8, usize), [Option<String>; 4]>,
-    ) {
+    fn effective_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
         merge_firmware_maps(
             self.firmware_state.as_ref(),
             &self.key_edits,
@@ -1282,7 +1278,7 @@ impl App {
                 })
             })
             .or_else(|| crate::oryx_api::any_cached_layout("voyager").map(|(id, l)| (None, id, l)));
-        let Some((serial, id, mut layout)) = found else {
+        let Some((serial, id, layout)) = found else {
             return;
         };
 
@@ -2384,10 +2380,10 @@ impl App {
         }
 
         // Take a sample once per second.
-        if !self
+        if self
             .perf_run
             .as_ref()
-            .is_some_and(|run| run.next_sample <= now)
+            .is_none_or(|run| run.next_sample > now)
         {
             return;
         }
@@ -3809,12 +3805,9 @@ fn staged_dance_is_pending(
 
 fn merge_firmware_maps(
     state: Option<&FirmwareState>,
-    staged_edits: &HashMap<(u8, usize), String>,
-    staged_dances: &HashMap<(u8, usize), [Option<String>; 4]>,
-) -> (
-    HashMap<(u8, usize), String>,
-    HashMap<(u8, usize), [Option<String>; 4]>,
-) {
+    staged_edits: &FirmwareEdits,
+    staged_dances: &FirmwareDances,
+) -> (FirmwareEdits, FirmwareDances) {
     let mut edits: HashMap<(u8, usize), String> = state
         .map(|state| {
             state
@@ -4798,12 +4791,12 @@ impl App {
         {
             self.start_local_build(false);
         }
-        if !self.key_edits.is_empty() || !self.key_dances.is_empty() {
-            if ui.button("Clear key changes").clicked() {
-                self.key_edits.clear();
-                self.key_dances.clear();
-                self.save_staged();
-            }
+        if (!self.key_edits.is_empty() || !self.key_dances.is_empty())
+            && ui.button("Clear key changes").clicked()
+        {
+            self.key_edits.clear();
+            self.key_dances.clear();
+            self.save_staged();
         }
 
         if !ready {
@@ -8190,8 +8183,8 @@ impl Drop for App {
 #[cfg(test)]
 mod firmware_confirmation_tests {
     use super::{
-        confirm_firmware_state, flash_job_terminal, is_post_flash_generation, FirmwareConfirmation,
-        FlashState,
+        confirm_firmware_state, disconnect_event_is_current, flash_job_terminal,
+        is_post_flash_generation, layout_event_is_current, FirmwareConfirmation, FlashState,
     };
 
     #[test]
