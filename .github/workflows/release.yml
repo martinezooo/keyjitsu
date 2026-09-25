@@ -17,7 +17,7 @@ env:
 
 jobs:
   macos:
-    name: macOS Apple Silicon
+    name: macOS
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,15 +31,16 @@ jobs:
         run: scripts/bundle.sh
       - name: Package
         run: |
-          base="keyjitsu-${RELEASE_TAG}-macos-arm64"
+          arch="$(uname -m)"
+          base="keyjitsu-${RELEASE_TAG}-macos-${arch}"
           ditto -c -k --keepParent target/release/Keyjitsu.app "${base}.zip"
           cp target/release/keyjitsu "${base}-cli"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-macos-arm64
+          name: release-macos
           path: |
-            keyjitsu-*-macos-arm64.zip
-            keyjitsu-*-macos-arm64-cli
+            keyjitsu-*-macos-*.zip
+            keyjitsu-*-macos-*-cli
 
   linux:
     name: Linux x86_64
