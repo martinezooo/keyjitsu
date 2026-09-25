@@ -3,7 +3,9 @@
 //! saved profiles, and local toolchain paths. One JSON file, loaded once at
 //! startup and rewritten atomically on change.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::io::Write;
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::oryx_api::cache_dir;
@@ -303,42 +305,66 @@ fn path() -> Result<std::path::PathBuf> {
     Ok(cache_dir()?.join("config.json"))
 }
 
-pub fn load() -> Config {
-    let Ok(p) = path() else { return Config::default() };
-    let Ok(bytes) = std::fs::read(&p) else {
-        // Missing file = first run; that's a clean default.
-        return Config::default();
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("persisted file has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary file in {}", parent.display()))?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("writing temporary file for {}", path.display()))?;
+    tmp.as_file_mut()
+        .sync_all()
+        .with_context(|| format!("syncing temporary file for {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
+pub fn load_checked() -> Result<Config> {
+    let p = path()?;
+    let bytes = match std::fs::read(&p) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
     };
     match serde_json::from_slice(&bytes) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            let backup = p.with_extension("json.corrupt");
+            let _ = write_atomic(&backup, &bytes);
+            Err(e).with_context(|| {
+                format!(
+                    "config is unreadable; preserved the original bytes in {}",
+                    backup.display()
+                )
+            })
+        }
+    }
+}
+
+pub fn load() -> Config {
+    match load_checked() {
         Ok(cfg) => cfg,
         Err(e) => {
-            // The file EXISTS but won't parse (corruption, a truncated save, a
-            // downgrade past a new enum variant…). Do NOT silently return
-            // default and let the next save clobber it - preserve the bytes so
-            // the user (or we) can recover, and warn.
-            let backup = p.with_extension("json.corrupt");
-            let _ = std::fs::write(&backup, &bytes);
-            eprintln!(
-                "keyjitsu: config.json is unreadable ({e}). Backed it up to {} and started from defaults",
-                backup.display()
-            );
+            eprintln!("keyjitsu: {e:#}");
             Config::default()
         }
     }
 }
 
+pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
+    let mut cfg = load_checked()?;
+    f(&mut cfg);
+    save(&cfg)
+}
+
 pub fn save(config: &Config) -> Result<()> {
     let p = path()?;
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     let bytes = serde_json::to_vec_pretty(config)?;
-    // Atomic write: serialize to a temp file, then rename over the target, so a
-    // crash / full disk / power loss can never leave a truncated config.json.
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    write_atomic(&p, &bytes)
 }
 
 #[cfg(test)]
