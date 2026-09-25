@@ -20,6 +20,9 @@ use crate::oryx_api::cache_dir;
 /// Refuse to cache an Oryx source download bigger than this (it's a small
 /// keymap zip; anything larger is a truncated/garbage response).
 const MAX_SOURCE_ZIP_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SOURCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SOURCE_EXTRACTED_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SOURCE_FILES: usize = 256;
 const SOURCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often to poll the `qmk compile` child while streaming its output.
 const COMPILE_POLL: Duration = Duration::from_millis(120);
@@ -373,6 +376,7 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         }
     };
     let mut out = Vec::new();
+    let mut extracted_bytes = 0u64;
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).context("reading source zip")?;
         if !f.is_file() {
@@ -386,9 +390,33 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         if !is_source {
             continue;
         }
+        if out.len() >= MAX_SOURCE_FILES {
+            bail!("generated source contains more than {MAX_SOURCE_FILES} source files");
+        }
+        if f.size() > MAX_SOURCE_FILE_BYTES {
+            bail!(
+                "generated source file {name:?} is larger than {MAX_SOURCE_FILE_BYTES} bytes"
+            );
+        }
+        extracted_bytes = extracted_bytes
+            .checked_add(f.size())
+            .context("generated source size overflow")?;
+        if extracted_bytes > MAX_SOURCE_EXTRACTED_BYTES {
+            bail!(
+                "generated source expands beyond {MAX_SOURCE_EXTRACTED_BYTES} bytes"
+            );
+        }
+
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
         let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
+        f.take(MAX_SOURCE_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading generated source file {name:?}"))?;
+        if bytes.len() as u64 > MAX_SOURCE_FILE_BYTES {
+            bail!(
+                "generated source file {name:?} exceeded {MAX_SOURCE_FILE_BYTES} bytes while reading"
+            );
+        }
         out.push((base, bytes));
     }
     if out.is_empty() {
