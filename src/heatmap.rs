@@ -29,8 +29,21 @@ impl HeatmapStore {
     pub fn load(layout_hash: &str, key_count: usize) -> Result<HeatmapStore> {
         let path = Self::path_for(layout_hash)?;
         let mut store: HeatmapStore = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => HeatmapStore::default(),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(store) => store,
+                Err(e) => {
+                    let backup = path.with_extension("json.corrupt");
+                    let _ = config::write_atomic(&backup, &bytes);
+                    return Err(e).with_context(|| {
+                        format!(
+                            "heatmap is unreadable; preserved the original bytes in {}",
+                            backup.display()
+                        )
+                    });
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HeatmapStore::default(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
         for counts in store.layers.values_mut() {
             counts.resize(key_count, 0);
