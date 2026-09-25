@@ -441,6 +441,59 @@ mod tests {
     }
 
     #[test]
+    fn profile_default_new_default_roundtrip_preserves_device_truth() {
+        let mut cfg = Config::default();
+        cfg.last_layout = Some("layout/rev~kj0123456789".into());
+        cfg.qmk_firmware_dir = Some("/qmk".into());
+        cfg.staged_edits.push(StagedEdit {
+            layout: "layout".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
+        cfg.peek.enabled = true;
+        cfg.autolayer_enabled = false;
+
+        let default_profile = Profile::from_config(&cfg);
+        let mut new_profile = default_profile.clone();
+        new_profile.peek.enabled = false;
+        new_profile.autolayer_enabled = true;
+
+        new_profile.apply_to(&mut cfg);
+        cfg.active_profile = Some("work".into());
+        assert_eq!(cfg.active_profile.as_deref(), Some("work"));
+        assert!(!cfg.peek.enabled);
+        assert!(cfg.autolayer_enabled);
+        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(cfg.staged_edits.len(), 1);
+
+        default_profile.apply_to(&mut cfg);
+        cfg.active_profile = None;
+        assert!(cfg.active_profile.is_none());
+        assert!(cfg.peek.enabled);
+        assert!(!cfg.autolayer_enabled);
+        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(cfg.staged_edits.len(), 1);
+    }
+
+    #[test]
+    fn cloned_profile_changes_do_not_mutate_source() {
+        let mut cfg = Config::default();
+        cfg.peek.enabled = true;
+        let source = Profile::from_config(&cfg);
+        let mut clone = source.clone();
+        clone.peek.enabled = false;
+        clone.overlay_chord.push([1, 2]);
+
+        assert!(source.peek.enabled);
+        assert!(source.overlay_chord.is_empty());
+        assert!(!clone.peek.enabled);
+        assert_eq!(clone.overlay_chord, vec![[1, 2]]);
+    }
+
+    #[test]
     fn staged_roundtrip_and_old_config_compat() {
         // New fields round-trip (incl. the [Option<String>;4] dance slots).
         let mut c = Config::default();
