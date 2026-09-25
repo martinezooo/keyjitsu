@@ -6316,7 +6316,7 @@ impl App {
             if self.guard.is_some() {
                 self.ui_guard_test(ui);
             }
-            egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+            egui::CollapsingHeader::new("Manual recovery").show(ui, |ui| {
                 ui.weak("Keys are remapped to no-ops with hidutil (no special permission). They are restored on toggle-off, disconnect, quit, and by any reboot. If keyjitsu is force-killed first, restore by hand:");
                 let mut cmd = crate::macos_kb::restore_command();
                 ui.add(
@@ -6816,7 +6816,7 @@ impl App {
                     ui.code("pip3 install qmk   # or: brew install qmk/qmk/qmk");
                 }
                 if self.env.firmware_dir.is_none() {
-                    ui.label("2. Fetch ZSA's firmware tree (one-time, ~1 GB):");
+                    ui.label("2. Fetch ZSA's firmware tree (one-time):");
                     ui.code("qmk setup zsa/qmk_firmware -b firmware25");
                 }
                 ui.horizontal(|ui| {
