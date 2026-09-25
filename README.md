@@ -178,7 +178,7 @@ Oryx later would overwrite your Keyjitsu changes.
 ### Release downloads
 
 The release workflow builds:
-- macOS Apple Silicon: `Keyjitsu.app` plus a CLI binary,
+- macOS: `Keyjitsu.app` plus a CLI binary (artifact name records the runner architecture),
 - Linux x86_64: a tarball containing the `keyjitsu` binary,
 - Windows x86_64: a zip containing `keyjitsu.exe`.
 
