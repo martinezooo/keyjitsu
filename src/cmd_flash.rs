@@ -107,7 +107,7 @@ pub fn run(
     println!("Put the keyboard into bootloader mode now - press its RESET button");
     println!("(Voyager: the tiny button on the left half, see https://www.zsa.io/flash).");
     println!("Waiting up to {timeout_secs}s for the bootloader…");
-    std::io::stdout().flush().ok();
+    std::io::stdout().flush().context("flushing bootloader prompt")?;
 
     let dev = wait_for_bootloader(Duration::from_secs(timeout_secs), None, |name| {
         println!("Bootloader detected: {name}");
@@ -251,6 +251,12 @@ pub fn firmware_summary(fw: &Firmware) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_requires_a_captured_connected_identity() {
+        let err = acquire_firmware(None, true, None).unwrap_err().to_string();
+        assert!(err.contains("connected keyboard"));
+    }
 
     #[test]
     fn download_revision_ids_cannot_change_the_oryx_url_path() {
