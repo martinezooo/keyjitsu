@@ -301,7 +301,9 @@ fn run(
         if !busy {
             let idle = *idle_since.get_or_insert_with(Instant::now);
             if took_over && idle.elapsed() > IDLE_GRACE {
-                let _ = cmd_tx.send(KbCmd::RgbRelease);
+                if cmd_tx.send(KbCmd::RgbRelease).is_err() {
+                    return;
+                }
                 took_over = false;
                 if let Ok(mut a) = shared.lock() {
                     a.frame.clear(); // UI falls back to the static layout view
@@ -319,7 +321,9 @@ fn run(
 
         // Send the whole frame as ONE coalescing command; the device loop keeps
         // only the newest, primes the takeover, and sends the per-key diff.
-        let _ = cmd_tx.send(KbCmd::SetFrame(Arc::new(frame.clone())));
+        if cmd_tx.send(KbCmd::SetFrame(Arc::new(frame.clone()))).is_err() {
+            return;
+        }
         // Mirror the frame for the on-screen Live view and repaint it.
         if let Ok(mut a) = shared.lock() {
             a.frame = frame;
