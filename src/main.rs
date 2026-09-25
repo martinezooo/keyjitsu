@@ -369,6 +369,63 @@ fn with_paired(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<()>) ->
     })
 }
 
+fn parse_dance_arg(s: &str) -> Result<keymap::DanceSpec> {
+    use anyhow::Context as _;
+
+    let (lhs, spec) = s
+        .split_once('=')
+        .context("expected LAYER,POSITION=TAP,HOLD,DOUBLE,TAPHOLD")?;
+    let (layer, position) = lhs
+        .split_once(',')
+        .context("expected LAYER,POSITION=…")?;
+    let slots = keymap::split_top_level(spec);
+    if slots.len() > 4 {
+        anyhow::bail!("tap dance has more than four action slots");
+    }
+    let slot = |i: usize| {
+        slots
+            .get(i)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && *value != "-")
+            .map(str::to_string)
+    };
+    Ok(keymap::DanceSpec {
+        layer: layer.trim().parse().context("bad layer")?,
+        position: position.trim().parse().context("bad position")?,
+        tap: slot(0),
+        hold: slot(1),
+        double_tap: slot(2),
+        tap_hold: slot(3),
+    })
+}
+
+fn parse_new_layer_arg(s: &str) -> Result<localbuild::NewLayer> {
+    use anyhow::Context as _;
+
+    let (idx, rest) = s.split_once(':').unwrap_or((s, ""));
+    let keys = keymap::split_top_level(rest)
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let (pos, code) = part
+                .split_once('=')
+                .context("expected POS=CODE")?;
+            let code = code.trim();
+            if code.is_empty() {
+                anyhow::bail!("empty keycode");
+            }
+            Ok((
+                pos.trim().parse::<usize>().context("bad position")?,
+                code.to_string(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(localbuild::NewLayer {
+        position: idx.trim().parse().context("bad layer index")?,
+        keys,
+    })
+}
+
 fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], dance: &[String], new_layer: &[String]) -> Result<()> {
     use anyhow::Context as _;
 
@@ -396,41 +453,12 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
 
     let dances = dance
         .iter()
-        .map(|s| {
-            let (lhs, spec) = s.split_once('=').context("expected LAYER,POSITION=TAP,HOLD,DOUBLE,TAPHOLD")?;
-            let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=…")?;
-            let slot = |i: usize| -> Option<String> {
-                spec.split(',')
-                    .nth(i)
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty() && *v != "-")
-                    .map(str::to_string)
-            };
-            Ok::<_, anyhow::Error>(keymap::DanceSpec {
-                layer: layer.trim().parse().context("bad layer")?,
-                position: position.trim().parse().context("bad position")?,
-                tap: slot(0),
-                hold: slot(1),
-                double_tap: slot(2),
-                tap_hold: slot(3),
-            })
-        })
+        .map(|s| parse_dance_arg(s))
         .collect::<Result<Vec<_>>>()?;
 
     let new_layers = new_layer
         .iter()
-        .map(|s| {
-            let (idx, rest) = s.split_once(':').unwrap_or((s.as_str(), ""));
-            let keys = rest
-                .split(',')
-                .filter(|p| !p.trim().is_empty())
-                .map(|p| {
-                    let (pos, code) = p.split_once('=').context("expected POS=CODE")?;
-                    Ok::<_, anyhow::Error>((pos.trim().parse::<usize>().context("bad position")?, code.trim().to_string()))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok::<_, anyhow::Error>(localbuild::NewLayer { position: idx.trim().parse().context("bad layer index")?, keys })
-        })
+        .map(|s| parse_new_layer_arg(s))
         .collect::<Result<Vec<_>>>()?;
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -661,4 +689,27 @@ fn event_json(ev: &Event) -> String {
         other => json!({"event": "other", "debug": format!("{other:?}")}),
     };
     v.to_string()
+}
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::{parse_dance_arg, parse_new_layer_arg};
+
+    #[test]
+    fn dance_parser_keeps_commas_inside_qmk_keycodes() {
+        let dance = parse_dance_arg("1,2=KC_A,MO(3),LCTL(KC_C),KC_ENT").unwrap();
+        assert_eq!(dance.layer, 1);
+        assert_eq!(dance.position, 2);
+        assert_eq!(dance.hold.as_deref(), Some("MO(3)"));
+        assert_eq!(dance.double_tap.as_deref(), Some("LCTL(KC_C)"));
+        assert!(parse_dance_arg("1,2=A,B,C,D,E").is_err());
+    }
+
+    #[test]
+    fn new_layer_parser_keeps_nested_keycode_commas() {
+        let layer = parse_new_layer_arg("3:0=KC_A,1=LT(2,KC_SPC),2=LCTL(KC_C)").unwrap();
+        assert_eq!(layer.position, 3);
+        assert_eq!(layer.keys.len(), 3);
+        assert_eq!(layer.keys[1], (1, "LT(2,KC_SPC)".to_string()));
+    }
 }
