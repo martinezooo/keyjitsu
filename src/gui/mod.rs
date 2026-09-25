@@ -3299,7 +3299,7 @@ fn staged_edit_is_pending(
     !state
         .edits
         .iter()
-        .any(|edit| edit.layer == layer && edit.key as usize == key && edit.code == code)
+        .any(|edit| edit.layer == layer && edit.key as usize == key && edit.code.as_str() == code)
 }
 
 fn staged_dance_is_pending(
@@ -3311,7 +3311,11 @@ fn staged_dance_is_pending(
     !state
         .dances
         .iter()
-        .any(|dance| dance.layer == layer && dance.key as usize == key && dance.slots == *slots)
+        .any(|dance| {
+            dance.layer == layer
+                && dance.key as usize == key
+                && dance.slots.as_slice() == slots.as_slice()
+        })
 }
 
 fn merge_firmware_maps(
