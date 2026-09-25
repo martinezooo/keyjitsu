@@ -20,6 +20,7 @@ use crate::oryx_api::cache_dir;
 /// Refuse to cache an Oryx source download bigger than this (it's a small
 /// keymap zip; anything larger is a truncated/garbage response).
 const MAX_SOURCE_ZIP_BYTES: u64 = 8 * 1024 * 1024;
+const SOURCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often to poll the `qmk compile` child while streaming its output.
 const COMPILE_POLL: Duration = Duration::from_millis(120);
 
@@ -337,6 +338,7 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let url = format!("https://oryx.zsa.io/source/{revision}");
         let mut b = Vec::new();
         ureq::get(&url)
+            .timeout(SOURCE_REQUEST_TIMEOUT)
             .call()
             .with_context(|| format!("downloading generated source from {url}"))?
             .into_reader()
@@ -349,10 +351,9 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         // Validate BEFORE caching.
         zip::ZipArchive::new(std::io::Cursor::new(&b[..]))
             .with_context(|| format!("downloaded source from {url} is not a valid zip (not caching)"))?;
-        if let Some(parent) = cache.parent() {
-            std::fs::create_dir_all(parent).ok();
+        if let Err(e) = crate::config::write_atomic(&cache, &b) {
+            eprintln!("keyjitsu: could not cache generated source {revision}: {e:#}");
         }
-        std::fs::write(&cache, &b).ok();
         b
     };
 
@@ -361,7 +362,13 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         Err(e) => {
             // A cached file that won't open is stale/corrupt - drop it so the
             // next build re-downloads instead of failing forever.
-            let _ = std::fs::remove_file(&cache);
+            if let Err(remove) = std::fs::remove_file(&cache) {
+                if remove.kind() != std::io::ErrorKind::NotFound {
+                    return Err(anyhow!(
+                        "cached source is invalid ({e}) and could not be removed: {remove}"
+                    ));
+                }
+            }
             return Err(anyhow!("cached source is not a valid zip ({e}). Removed it, retry the build"));
         }
     };
