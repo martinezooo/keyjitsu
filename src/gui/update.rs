@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
@@ -9,6 +10,8 @@ pub(super) enum UpdateCheck {
 }
 
 const RELEASES_API: &str = "https://api.github.com/repos/martinezooo/keyjitsu/releases/latest";
+const RELEASES_WEB: &str = "https://github.com/martinezooo/keyjitsu/releases";
+const MAX_RELEASE_RESPONSE_BYTES: u64 = 1024 * 1024;
 
 /// Read the newest GitHub release on a background thread. This never downloads
 /// or installs release artifacts.
@@ -16,14 +19,23 @@ pub(super) fn spawn_update_check() -> Receiver<UpdateCheck> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let result = (|| -> Result<UpdateCheck, String> {
-            let resp: serde_json::Value = ureq::get(RELEASES_API)
+            let response = ureq::get(RELEASES_API)
                 .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
                 .set("Accept", "application/vnd.github+json")
                 .timeout(Duration::from_secs(8))
                 .call()
-                .map_err(|e| e.to_string())?
-                .into_json()
                 .map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            response
+                .into_reader()
+                .take(MAX_RELEASE_RESPONSE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() as u64 > MAX_RELEASE_RESPONSE_BYTES {
+                return Err("GitHub Releases response is unexpectedly large".into());
+            }
+            let resp: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
             let tag = resp
                 .get("tag_name")
                 .and_then(|t| t.as_str())
@@ -32,7 +44,8 @@ pub(super) fn spawn_update_check() -> Receiver<UpdateCheck> {
             let url = resp
                 .get("html_url")
                 .and_then(|u| u.as_str())
-                .unwrap_or("https://github.com/martinezooo/keyjitsu/releases")
+                .filter(|u| u.starts_with(RELEASES_WEB))
+                .unwrap_or(RELEASES_WEB)
                 .to_string();
             Ok(if version_newer(&tag, env!("CARGO_PKG_VERSION")) {
                 UpdateCheck::Available { tag, url }
