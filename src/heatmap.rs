@@ -38,13 +38,8 @@ impl HeatmapStore {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
                 Ok(store) => store,
                 Err(e) => {
-                    let backup = path.with_extension("json.corrupt");
-                    config::write_atomic(&backup, &bytes).with_context(|| {
-                        format!(
-                            "heatmap is unreadable ({e}); failed to preserve the original bytes in {}",
-                            backup.display()
-                        )
-                    })?;
+                    let backup = config::preserve_corrupt_bytes(&path, &bytes)
+                        .with_context(|| format!("heatmap is unreadable ({e}); failed to preserve the original bytes"))?;
                     return Err(e).with_context(|| {
                         format!(
                             "heatmap is unreadable; preserved the original bytes in {}",
