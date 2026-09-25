@@ -1519,14 +1519,17 @@ impl App {
     }
 
     fn create_profile(&self, name: &str) -> Result<()> {
-        if list_profiles().iter().any(|saved| saved.eq_ignore_ascii_case(name.trim())) {
+        if list_profiles()?
+            .iter()
+            .any(|saved| saved.eq_ignore_ascii_case(name.trim()))
+        {
             return Err(anyhow!("profile {name:?} already exists"));
         }
         self.snapshot_profile(name)
     }
 
-    fn next_profile_copy_name(&self, source: &str) -> String {
-        let saved = list_profiles();
+    fn next_profile_copy_name(&self, source: &str) -> Result<String> {
+        let saved = list_profiles()?;
         for n in 1..=999 {
             let candidate = if n == 1 {
                 format!("{source} copy")
@@ -1536,10 +1539,10 @@ impl App {
             if profile_file_name(&candidate).is_ok()
                 && !saved.iter().any(|name| name.eq_ignore_ascii_case(&candidate))
             {
-                return candidate;
+                return Ok(candidate);
             }
         }
-        format!("profile copy {}", std::process::id())
+        Ok(format!("profile copy {}", std::process::id()))
     }
 
     fn switch_profile(&mut self, target: Option<String>) {
@@ -1578,6 +1581,13 @@ impl App {
     fn profile_bar(&mut self, ui: &mut egui::Ui) {
         let active = self.active_profile.clone();
         let active_label = active.clone().unwrap_or_else(|| "default".into());
+        let saved_profiles = match list_profiles() {
+            Ok(saved) => saved,
+            Err(e) => {
+                self.profile_error = Some(format!("could not list profiles: {e:#}"));
+                Vec::new()
+            }
+        };
         ui.horizontal(|ui| {
             let mut switch: Option<Option<String>> = None;
             egui::ComboBox::from_id_salt("profile_sel")
@@ -1587,7 +1597,7 @@ impl App {
                     if ui.selectable_label(active.is_none(), "default").clicked() && active.is_some() {
                         switch = Some(None);
                     }
-                    for name in list_profiles() {
+                    for name in &saved_profiles {
                         if name == "default" {
                             continue;
                         }
@@ -1607,11 +1617,13 @@ impl App {
                     ui.close_menu();
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
-                    let clone = self.next_profile_copy_name(&active_label);
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
                     let result = self
-                        .snapshot_profile(&current)
-                        .and_then(|_| self.create_profile(&clone));
+                        .next_profile_copy_name(&active_label)
+                        .and_then(|clone| {
+                            self.snapshot_profile(&current)
+                                .and_then(|_| self.create_profile(&clone))
+                        });
                     self.profile_error = result.err().map(|e| format!("could not clone profile: {e:#}"));
                     ui.close_menu();
                 }
@@ -1645,7 +1657,9 @@ impl App {
                 let draft = self.profile_draft.trim();
                 let ok = !draft.eq_ignore_ascii_case("default")
                     && profile_file_name(draft).is_ok()
-                    && !list_profiles().iter().any(|name| name.eq_ignore_ascii_case(draft));
+                    && !saved_profiles
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(draft));
                 if ui
                     .add_enabled(ok, egui::Button::new("✓"))
                     .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'; 'default' is reserved.")
@@ -3178,8 +3192,8 @@ fn perf_bar(ui: &mut egui::Ui, frac: f32, color: egui::Color32) {
 }
 
 /// Directory holding saved profile snapshots.
-fn profiles_dir() -> Option<std::path::PathBuf> {
-    crate::oryx_api::cache_dir().ok().map(|d| d.join("profiles"))
+fn profiles_dir() -> Result<std::path::PathBuf> {
+    Ok(crate::oryx_api::cache_dir()?.join("profiles"))
 }
 
 /// Whether a fresh tap of `key` should merge into the previous log entry as a
@@ -3390,27 +3404,31 @@ fn profile_file_name(name: &str) -> Result<String> {
 }
 
 fn profile_path(name: &str) -> Result<std::path::PathBuf> {
-    let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
-    Ok(dir.join(profile_file_name(name)?))
+    Ok(profiles_dir()?.join(profile_file_name(name)?))
 }
 
-/// Sorted names of saved profiles.
-fn list_profiles() -> Vec<String> {
-    let Some(dir) = profiles_dir() else { return Vec::new() };
-    let mut out: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter_map(|e| {
-                    let p = e.path();
-                    (p.extension().and_then(|x| x.to_str()) == Some("json"))
-                        .then(|| p.file_stem().and_then(|x| x.to_str()).map(str::to_string))
-                        .flatten()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+/// Sorted names of saved profiles. A missing directory is a valid empty
+/// profile set; other filesystem failures are surfaced instead of pretending
+/// that all profiles disappeared.
+fn list_profiles() -> Result<Vec<String>> {
+    let dir = profiles_dir()?;
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    let mut out = Vec::new();
+    for entry in rd {
+        let entry = entry.with_context(|| format!("reading an entry in {}", dir.display()))?;
+        let p = entry.path();
+        if p.extension().and_then(|x| x.to_str()) == Some("json") {
+            if let Some(name) = p.file_stem().and_then(|x| x.to_str()) {
+                out.push(name.to_string());
+            }
+        }
+    }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Result of a manual "check for updates" against GitHub Releases.
