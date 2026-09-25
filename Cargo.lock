@@ -1982,6 +1982,7 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
+ "tempfile",
  "ureq",
  "zapp-core",
  "zip",
