@@ -901,7 +901,13 @@ impl App {
         }
     }
 
-    fn applied_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+    /// What the connected keyboard is confirmed to be running. This is the
+    /// base truth for every runtime surface (Peek, heatmap, combo HUD).
+    fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if self.connected.is_some() && self.firmware_state_unknown {
+            return Some(unknown_device_key());
+        }
+
         let oryx = self.oryx_layer_count();
         if layer >= oryx {
             let state = self.firmware_state.as_ref()?;
@@ -935,7 +941,23 @@ impl App {
         self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
     }
 
-    fn applied_layer(&self, layer: u8) -> Option<Layer> {
+    fn device_layer(&self, layer: u8) -> Option<Layer> {
+        if self.connected.is_some() && self.firmware_state_unknown {
+            let mut out = self.layer_def(layer).cloned().unwrap_or_else(|| Layer {
+                title: Some("Unknown device state".into()),
+                position: layer,
+                color: None,
+                keys: vec![unknown_device_key(); self.geometry().len()],
+            });
+            if out.keys.len() < self.geometry().len() {
+                out.keys.resize(self.geometry().len(), unknown_device_key());
+            }
+            for key in &mut out.keys {
+                *key = unknown_device_key();
+            }
+            return Some(out);
+        }
+
         let oryx = self.oryx_layer_count();
         if layer >= oryx {
             let state = self.firmware_state.as_ref()?;
@@ -945,14 +967,19 @@ impl App {
 
         let mut out = self.layer_def(layer)?.clone();
         for key in 0..out.keys.len() {
-            if let Some(applied) = self.applied_key(layer, key) {
-                out.keys[key] = applied;
+            if let Some(device) = self.device_key(layer, key) {
+                out.keys[key] = device;
             }
         }
         Some(out)
     }
 
-    fn effective_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+    /// Editing projection = confirmed device truth plus explicit pending edits.
+    /// Unknown device truth is never replaced by an Oryx guess.
+    fn editing_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if self.connected.is_some() && self.firmware_state_unknown {
+            return self.device_key(layer, key);
+        }
         if layer >= self.oryx_layer_count() {
             return self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned();
         }
@@ -974,23 +1001,32 @@ impl App {
             out.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
             return Some(out);
         }
-        self.applied_key(layer, key)
+        self.device_key(layer, key)
     }
 
-    fn effective_layer(&self, layer: u8) -> Option<Layer> {
+    fn editing_layer(&self, layer: u8) -> Option<Layer> {
+        if self.connected.is_some() && self.firmware_state_unknown {
+            return self.device_layer(layer);
+        }
         if layer >= self.oryx_layer_count() {
             return self.layer_def(layer).cloned();
         }
-        let mut out = self.applied_layer(layer)?;
+        let mut out = self.device_layer(layer)?;
         for key in 0..out.keys.len() {
-            if let Some(effective) = self.effective_key(layer, key) {
-                out.keys[key] = effective;
+            if let Some(editing) = self.editing_key(layer, key) {
+                out.keys[key] = editing;
             }
         }
         Some(out)
     }
 
-    fn effective_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
+    fn assignment_editable(&self, layer: u8, key: usize) -> bool {
+        self.device_key(layer, key)
+            .map(|key| key.assignment_roundtrip_safe())
+            .unwrap_or(true)
+    }
+
+    fn desired_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
         merge_firmware_maps(
             self.firmware_state.as_ref(),
             &self.key_edits,
@@ -1613,7 +1649,7 @@ impl App {
     fn combo_recent(&self) -> Vec<ComboChip> {
         let now = Instant::now();
         let label = |k: usize| {
-            self.applied_key(self.active_layer, k)
+            self.device_key(self.active_layer, k)
                 .map(|key| labels_for(&key).tap)
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| format!("k{k}"))
@@ -3838,6 +3874,13 @@ fn merge_firmware_maps(
     (edits, dances)
 }
 
+fn unknown_device_key() -> OryxKey {
+    OryxKey {
+        custom_label: Some("?".into()),
+        ..Default::default()
+    }
+}
+
 fn synth_slots(slots: &[Option<String>; 4]) -> OryxKey {
     let mut key = OryxKey::default();
     let action = |code: &Option<String>| -> Option<KeyAction> {
@@ -4002,7 +4045,7 @@ impl App {
                     let custom = n >= oryx;
                     let name = self.layer_name(n);
                     let keycount = self
-                        .effective_layer(n)
+                        .editing_layer(n)
                         .map(|l| l.keys.into_iter().filter(|k| {
                             k.tap.as_ref().and_then(|a| a.code.as_deref()).is_some_and(|c| c != "KC_NO" && c != "KC_TRANSPARENT" && c != "KC_TRNS")
                                 || k.hold.is_some()
@@ -4105,13 +4148,41 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("⌨").size(46.0).color(pal::TEXT_DIM));
                 ui.add_space(10.0);
-                ui.label(RichText::new("No keyboard connected").strong().size(18.0).color(pal::TEXT));
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Plug in your Voyager (and quit Keymapp) so keyjitsu can read your layout. It remembers the last one, so next time you can view and plan it here even with the keyboard unplugged.")
+                if self.connected.is_some() {
+                    ui.label(
+                        RichText::new(if self.firmware_state_unknown {
+                            "Connected keyboard state is unknown"
+                        } else {
+                            "Reading keyboard layout…"
+                        })
+                        .strong()
+                        .size(18.0)
+                        .color(pal::TEXT),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(if self.firmware_state_unknown {
+                            "Keyjitsu will not guess from Oryx when the connected firmware reports a state that cannot be reconstructed locally."
+                        } else {
+                            "The keyboard is connected. Waiting for its matching layout definition."
+                        })
                         .size(12.5)
                         .color(pal::TEXT_MUTED),
-                );
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("No keyboard connected")
+                            .strong()
+                            .size(18.0)
+                            .color(pal::TEXT),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("Plug in your Voyager (and quit Keymapp) so Keyjitsu can read your layout. It remembers the last one, so next time you can view and plan it here even with the keyboard unplugged.")
+                            .size(12.5)
+                            .color(pal::TEXT_MUTED),
+                    );
+                }
             });
             return;
         }
@@ -4144,8 +4215,8 @@ impl App {
         });
         let glow = anim_frame.unwrap_or_else(|| self.glow_colors(view));
         // Live previews the same effective state the editor and build use.
-        let effective_layer = self.effective_layer(view);
-        let layer = effective_layer.as_ref();
+        let editing_layer = self.editing_layer(view);
+        let layer = editing_layer.as_ref();
         let sel = self.selected_key;
         // The keyboard sits on its own raised canvas card with a soft top
         // sheen + shadow, so it reads as the main object.
@@ -4239,8 +4310,8 @@ impl App {
             self.edit_color = self.current_key_srgb(view, i);
             self.edit_synced = Some((view, i));
         }
-        let tap = match self.effective_key(view, i) {
-            Some(key) => labels_for(&key).tap,
+        let tap = match self.editing_key(view, i) {
+            Some(key) => legend::full_labels_for(&key).tap,
             None => format!("key {i}"),
         };
 
@@ -4284,7 +4355,7 @@ impl App {
                             .color(pal::TEXT_MUTED),
                     );
                     let assigned = self
-                        .effective_key(view, i)
+                        .editing_key(view, i)
                         .map(|k| self.describe_assignment(&k))
                         .unwrap_or_else(|| "No assignment".into());
                     ui.label(
@@ -4327,6 +4398,14 @@ impl App {
 
         // --- binding rows: one per action slot ------------------------------
         // Columns: type | key (click → picker) | glow | on-press | ✕.
+        let assignment_editable = self.assignment_editable(view, i);
+        if !assignment_editable {
+            ui.colored_label(
+                pal::AMBER,
+                "This key contains Oryx behavior Keyjitsu cannot round-trip yet. Its device assignment is shown read-only so editing cannot silently destroy it.",
+            );
+            ui.add_space(4.0);
+        }
         let mut open_picker: Option<usize> = None;
         let mut clear_slot: Option<usize> = None;
         egui::Grid::new("slot_rows")
@@ -4391,8 +4470,12 @@ impl App {
                             .stroke(egui::Stroke::new(1.0, pal::BORDER))
                             .min_size(egui::vec2(96.0, 22.0));
                             if ui
-                                .add(chip_btn)
-                                .on_hover_text("click to pick a key")
+                                .add_enabled(assignment_editable, chip_btn)
+                                .on_hover_text(if assignment_editable {
+                                    "click to pick a key"
+                                } else {
+                                    "read-only: unsupported Oryx action semantics"
+                                })
                                 .clicked()
                             {
                                 open_picker = Some(slot);
@@ -4413,8 +4496,12 @@ impl App {
                                 .stroke(egui::Stroke::new(1.0, pal::BORDER))
                                 .min_size(egui::vec2(80.0, 22.0));
                                 if ui
-                                    .add(chip_btn)
-                                    .on_hover_text("click to change this step")
+                                    .add_enabled(assignment_editable, chip_btn)
+                                    .on_hover_text(if assignment_editable {
+                                        "click to change this step"
+                                    } else {
+                                        "read-only: unsupported Oryx action semantics"
+                                    })
                                     .clicked()
                                 {
                                     open_picker = Some(slot);
@@ -4423,7 +4510,10 @@ impl App {
                                 }
                                 if steps.len() > 1
                                     && ui
-                                        .small_button("✕")
+                                        .add_enabled(
+                                            assignment_editable,
+                                            egui::Button::new("✕").small(),
+                                        )
                                         .on_hover_text("remove this step")
                                         .clicked()
                                 {
@@ -4432,7 +4522,7 @@ impl App {
                             }
                         }
                         if ui
-                            .small_button("+")
+                            .add_enabled(assignment_editable, egui::Button::new("+").small())
                             .on_hover_text("then press another key (taps in order when this fires)")
                             .clicked()
                         {
@@ -4537,7 +4627,7 @@ impl App {
 
                     if slot > 0 {
                         if ui
-                            .small_button("✕")
+                            .add_enabled(assignment_editable, egui::Button::new("✕").small())
                             .on_hover_text("remove this action")
                             .clicked()
                         {
@@ -4558,14 +4648,16 @@ impl App {
         if !missing.is_empty() {
             ui.add_space(4.0);
             ui.vertical_centered(|ui| {
-                ui.menu_button(RichText::new("＋ add action").size(12.0), |ui| {
-                    for sl in missing {
-                        if ui.button(SLOT_LABELS[sl]).clicked() {
-                            self.slot_added[sl] = true;
-                            open_picker = Some(sl);
-                            ui.close();
+                ui.add_enabled_ui(assignment_editable, |ui| {
+                    ui.menu_button(RichText::new("＋ add action").size(12.0), |ui| {
+                        for sl in missing {
+                            if ui.button(SLOT_LABELS[sl]).clicked() {
+                                self.slot_added[sl] = true;
+                                open_picker = Some(sl);
+                                ui.close();
+                            }
                         }
-                    }
+                    });
                 });
             });
         }
@@ -4839,15 +4931,23 @@ impl App {
                 match code {
                     "KC_NO" => parts.push("Disabled".to_string()),
                     "KC_TRANSPARENT" | "KC_TRNS" => parts.push("Transparent".to_string()),
-                    _ => parts.push(format!("Tap {}", legend::keycode_label(code))),
+                    _ => {
+                        let label = legend::action_label(tap);
+                        if !label.is_empty() {
+                            parts.push(format!("Tap {label}"));
+                        }
+                    }
                 }
             }
         }
         if let Some(hold) = &key.hold {
             if let Some(n) = hold.layer {
                 parts.push(format!("Hold → {}", self.layer_name(n)));
-            } else if let Some(code) = hold.code.as_deref() {
-                parts.push(format!("Hold {}", legend::keycode_label(code)));
+            } else if hold.code.is_some() || hold.fallback_kind().is_some() {
+                let label = legend::action_label(hold);
+                if !label.is_empty() {
+                    parts.push(format!("Hold {label}"));
+                }
             }
         }
         // Some keys carry a third "tap-hold" action (e.g. a second momentary
@@ -4876,19 +4976,15 @@ impl App {
             return;
         }
 
-        let Some(key) = self.effective_key(layer, i) else {
+        let Some(key) = self.editing_key(layer, i) else {
             self.edit_slots = [None, None, None, None];
             return;
         };
 
         let conv = |a: &Option<crate::oryx_api::KeyAction>| -> Option<String> {
             let a = a.as_ref()?;
-            match (a.code.as_deref(), a.layer) {
-                (Some(c), Some(n)) => Some(format!("{c}({n})")),
-                (None, Some(n)) => Some(format!("MO({n})")),
-                (Some(c), None) if c != "KC_TRANSPARENT" => Some(c.to_string()),
-                _ => None,
-            }
+            let code = a.qmk_code()?;
+            (code != "KC_TRANSPARENT" && code != "KC_TRNS").then_some(code)
         };
         self.edit_slots = [
             conv(&key.tap),
@@ -4953,6 +5049,13 @@ impl App {
     /// Re-stage after a slot change: plain keys become one keycode, keys with
     /// double-tap / tap+hold become a generated tap dance.
     fn stage_slots(&mut self, layer: u8, key: usize) {
+        if !self.assignment_editable(layer, key)
+            && !self.key_edits.contains_key(&(layer, key))
+            && !self.key_dances.contains_key(&(layer, key))
+        {
+            return;
+        }
+
         // Custom layers persist directly (they have no Oryx source to patch);
         // dances aren't wired for them yet, so use the composed base code.
         if self.is_custom_layer(layer) {
@@ -5356,14 +5459,14 @@ impl App {
             .with_mouse_passthrough(true)
             .with_always_on_top();
 
-        let applied_layer = self.applied_layer(self.peek_layer);
+        let device_layer = self.device_layer(self.peek_layer);
         let glow = self.glow_colors(self.peek_layer);
         let legends = if self.peek.show_legends {
-            applied_layer.as_ref()
+            device_layer.as_ref()
         } else {
             None
         };
-        let title = applied_layer
+        let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {}", self.peek_layer));
@@ -5618,7 +5721,7 @@ impl App {
 
         let n_keys = self.geometry().len();
         let oryx = self.oryx_layer_count();
-        let (full_edits, full_dances) = self.effective_firmware_maps();
+        let (full_edits, full_dances) = self.desired_firmware_maps();
 
         let invalid_edit = full_edits
             .keys()
@@ -5880,7 +5983,7 @@ impl App {
         ranked.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
         let layer = self.heat_layer.unwrap_or(self.view_layer);
         let top_label = ranked.first().map(|(idx, _)| {
-            self.applied_key(layer, *idx)
+            self.device_key(layer, *idx)
                 .map(|k| labels_for(&k).tap)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("key {idx}"))
@@ -5985,8 +6088,8 @@ impl App {
         // Board width capped by the height budget (34px/unit legibility floor).
         let board_cap = (((budget - 76.0) / g_rows).clamp(34.0, 62.0) * g_cols + 48.0).min(left_w);
         let rank_rows = (((budget - 84.0) / 27.0) as usize).clamp(5, 20);
-        let applied_layer = self.applied_layer(layer);
-        let layer_def = applied_layer.as_ref();
+        let device_layer = self.device_layer(layer);
+        let layer_def = device_layer.as_ref();
         let glow: Vec<Option<Color32>> = norm
             .iter()
             .map(|&t| (t > 0.0).then(|| widget::heat_color(t)))
@@ -6661,11 +6764,11 @@ impl App {
             .map(|c| (*c != [0, 0, 0]).then(|| Color32::from_rgb(c[0], c[1], c[2])))
             .collect();
         let no_press = vec![false; n];
-        let applied_layer = self.applied_layer(self.view_layer);
+        let device_layer = self.device_layer(self.view_layer);
         let kb = draw_keyboard(
             ui,
             geo,
-            applied_layer.as_ref(),
+            device_layer.as_ref(),
             &glow,
             &no_press,
             None,
@@ -6717,8 +6820,8 @@ impl App {
     ) -> anyhow::Result<std::path::PathBuf> {
         use std::io::Write as _;
         let layer = self.heat_layer.unwrap_or(self.view_layer);
-        let applied_layer = self.applied_layer(layer);
-        let layer_def = applied_layer.as_ref();
+        let device_layer = self.device_layer(layer);
+        let layer_def = device_layer.as_ref();
         let scope = match self.heat_layer {
             None => "all-layers".to_string(),
             Some(n) => format!("layer{n}"),
@@ -7676,7 +7779,7 @@ impl App {
             .map(|&[r, c]| {
                 self.geometry()
                     .key_index(r, c)
-                    .and_then(|i| self.applied_key(0, i).map(|k| labels_for(&k).tap))
+                    .and_then(|i| self.device_key(0, i).map(|k| labels_for(&k).tap))
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| format!("r{r}c{c}"))
             })
@@ -7765,13 +7868,13 @@ impl App {
             .max(if self.layer_count() > 1 { 1 } else { 0 });
         let geo = self.geometry();
         let glow = self.glow_colors(layer);
-        let applied_layer = self.applied_layer(layer);
+        let device_layer = self.device_layer(layer);
         let legends = if c.show_legends {
-            applied_layer.as_ref()
+            device_layer.as_ref()
         } else {
             None
         };
-        let title = applied_layer
+        let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {layer}"));
@@ -8482,6 +8585,12 @@ mod state_composition_tests {
         let newer_dance = [Some("KC_C".into()), None, None, None];
         assert!(!staged_dance_is_pending(&state, 0, 2, &applied_dance));
         assert!(staged_dance_is_pending(&state, 0, 2, &newer_dance));
+    }
+
+    #[test]
+    fn unknown_device_placeholder_is_explicit_not_blank() {
+        let key = super::unknown_device_key();
+        assert_eq!(key.custom_label.as_deref(), Some("?"));
     }
 
     #[test]
