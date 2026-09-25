@@ -457,6 +457,8 @@ mod tests {
         assert_eq!(old.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
         assert!(old.custom_layer_sets.is_empty());
+    }
+
     #[test]
     fn migrates_legacy_custom_layers_into_pending_sets() {
         let mut cfg = Config::default();
@@ -483,7 +485,5 @@ mod tests {
         let mut cfg = Config::default();
         cfg.schema_version = CURRENT_SCHEMA_VERSION + 1;
         assert!(migrate(cfg).is_err());
-    }
-
     }
 }
