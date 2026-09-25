@@ -1,5 +1,6 @@
 //! Client for the Oryx GraphQL API (layout definitions) with a disk cache.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -73,6 +74,41 @@ pub struct KeyModifiers {
     pub right_shift: bool,
 }
 
+impl KeyModifiers {
+    pub fn is_empty(&self) -> bool {
+        !self.left_alt
+            && !self.left_ctrl
+            && !self.left_gui
+            && !self.left_shift
+            && !self.right_alt
+            && !self.right_ctrl
+            && !self.right_gui
+            && !self.right_shift
+    }
+
+    /// Convert Oryx modifier flags into the QMK wrapper form used everywhere
+    /// else in Keyjitsu. The wrapper order is deterministic; modifier order
+    /// does not change the chord received by the OS.
+    pub fn wrap_qmk(&self, base: &str) -> String {
+        let mut code = base.to_string();
+        for (enabled, wrapper) in [
+            (self.left_gui, "LGUI"),
+            (self.right_gui, "RGUI"),
+            (self.left_alt, "LALT"),
+            (self.right_alt, "RALT"),
+            (self.left_shift, "LSFT"),
+            (self.right_shift, "RSFT"),
+            (self.left_ctrl, "LCTL"),
+            (self.right_ctrl, "RCTL"),
+        ] {
+            if enabled {
+                code = format!("{wrapper}({code})");
+            }
+        }
+        code
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct KeyAction {
@@ -84,6 +120,77 @@ pub struct KeyAction {
     /// Oryx stores precomposed shortcuts (for example Option+Tab) as a base
     /// keycode plus modifier flags instead of a wrapped QMK code.
     pub modifiers: Option<KeyModifiers>,
+    /// Preserve action semantics we do not edit yet instead of silently
+    /// dropping them while deserializing Oryx JSON.
+    pub modifier: Option<serde_json::Value>,
+    #[serde(rename = "macro")]
+    pub macro_action: Option<serde_json::Value>,
+    pub color: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl KeyAction {
+    /// Canonical editable QMK representation of this action.
+    pub fn qmk_code(&self) -> Option<String> {
+        if let Some(layer) = self.layer {
+            let family = self
+                .code
+                .as_deref()
+                .filter(|code| !code.trim().is_empty())
+                .unwrap_or("MO");
+            return Some(format!("{family}({layer})"));
+        }
+
+        let base = self.code.as_deref()?.trim();
+        if base.is_empty() {
+            return None;
+        }
+        Some(
+            self.modifiers
+                .as_ref()
+                .filter(|mods| !mods.is_empty())
+                .map(|mods| mods.wrap_qmk(base))
+                .unwrap_or_else(|| base.to_string()),
+        )
+    }
+
+    /// False means editing this action as a plain QMK string could lose Oryx
+    /// semantics that Keyjitsu does not model yet.
+    pub fn roundtrip_safe(&self) -> bool {
+        self.modifier.is_none()
+            && self.macro_action.is_none()
+            && self.color.is_none()
+            && self.extra.is_empty()
+    }
+
+    pub fn fallback_kind(&self) -> Option<&'static str> {
+        if self.macro_action.is_some() {
+            Some("Macro")
+        } else if self.modifier.is_some() {
+            Some("Modifier")
+        } else if self.color.is_some() {
+            Some("RGB action")
+        } else if !self.extra.is_empty() {
+            Some("Oryx action")
+        } else {
+            None
+        }
+    }
+}
+
+impl OryxKey {
+    pub fn assignment_roundtrip_safe(&self) -> bool {
+        [
+            self.tap.as_ref(),
+            self.hold.as_ref(),
+            self.double_tap.as_ref(),
+            self.tap_hold.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(KeyAction::roundtrip_safe)
+    }
 }
 
 /// `hashId` / `revisionId` pair identifying a layout revision. The firmware's
@@ -318,6 +425,29 @@ mod tests {
     fn rejects_oversized_layout_payloads() {
         let bytes = vec![b'x'; MAX_LAYOUT_BYTES as usize + 1];
         assert!(read_layout_bytes(std::io::Cursor::new(bytes), "test layout").is_err());
+    }
+
+    #[test]
+    fn modifier_chords_have_one_canonical_qmk_form() {
+        let action: KeyAction = serde_json::from_str(
+            r#"{"code":"KC_TAB","modifiers":{"leftAlt":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(action.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(action.roundtrip_safe());
+    }
+
+    #[test]
+    fn unknown_oryx_action_fields_are_preserved_and_not_editable() {
+        let action: KeyAction = serde_json::from_str(
+            r#"{"code":"KC_A","futureBehavior":{"kind":"new"}}"#,
+        )
+        .unwrap();
+        assert!(action.extra.contains_key("futureBehavior"));
+        assert!(!action.roundtrip_safe());
+
+        let encoded = serde_json::to_value(&action).unwrap();
+        assert!(encoded.get("futureBehavior").is_some());
     }
 
     #[test]
