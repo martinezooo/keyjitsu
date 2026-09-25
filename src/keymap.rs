@@ -297,17 +297,35 @@ pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
     }
     let mut out = source.to_string();
 
-    // 1. The custom-keycode enum, anchored at SAFE_RANGE.
-    let mut names = String::new();
-    for (i, m) in macros.iter().enumerate() {
-        if i == 0 {
-            names.push_str(&format!("    MACRO_KJ_{} = SAFE_RANGE,\n", m.id));
-        } else {
-            names.push_str(&format!("    MACRO_KJ_{},\n", m.id));
+    // 1. Allocate custom keycodes without colliding with custom keycodes that
+    // Oryx may already have emitted. If an enum already owns SAFE_RANGE, append
+    // our names to that enum so C continues numbering after its last entry.
+    let plain_names: String = macros
+        .iter()
+        .map(|m| format!("    MACRO_KJ_{},\n", m.id))
+        .collect();
+    if let Some(safe) = out.find("SAFE_RANGE") {
+        let open = out[..safe]
+            .rfind('{')
+            .ok_or_else(|| anyhow!("SAFE_RANGE is not inside an enum-like block"))?;
+        let close = matching_brace(&out, open)?;
+        let body = &out[open + 1..close];
+        let separator = if body.trim_end().ends_with(',') { "" } else { "," };
+        out.insert_str(close, &format!("{separator}\n{plain_names}"));
+    } else {
+        let mut names = String::new();
+        for (i, m) in macros.iter().enumerate() {
+            if i == 0 {
+                names.push_str(&format!("    MACRO_KJ_{} = SAFE_RANGE,\n", m.id));
+            } else {
+                names.push_str(&format!("    MACRO_KJ_{},\n", m.id));
+            }
         }
+        let km = out
+            .find("const uint16_t PROGMEM keymaps")
+            .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
+        out.insert_str(km, &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"));
     }
-    let km = out.find("const uint16_t PROGMEM keymaps").ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
-    out.insert_str(km, &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"));
 
     // 2. One `case MACRO_KJ_i:` per macro, tapping its steps on press.
     let mut cases = String::new();
@@ -552,6 +570,25 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         assert!(case.contains("return false;"), "the macro keycode itself must not also register");
         // Defined before first use (process_record_user references it).
         assert!(out.find("enum keyjitsu_macro_keycodes").unwrap() < out.find("process_record_user").unwrap());
+    }
+
+    #[test]
+    fn macros_extend_existing_safe_range_enum_without_reusing_its_value() {
+        let src = format!(
+            "enum custom_keycodes {{\n    EXISTING = SAFE_RANGE,\n    EXISTING_TWO\n}};\n{SAMPLE}\nbool process_record_user(uint16_t keycode, keyrecord_t *record) {{\n    switch (keycode) {{\n        case EXISTING: return false;\n        default: return true;\n    }}\n}}\n"
+        );
+        let out = apply_macros(
+            &src,
+            &[MacroSpec { id: 0, steps: vec!["KC_A".into()] }],
+        )
+        .unwrap();
+
+        assert_eq!(out.matches("SAFE_RANGE").count(), 1);
+        assert!(!out.contains("MACRO_KJ_0 = SAFE_RANGE"));
+        let existing = out.find("EXISTING_TWO").unwrap();
+        let generated = out.find("MACRO_KJ_0").unwrap();
+        let keymaps = out.find("PROGMEM keymaps").unwrap();
+        assert!(existing < generated && generated < keymaps);
     }
 
     #[test]
