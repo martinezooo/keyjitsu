@@ -158,7 +158,7 @@ impl App {
     fn max_layer(&self) -> u8 {
         self.layout
             .as_ref()
-            .map(|l| l.revision.layers.len().saturating_sub(1) as u8)
+            .and_then(|l| l.revision.layers.iter().map(|layer| layer.position).max())
             .unwrap_or(15)
     }
 
