@@ -379,11 +379,15 @@ fn frac(done: usize, total: usize) -> f32 {
 
 pub struct AutolayerHandle {
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for AutolayerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -395,7 +399,7 @@ pub fn spawn_autolayer(
 ) -> AutolayerHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
         let mut last_bundle = String::new();
         let mut active_rule_layer: Option<u8> = None;
         while !stop_t.load(Ordering::SeqCst) {
@@ -421,11 +425,19 @@ pub fn spawn_autolayer(
                     last_bundle = bundle;
                 }
             }
-            std::thread::sleep(Duration::from_millis(400));
+            for _ in 0..8 {
+                if stop_t.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
         }
         if let Some(prev) = active_rule_layer {
             let _ = cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev });
         }
     });
-    AutolayerHandle { stop }
+    AutolayerHandle {
+        stop,
+        thread: Some(thread),
+    }
 }
