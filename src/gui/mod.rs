@@ -192,10 +192,12 @@ struct App {
     cmd_tx: Sender<KbCmd>,
 
     connected: Option<(String, String)>, // (model, serial/layout-id)
+    connection_generation: Option<u64>,
     layout: Option<Layout>,
     /// Exact state declared by the currently connected Keyjitsu-built firmware.
     /// This is device truth, not a user profile/snapshot.
     firmware_state: Option<FirmwareState>,
+    firmware_state_unknown: bool,
     heat: Option<HeatmapStore>,
 
     active_layer: u8,
@@ -566,8 +568,10 @@ impl App {
             erx,
             cmd_tx,
             connected: None,
+            connection_generation: None,
             layout: None,
             firmware_state: None,
+            firmware_state_unknown: false,
             heat: None,
             active_layer: 0,
             view_layer: 0,
@@ -924,11 +928,13 @@ impl App {
             .or_else(|| crate::oryx_api::any_cached_layout("voyager").map(|(id, l)| (None, id, l)));
         let Some((serial, id, mut layout)) = found else { return };
 
-        self.firmware_state = serial
+        let state_marker = serial
             .as_deref()
-            .and_then(firmware_state::state_id_from_serial)
+            .and_then(firmware_state::state_id_from_serial);
+        self.firmware_state = state_marker
             .and_then(FirmwareState::load)
             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+        self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
         if let Some(state) = &self.firmware_state {
             Self::apply_firmware_state(&mut layout, state);
         }
@@ -1846,54 +1852,77 @@ impl App {
         let key_count = self.geometry().len();
         while let Ok(ev) = self.erx.try_recv() {
             match ev {
-                DevEvent::Connected { model, serial } => {
+                DevEvent::Connected { model, serial, generation } => {
+                    self.connection_generation = Some(generation);
                     if let Ok(id) = LayoutId::from_serial(&serial) {
                         self.heat = HeatmapStore::load(&id.hash, key_count).ok();
                         self.hydrate_glow(&id.hash);
                         self.hydrate_key_fx(&id.hash);
-                        self.firmware_state = firmware_state::state_id_from_serial(&serial)
+
+                        let state_marker = firmware_state::state_id_from_serial(&serial);
+                        self.firmware_state = state_marker
                             .and_then(FirmwareState::load)
                             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
+                        self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
+
+                        self.layout = crate::oryx_api::cached_layout(&id, "voyager").map(|mut layout| {
+                            if let Some(state) = &self.firmware_state {
+                                Self::apply_firmware_state(&mut layout, state);
+                            }
+                            layout
+                        });
+
                         if let Some(state) = &self.firmware_state {
                             self.custom_layers = state.custom_layers.clone();
+                            self.rebuild_synth_layers();
+                        } else if self.firmware_state_unknown {
+                            self.custom_layers.clear();
                             self.rebuild_synth_layers();
                         } else {
                             self.hydrate_custom_layers(&id.hash);
                         }
                         self.hydrate_staged(&id.hash);
                         self.drop_applied_from_staged();
-                        // Remember it so the Live view can show this layout from
-                        // cache next time, before any keyboard is plugged in.
+
                         let mut cfg = config::load();
                         if cfg.last_layout.as_deref() != Some(serial.as_str()) {
                             cfg.last_layout = Some(serial.clone());
                             let _ = config::save(&cfg);
                         }
                     } else {
+                        self.layout = None;
                         self.firmware_state = None;
+                        self.firmware_state_unknown = true;
                     }
                     self.connected = Some((model, serial));
+                    self.edit_synced = None;
                     self.push_anim_base();
                 }
-                DevEvent::LayoutLoaded(layout) => {
+                DevEvent::LayoutLoaded { generation, layout } => {
+                    if self.connection_generation != Some(generation) {
+                        continue;
+                    }
                     let mut layout = *layout;
                     if let Some(state) = &self.firmware_state {
                         Self::apply_firmware_state(&mut layout, state);
                     }
                     self.layout = Some(layout);
-                    // Oryx layer count is known now - re-place custom layers.
-                    if self.firmware_state.is_none() {
+                    if self.firmware_state.is_some() {
+                        self.rebuild_synth_layers();
+                    } else if !self.firmware_state_unknown {
                         if let Some(hash) = self.layout_hash.clone() {
                             self.hydrate_custom_layers(&hash);
                         }
-                    } else {
-                        self.rebuild_synth_layers();
                     }
                     self.edit_synced = None;
                     self.push_anim_base();
                 }
-                DevEvent::Disconnected => {
+                DevEvent::Disconnected { generation } => {
+                    if self.connection_generation.is_some() && self.connection_generation != Some(generation) {
+                        continue;
+                    }
                     self.connected = None;
+                    self.connection_generation = None;
                     self.pressed.iter_mut().for_each(|p| *p = false);
                     if let Some(h) = &mut self.heat {
                         let _ = h.save();
@@ -4447,6 +4476,15 @@ impl App {
         }
         let Some((_, serial)) = &self.connected else { return };
         let Ok(id) = LayoutId::from_serial(serial) else { return };
+        if self.firmware_state_unknown {
+            self.build_open = true;
+            self.build_busy = false;
+            self.build_phase = "State unknown".into();
+            self.build_result = Some(Err(
+                "The keyboard reports a Keyjitsu firmware state that is not available locally. Rebuilding from Oryx could discard working firmware changes.".into(),
+            ));
+            return;
+        }
         let n_keys = self.geometry().len();
 
         // A rebuild must start from what is ACTUALLY running on the keyboard,
