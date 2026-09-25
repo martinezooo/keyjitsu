@@ -38,7 +38,7 @@ struct App {
 pub fn run(serial: Option<&str>) -> Result<()> {
     let kb = Keyboard::open(serial)?;
     let active_layer = kb.pair()?.unwrap_or(0);
-    let fw = kb.fw_version().unwrap_or_default();
+    let fw = kb.fw_version()?;
 
     // Legends are best-effort: no Oryx id / no network still gives live keys.
     let (layout, layout_hash) = match LayoutId::from_serial(&fw) {

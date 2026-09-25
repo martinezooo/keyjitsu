@@ -65,10 +65,9 @@ pub fn run(serial: Option<&str>, opts: Opts) -> Result<()> {
     }
 
     // Legends: best effort, same as `live`.
-    let layout = kb
-        .fw_version()
+    let fw = kb.fw_version()?;
+    let layout = LayoutId::from_serial(&fw)
         .ok()
-        .and_then(|fw| LayoutId::from_serial(&fw).ok())
         .and_then(|id| fetch_layout(&id, "voyager", false).ok());
     if layout.is_none() {
         eprintln!("note: no Oryx layout available - keys will light up without legends");
