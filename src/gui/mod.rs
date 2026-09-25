@@ -1329,7 +1329,8 @@ impl App {
         std::fs::create_dir_all(&dir)?;
         let profile = config::Profile::from_config(&config::load());
         let json = serde_json::to_vec_pretty(&profile)?;
-        std::fs::write(dir.join(format!("{}.json", safe_profile_name(name))), json)?;
+        let path = dir.join(format!("{}.json", safe_profile_name(name)));
+        config::write_atomic(&path, &json)?;
         Ok(())
     }
 
