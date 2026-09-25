@@ -180,7 +180,10 @@ fn device_loop(
         }
         was_connected = true;
         if let Some(layer) = initial_layer {
-            let _ = etx.send(DevEvent::Hid(Event::Layer(layer)));
+            if etx.send(DevEvent::Hid(Event::Layer(layer))).is_err() {
+                kb.disconnect();
+                return;
+            }
         }
         ctx.request_repaint();
 

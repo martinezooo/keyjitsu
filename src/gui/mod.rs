@@ -2121,7 +2121,7 @@ impl App {
     /// Primed with one SetRgbLedAll of the dominant color (fills the whole LED
     /// array instantly and auto-enables control - no black flash), then only
     /// the differing keys.
-    fn push_glow(&self) {
+    fn push_glow(&mut self) {
         let colors = self.glow_rgb(self.active_layer);
         let mut dominant = [0u8, 0, 0];
         let mut best = 0;
@@ -2132,15 +2132,21 @@ impl App {
                 dominant = *c;
             }
         }
-        let _ = self.cmd_tx.send(KbCmd::SetRgbLedAll {
+        if self.cmd_tx.send(KbCmd::SetRgbLedAll {
             r: dominant[0],
             g: dominant[1],
             b: dominant[2],
-        });
+        }).is_err() {
+            self.persist_error = Some("device worker stopped while syncing glow".into());
+            return;
+        }
         for (i, c) in colors.iter().enumerate() {
             if *c != dominant {
                 // LED chain follows Oryx visual order.
-                let _ = self.cmd_tx.send(KbCmd::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] });
+                if self.cmd_tx.send(KbCmd::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] }).is_err() {
+                    self.persist_error = Some("device worker stopped while syncing glow".into());
+                    return;
+                }
             }
         }
     }
@@ -2639,7 +2645,7 @@ impl eframe::App for App {
                     }
                     if let Some(e) = &self.persist_error {
                         egui::Frame::new()
-                            .show(ui, |ui| status_pill(ui, "⚠ save failed", pal::RED))
+                            .show(ui, |ui| status_pill(ui, "⚠ action failed", pal::RED))
                             .response
                             .on_hover_text(e);
                     }
@@ -5211,15 +5217,26 @@ impl App {
                             self.confirm_reset = true;
                         }
                         if ui.button("⬇ Export CSV").clicked() {
-                            self.csv_saved = self.export_heatmap_csv(&counts, layer_total).ok();
+                            match self.export_heatmap_csv(&counts, layer_total) {
+                                Ok(path) => {
+                                    self.csv_saved = Some(path);
+                                    self.persist_error = None;
+                                }
+                                Err(e) => {
+                                    self.csv_saved = None;
+                                    self.persist_error = Some(format!("exporting heatmap CSV: {e:#}"));
+                                }
+                            }
                         }
                     });
                 });
-                if let Some(p) = &self.csv_saved {
+                if let Some(p) = self.csv_saved.clone() {
                     ui.horizontal(|ui| {
                         ui.colored_label(pal::GREEN, "✓ saved:");
                         if ui.link(RichText::new(p.display().to_string()).size(11.5).monospace()).clicked() {
-                            let _ = crate::platform::reveal_path(p);
+                            if let Err(e) = crate::platform::reveal_path(&p) {
+                                self.persist_error = Some(format!("opening exported heatmap location: {e:#}"));
+                            }
                         }
                     });
                 }
@@ -6251,9 +6268,12 @@ impl App {
                 ui.colored_label(pal::AMBER, "Needs the Input Monitoring permission to test.");
                 ui.horizontal(|ui| {
                     if ui.button("Open Input Monitoring settings").clicked() {
-                        let _ = std::process::Command::new("open")
+                        if let Err(e) = std::process::Command::new("open")
                             .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
-                            .spawn();
+                            .spawn()
+                        {
+                            self.guard_error = Some(format!("could not open Input Monitoring settings: {e}"));
+                        }
                     }
                     if ui.button("Test again").clicked() {
                         self.start_guard_test();
@@ -6721,8 +6741,15 @@ impl App {
                 self.show_flash = true;
             }
             if ui.button("📂 Open firmware folder").clicked() {
-                if let Some(d) = &self.env.firmware_dir {
-                    let _ = crate::platform::reveal_path(&d.join("keyboards/zsa/voyager/keymaps/keyjitsu"));
+                let target = self
+                    .env
+                    .firmware_dir
+                    .as_ref()
+                    .map(|d| d.join("keyboards/zsa/voyager/keymaps/keyjitsu"));
+                if let Some(target) = target {
+                    if let Err(e) = crate::platform::reveal_path(&target) {
+                        self.persist_error = Some(format!("opening firmware folder: {e:#}"));
+                    }
                 }
             }
             if ui.button("↻ Recheck").clicked() {
@@ -6744,7 +6771,9 @@ impl App {
             ui.horizontal(|ui| {
                 ui.colored_label(pal::GREEN, "✓ built");
                 if ui.link(RichText::new(bin.display().to_string()).size(11.5).monospace()).clicked() {
-                    let _ = crate::platform::reveal_path(&bin);
+                    if let Err(e) = crate::platform::reveal_path(&bin) {
+                        self.persist_error = Some(format!("opening built firmware location: {e:#}"));
+                    }
                 }
                 let can_flash = self.last_build_state_id.is_some()
                     && !self.build_busy
