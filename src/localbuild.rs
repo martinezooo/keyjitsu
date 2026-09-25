@@ -564,9 +564,9 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_build_artifact, prepare_keymap_dir, set_rule, validate_revision_id,
-        validate_source_basename,
-    , valid_firmware_serial};
+        clear_build_artifact, prepare_keymap_dir, set_rule, valid_firmware_serial,
+        validate_revision_id, validate_source_basename,
+    };
 
     #[test]
     fn stale_firmware_artifact_is_removed_before_compile() {
