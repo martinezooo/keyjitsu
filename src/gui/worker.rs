@@ -427,7 +427,7 @@ pub fn spawn_autolayer(
                 if bundle != last_bundle {
                     let target = rules
                         .iter()
-                        .find(|r| bundle.contains(r.bundle.as_str()))
+                        .find(|r| crate::cmd_autolayer::rule_matches(&bundle, &r.bundle))
                         .map(|r| r.layer);
                     let (release, enable) =
                         crate::cmd_autolayer::layer_transition(active_rule_layer, target);

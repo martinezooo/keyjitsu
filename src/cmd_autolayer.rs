@@ -14,6 +14,11 @@ use anyhow::{Context, Result};
 use crate::device::Keyboard;
 use crate::protocol::Command;
 
+pub(crate) fn rule_matches(bundle: &str, pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    !pattern.is_empty() && bundle.contains(pattern)
+}
+
 pub(crate) fn layer_transition(
     current: Option<u8>,
     target: Option<u8>,
@@ -30,6 +35,8 @@ pub fn parse_rule(s: &str) -> Result<(String, u8), String> {
     let (bundle, layer) = s
         .split_once('=')
         .ok_or_else(|| format!("expected BUNDLE_ID=LAYER, got {s:?}"))?;
+    let bundle = bundle.trim();
+    let layer = layer.trim();
     let layer: u8 = layer.parse().map_err(|_| format!("{layer:?} is not a layer number"))?;
     if bundle.is_empty() {
         return Err("empty bundle id".into());
@@ -61,7 +68,7 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
             if bundle != last_bundle {
                 let target = rules
                     .iter()
-                    .find(|(pat, _)| bundle.contains(pat.as_str()))
+                    .find(|(pat, _)| rule_matches(&bundle, pat))
                     .map(|(_, layer)| *layer);
                 let (release, enable) = layer_transition(active_rule_layer, target);
                 if let Some(prev) = release {
@@ -140,7 +147,18 @@ pub fn running_apps() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::layer_transition;
+    use super::{layer_transition, parse_rule, rule_matches};
+
+    #[test]
+    fn empty_or_whitespace_rules_never_match_every_app() {
+        assert!(rule_matches("com.apple.Terminal", "apple.Term"));
+        assert!(!rule_matches("com.apple.Terminal", ""));
+        assert!(!rule_matches("com.apple.Terminal", "   "));
+        assert_eq!(
+            parse_rule(" com.apple.Terminal = 2").unwrap(),
+            ("com.apple.Terminal".into(), 2)
+        );
+    }
 
     #[test]
     fn switching_rules_releases_previous_layer_before_enabling_next() {

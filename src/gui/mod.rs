@@ -6262,7 +6262,10 @@ impl App {
             // Live feedback: what the frontmost app is and whether a rule hits.
             if self.autolayer_enabled {
                 if let Some(front) = crate::cmd_autolayer::frontmost_bundle_id() {
-                    let hit = self.rules.iter().find(|r| front.contains(r.bundle.as_str()));
+                    let hit = self
+                        .rules
+                        .iter()
+                        .find(|r| crate::cmd_autolayer::rule_matches(&front, &r.bundle));
                     ui.horizontal(|ui| {
                         ui.weak("frontmost:");
                         ui.label(RichText::new(&front).size(11.5).monospace().color(pal::TEXT_MUTED));
