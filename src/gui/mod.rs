@@ -1960,26 +1960,24 @@ impl App {
             self.perf_live = self.perf_sampler.sample();
             self.perf_tick = Instant::now();
         }
-        if self.perf_run.is_none() {
-            return;
-        }
+
         let now = Instant::now();
+        let Some(run) = self.perf_run.as_ref() else {
+            return;
+        };
 
         // Decide phase transitions without holding a borrow across self calls.
-        let (ended, advance_to) = {
-            let run = self.perf_run.as_ref().unwrap();
-            if run.phases.is_empty() {
-                (now >= run.end_at, None)
-            } else if now >= run.phase_until {
-                let next = run.phase_i + 1;
-                if next >= run.phases.len() {
-                    (true, None)
-                } else {
-                    (false, Some(next))
-                }
+        let (ended, advance_to) = if run.phases.is_empty() {
+            (now >= run.end_at, None)
+        } else if now >= run.phase_until {
+            let next = run.phase_i + 1;
+            if next >= run.phases.len() {
+                (true, None)
             } else {
-                (false, None)
+                (false, Some(next))
             }
+        } else {
+            (false, None)
         };
 
         if ended {
@@ -1988,7 +1986,15 @@ impl App {
         }
 
         if let Some(next) = advance_to {
-            let ph = self.perf_run.as_ref().unwrap().phases[next].clone();
+            let Some(ph) = self
+                .perf_run
+                .as_ref()
+                .and_then(|run| run.phases.get(next))
+                .cloned()
+            else {
+                self.finish_perf();
+                return;
+            };
             self.set_anim_effect(ph.anim);
             if ph.peek {
                 self.peek_layer = self.active_layer.max(1);
@@ -1996,23 +2002,36 @@ impl App {
             } else {
                 self.peek_until = None;
             }
-            let run = self.perf_run.as_mut().unwrap();
+            let Some(run) = self.perf_run.as_mut() else {
+                return;
+            };
             run.phase_i = next;
             run.phase_until = now + Duration::from_secs(ph.secs);
         }
 
         // Take a sample once per second.
-        if self.perf_run.as_ref().unwrap().next_sample <= now {
-            let cpu = self.perf_run.as_mut().unwrap().sampler.sample();
-            let label = {
-                let run = self.perf_run.as_ref().unwrap();
-                if run.phases.is_empty() {
-                    self.perf_state().label()
-                } else {
-                    run.phases[run.phase_i].label.clone()
-                }
-            };
-            let run = self.perf_run.as_mut().unwrap();
+        if !self
+            .perf_run
+            .as_ref()
+            .is_some_and(|run| run.next_sample <= now)
+        {
+            return;
+        }
+
+        let cpu = match self.perf_run.as_mut() {
+            Some(run) => run.sampler.sample(),
+            None => return,
+        };
+        let label = match self.perf_run.as_ref() {
+            Some(run) if run.phases.is_empty() => self.perf_state().label(),
+            Some(run) => run
+                .phases
+                .get(run.phase_i)
+                .map(|phase| phase.label.clone())
+                .unwrap_or_else(|| "unknown".into()),
+            None => return,
+        };
+        if let Some(run) = self.perf_run.as_mut() {
             run.samples.push((label, cpu));
             run.next_sample = now + Duration::from_millis(1000);
         }
