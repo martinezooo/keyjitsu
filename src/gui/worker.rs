@@ -89,16 +89,41 @@ fn device_loop(
             }
         };
 
-        let initial_layer = kb.pair().ok().flatten();
+        let initial_layer = match kb.pair() {
+            Ok(layer) => layer,
+            Err(_) => {
+                kb.disconnect();
+                if was_connected && etx.send(DevEvent::Disconnected).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+                was_connected = false;
+                std::thread::sleep(RESCAN_INTERVAL);
+                continue;
+            }
+        };
         // ZSA packs the layout/firmware id into the USB serial; `fw_version()`
         // returns that serial string (later parsed by `LayoutId::from_serial`).
-        let serial = kb.fw_version().unwrap_or_default();
+        let serial = match kb.fw_version() {
+            Ok(serial) => serial,
+            Err(_) => {
+                kb.disconnect();
+                if was_connected && etx.send(DevEvent::Disconnected).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+                was_connected = false;
+                std::thread::sleep(RESCAN_INTERVAL);
+                continue;
+            }
+        };
         if etx
             .send(DevEvent::Connected { model: kb.info.model().to_string(), serial: serial.clone() })
             .is_err()
         {
             return;
         }
+        was_connected = true;
         if let Some(layer) = initial_layer {
             let _ = etx.send(DevEvent::Hid(Event::Layer(layer)));
         }
