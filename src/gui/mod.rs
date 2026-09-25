@@ -197,6 +197,10 @@ fn flash_is_writing(state: Option<&FlashState>) -> bool {
     matches!(state, Some(FlashState::Working { .. }))
 }
 
+fn flash_job_terminal(state: Option<&FlashState>) -> bool {
+    matches!(state, Some(FlashState::Done) | Some(FlashState::Failed(_)))
+}
+
 /// The four Oryx-style action slots of a key, shown as editor rows.
 /// Index into `App::edit_slots`: 0 tap, 1 hold, 2 double-tap, 3 tap+hold.
 const SLOT_LABELS: [&str; 4] = ["Tap", "Hold", "Double-tap", "Double-tap + hold"];
@@ -2320,10 +2324,12 @@ impl App {
                 DevEvent::Hid(_) => {}
             }
         }
+        let mut flash_job_finished = false;
         if let Some(rx) = &self.flash_rx {
             while let Ok(s) = rx.try_recv() {
                 self.flash_state = Some(s);
             }
+            flash_job_finished = flash_job_terminal(self.flash_state.as_ref());
             // Drive the build modal's phase/progress from the flash stage.
             match &self.flash_state {
                 Some(FlashState::Downloading) => {
@@ -2369,6 +2375,12 @@ impl App {
                 }
                 None => {}
             }
+        }
+        if flash_job_finished {
+            // Keep the terminal state for the UI, but stop re-processing it on
+            // every frame. Otherwise a confirmed/mismatched reconnect result
+            // is overwritten on the next frame by the stale FlashState::Done.
+            self.flash_rx = None;
         }
         if let Some(rx) = &self.build_rx {
             let mut msgs = Vec::new();
@@ -6850,7 +6862,8 @@ impl Drop for App {
 #[cfg(test)]
 mod firmware_confirmation_tests {
     use super::{
-        confirm_firmware_state, is_post_flash_generation, FirmwareConfirmation,
+        confirm_firmware_state, flash_job_terminal, is_post_flash_generation, FirmwareConfirmation,
+        FlashState,
     };
 
     #[test]
@@ -6875,6 +6888,19 @@ mod firmware_confirmation_tests {
         assert!(!is_post_flash_generation(Some(7), 6));
         assert!(is_post_flash_generation(Some(7), 8));
         assert!(is_post_flash_generation(None, 1));
+    }
+
+    #[test]
+    fn terminal_flash_state_is_consumed_instead_of_reprocessed() {
+        assert!(!flash_job_terminal(None));
+        assert!(!flash_job_terminal(Some(&FlashState::Downloading)));
+        assert!(!flash_job_terminal(Some(&FlashState::WaitingForBootloader)));
+        assert!(!flash_job_terminal(Some(&FlashState::Working {
+            phase: "writing",
+            fraction: 0.5,
+        })));
+        assert!(flash_job_terminal(Some(&FlashState::Done)));
+        assert!(flash_job_terminal(Some(&FlashState::Failed("nope".into()))));
     }
 
     #[test]
