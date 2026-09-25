@@ -1026,6 +1026,63 @@ impl App {
             .unwrap_or(true)
     }
 
+    /// Physical positions participating in configured Oryx combos on this
+    /// layer. Combos are revision-level relations, not key assignments.
+    fn combo_member_mask(&self, layer: u8) -> Vec<bool> {
+        let mut mask = vec![false; self.geometry().len()];
+        let Some(layout) = &self.layout else {
+            return mask;
+        };
+        for combo in layout
+            .revision
+            .combos
+            .iter()
+            .filter(|combo| combo.layer_idx == layer)
+        {
+            for &key in &combo.key_indices {
+                if let Some(member) = mask.get_mut(key) {
+                    *member = true;
+                }
+            }
+        }
+        mask
+    }
+
+    /// Human-readable configured combos involving one physical key.
+    /// Uses the same centralized action/legend conversion as Live and the
+    /// editor so a modifier trigger cannot silently degrade to its base key.
+    fn combo_summaries_for_key(&self, layer: u8, key: usize) -> Vec<String> {
+        let Some(layout) = &self.layout else {
+            return Vec::new();
+        };
+        layout
+            .revision
+            .combos
+            .iter()
+            .filter(|combo| combo.layer_idx == layer && combo.key_indices.contains(&key))
+            .map(|combo| {
+                let chord = combo
+                    .key_indices
+                    .iter()
+                    .map(|&idx| {
+                        self.editing_key(layer, idx)
+                            .map(|key| legend::full_labels_for(&key).tap)
+                            .filter(|label| !label.is_empty())
+                            .unwrap_or_else(|| format!("key {idx}"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                let trigger = combo
+                    .trigger
+                    .as_ref()
+                    .map(legend::action_label)
+                    .filter(|label| !label.is_empty())
+                    .unwrap_or_else(|| "unassigned".to_string());
+                format!("{chord} → {trigger}")
+            })
+            .collect()
+    }
+
     fn desired_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
         merge_firmware_maps(
             self.firmware_state.as_ref(),
@@ -4217,6 +4274,7 @@ impl App {
         // Live previews the same effective state the editor and build use.
         let editing_layer = self.editing_layer(view);
         let layer = editing_layer.as_ref();
+        let combo_keys = self.combo_member_mask(view);
         let sel = self.selected_key;
         // The keyboard sits on its own raised canvas card with a soft top
         // sheen + shadow, so it reads as the main object.
@@ -4246,6 +4304,7 @@ impl App {
                             &glow,
                             &self.pressed,
                             sel,
+                            Some(&combo_keys),
                             1.0,
                             false,
                         )
@@ -4318,6 +4377,7 @@ impl App {
         let pos = self.geometry().keys[i].layout_pos as usize;
         let staged = self.key_edits.get(&(view, i)).cloned();
         let key_col = self.layout_glow(view, i).unwrap_or(pal::VIOLET);
+        let combo_summaries = self.combo_summaries_for_key(view, i);
 
         // --- header: ONE compact row - badge · identity · status · actions --
         let (preview, warns) = self.compose_slots();
@@ -4394,6 +4454,22 @@ impl App {
                     });
                 });
             });
+        if !combo_summaries.is_empty() {
+            ui.add_space(6.0);
+            egui::Frame::new()
+                .fill(pal::CARD)
+                .stroke(egui::Stroke::new(1.0, pal::AMBER.gamma_multiply(0.55)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(10, 6))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(pal::AMBER, "◆ COMBO");
+                        for summary in &combo_summaries {
+                            ui.label(RichText::new(summary).strong().color(pal::TEXT));
+                        }
+                    });
+                });
+        }
         ui.add_space(6.0);
 
         // --- binding rows: one per action slot ------------------------------
@@ -5487,6 +5563,7 @@ impl App {
             vec![false; geo.len()]
         };
         let peek_layer = self.peek_layer;
+        let combo_keys = self.combo_member_mask(peek_layer);
         let show_name = self.peek.show_layer_name;
         let show_bg = self.peek.show_background;
         let mono = self.peek.monochrome;
@@ -5572,7 +5649,17 @@ impl App {
                             });
                             ui.add_space(8.0);
                         }
-                        draw_keyboard(ui, geo, legends, &glow, &no_press, None, opacity, mono);
+                        draw_keyboard(
+                            ui,
+                            geo,
+                            legends,
+                            &glow,
+                            &no_press,
+                            None,
+                            Some(&combo_keys),
+                            opacity,
+                            mono,
+                        );
                         if show_combo {
                             ui.add_space(6.0);
                             combo_strip(ui, &combo, opacity, accent, show_combo_ms);
@@ -6090,6 +6177,7 @@ impl App {
         let rank_rows = (((budget - 84.0) / 27.0) as usize).clamp(5, 20);
         let device_layer = self.device_layer(layer);
         let layer_def = device_layer.as_ref();
+        let combo_keys = self.combo_member_mask(layer);
         let glow: Vec<Option<Color32>> = norm
             .iter()
             .map(|&t| (t > 0.0).then(|| widget::heat_color(t)))
@@ -6120,6 +6208,7 @@ impl App {
                                     &glow,
                                     &no_press,
                                     None,
+                                    Some(&combo_keys),
                                     1.0,
                                     false,
                                 );
@@ -6765,6 +6854,7 @@ impl App {
             .collect();
         let no_press = vec![false; n];
         let device_layer = self.device_layer(self.view_layer);
+        let combo_keys = self.combo_member_mask(self.view_layer);
         let kb = draw_keyboard(
             ui,
             geo,
@@ -6772,6 +6862,7 @@ impl App {
             &glow,
             &no_press,
             None,
+            Some(&combo_keys),
             1.0,
             false,
         );
@@ -7945,6 +8036,7 @@ impl App {
                 } else {
                     vec![false; geo.len()]
                 };
+                let combo_keys = self.combo_member_mask(layer);
                 ui.set_max_width(kb_w);
                 draw_keyboard(
                     ui,
@@ -7953,6 +8045,7 @@ impl App {
                     &glow,
                     &press,
                     None,
+                    Some(&combo_keys),
                     c.opacity.clamp(0.08, 1.0),
                     c.monochrome,
                 );
