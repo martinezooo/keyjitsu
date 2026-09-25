@@ -161,17 +161,17 @@ impl Event {
             E::LAYER => Event::Layer(*params.first()?),
             E::KEYDOWN => Event::KeyDown { col: *params.first()?, row: *params.get(1)? },
             E::KEYUP => Event::KeyUp { col: *params.first()?, row: *params.get(1)? },
-            E::RGB_CONTROL => Event::RgbControl(params.first().copied().unwrap_or(0) != 0),
-            E::TOGGLE_SMART_LAYER => Event::ToggleSmartLayer(params.first().copied().unwrap_or(0)),
-            E::TRIGGER_SMART_LAYER => Event::TriggerSmartLayer(params.first().copied().unwrap_or(0)),
+            E::RGB_CONTROL => Event::RgbControl(*params.first()? != 0),
+            E::TOGGLE_SMART_LAYER => Event::ToggleSmartLayer(*params.first()?),
+            E::TRIGGER_SMART_LAYER => Event::TriggerSmartLayer(*params.first()?),
             E::STATUS_LED_CONTROL => {
-                Event::StatusLedControl(params.first().copied().unwrap_or(0) != 0)
+                Event::StatusLedControl(*params.first()? != 0)
             }
             E::AUTOMOUSE => Event::Automouse {
-                trackball: params.first().copied().unwrap_or(0) != 0,
-                trackpad: params.get(1).copied().unwrap_or(0) != 0,
+                trackball: *params.first()? != 0,
+                trackpad: *params.get(1)? != 0,
             },
-            E::PROTOCOL_VERSION => Event::ProtocolVersion(params.first().copied().unwrap_or(0)),
+            E::PROTOCOL_VERSION => Event::ProtocolVersion(*params.first()?),
             E::ERROR => Event::Error(params.to_vec()),
             other => Event::Unknown { id: other, params: params.to_vec() },
         })
@@ -257,6 +257,14 @@ mod tests {
     #[test]
     fn decode_empty_report() {
         assert_eq!(Event::decode(&[]), None);
+    }
+
+    #[test]
+    fn decode_truncated_parameter_events() {
+        for id in [0x08, 0x09, 0x0A, 0x0B, 0xFE] {
+            assert_eq!(Event::decode(&report(id, &[])), None);
+        }
+        assert_eq!(Event::decode(&report(0x0C, &[1])), None);
     }
 
     #[test]
