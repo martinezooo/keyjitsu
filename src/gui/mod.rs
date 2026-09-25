@@ -851,40 +851,12 @@ impl App {
         HashMap<(u8, usize), String>,
         HashMap<(u8, usize), [Option<String>; 4]>,
     ) {
-        let mut edits: HashMap<(u8, usize), String> = self
-            .firmware_state
-            .as_ref()
-            .map(|state| {
-                state
-                    .edits
-                    .iter()
-                    .map(|e| ((e.layer, e.key as usize), e.code.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut dances: HashMap<(u8, usize), [Option<String>; 4]> = self
-            .firmware_state
-            .as_ref()
-            .map(|state| {
-                state
-                    .dances
-                    .iter()
-                    .map(|d| ((d.layer, d.key as usize), d.slots.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        for (&pos, code) in &self.key_edits {
-            dances.remove(&pos);
-            edits.insert(pos, code.clone());
-        }
-        for (&pos, slots) in &self.key_dances {
-            edits.remove(&pos);
-            dances.insert(pos, slots.clone());
-        }
-        (edits, dances)
+        merge_firmware_maps(
+            self.firmware_state.as_ref(),
+            &self.key_edits,
+            &self.key_dances,
+        )
     }
-
 
     fn layer_count(&self) -> u8 {
         (self.oryx_layer_count() + self.custom_layers.len() as u8)
@@ -3179,6 +3151,44 @@ fn renumber_layer_ref(code: &str, del: u8) -> String {
 /// Turn a QMK keycode string into an `OryxKey` for display: layer-switch
 /// families render as `CODE → layer` (via the layer field), everything else
 /// as its plain legend. A dual-role `LT(n,tap)` shows the tap with a hold hint.
+fn merge_firmware_maps(
+    state: Option<&FirmwareState>,
+    staged_edits: &HashMap<(u8, usize), String>,
+    staged_dances: &HashMap<(u8, usize), [Option<String>; 4]>,
+) -> (
+    HashMap<(u8, usize), String>,
+    HashMap<(u8, usize), [Option<String>; 4]>,
+) {
+    let mut edits: HashMap<(u8, usize), String> = state
+        .map(|state| {
+            state
+                .edits
+                .iter()
+                .map(|edit| ((edit.layer, edit.key as usize), edit.code.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut dances: HashMap<(u8, usize), [Option<String>; 4]> = state
+        .map(|state| {
+            state
+                .dances
+                .iter()
+                .map(|dance| ((dance.layer, dance.key as usize), dance.slots.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for (&pos, code) in staged_edits {
+        dances.remove(&pos);
+        edits.insert(pos, code.clone());
+    }
+    for (&pos, slots) in staged_dances {
+        edits.remove(&pos);
+        dances.insert(pos, slots.clone());
+    }
+    (edits, dances)
+}
+
 fn synth_slots(slots: &[Option<String>; 4]) -> OryxKey {
     let mut key = OryxKey::default();
     let action = |code: &Option<String>| -> Option<KeyAction> {
@@ -6651,6 +6661,72 @@ impl Drop for App {
         // Hand the LEDs back to the firmware on exit (in case an effect or glow
         // sync had taken them over).
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
+    }
+}
+
+#[cfg(test)]
+mod state_composition_tests {
+    use std::collections::HashMap;
+
+    use super::{merge_firmware_maps, synth_key};
+    use crate::firmware_state::{FirmwareDance, FirmwareEdit, FirmwareState};
+
+    #[test]
+    fn pending_changes_override_applied_firmware_state() {
+        let state = FirmwareState::new(
+            "layout".into(),
+            "revision".into(),
+            vec![
+                FirmwareEdit { layer: 0, key: 1, code: "KC_A".into() },
+                FirmwareEdit { layer: 0, key: 2, code: "KC_B".into() },
+            ],
+            vec![FirmwareDance {
+                layer: 0,
+                key: 3,
+                slots: [Some("KC_C".into()), None, Some("KC_D".into()), None],
+            }],
+            vec![],
+        );
+        let staged_edits = HashMap::from([((0, 3), "KC_NO".to_string())]);
+        let staged_dances = HashMap::from([(
+            (0, 2),
+            [Some("KC_X".into()), Some("KC_LSFT".into()), None, None],
+        )]);
+
+        let (edits, dances) =
+            merge_firmware_maps(Some(&state), &staged_edits, &staged_dances);
+
+        assert_eq!(edits.get(&(0, 1)).map(String::as_str), Some("KC_A"));
+        assert_eq!(edits.get(&(0, 3)).map(String::as_str), Some("KC_NO"));
+        assert!(!edits.contains_key(&(0, 2)));
+        assert!(!dances.contains_key(&(0, 3)));
+        assert_eq!(
+            dances.get(&(0, 2)).and_then(|slots| slots[0].as_deref()),
+            Some("KC_X")
+        );
+    }
+
+    #[test]
+    fn synthesized_keys_preserve_disabled_transparent_and_dual_role_codes() {
+        let disabled = synth_key("KC_NO");
+        assert_eq!(disabled.tap.as_ref().and_then(|a| a.code.as_deref()), Some("KC_NO"));
+
+        let transparent = synth_key("KC_TRNS");
+        assert_eq!(
+            transparent.tap.as_ref().and_then(|a| a.code.as_deref()),
+            Some("KC_TRNS")
+        );
+
+        let layer_tap = synth_key("LT(2,KC_A)");
+        assert_eq!(layer_tap.tap.as_ref().and_then(|a| a.code.as_deref()), Some("KC_A"));
+        assert_eq!(layer_tap.hold.as_ref().and_then(|a| a.layer), Some(2));
+
+        let mod_tap = synth_key("LGUI_T(KC_SPC)");
+        assert_eq!(mod_tap.tap.as_ref().and_then(|a| a.code.as_deref()), Some("KC_SPC"));
+        assert_eq!(
+            mod_tap.hold.as_ref().and_then(|a| a.code.as_deref()),
+            Some("KC_LGUI")
+        );
     }
 }
 
