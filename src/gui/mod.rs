@@ -4666,9 +4666,37 @@ impl App {
             ));
             return;
         }
-        let n_keys = self.geometry().len();
 
+        self.build_state_id = None;
+        self.expected_firmware_state = None;
+        self.last_build_bin = None;
+        self.build_result = None;
+
+        let n_keys = self.geometry().len();
+        let oryx = self.oryx_layer_count();
         let (full_edits, full_dances) = self.effective_firmware_maps();
+
+        let invalid_edit = full_edits
+            .keys()
+            .chain(full_dances.keys())
+            .find(|(layer, key)| *layer >= oryx || *key >= n_keys)
+            .copied();
+        let invalid_custom = self.custom_layers.iter().enumerate().find_map(|(layer, custom)| {
+            let mut seen = std::collections::HashSet::new();
+            custom.keys.iter().find_map(|entry| {
+                let key = entry.key as usize;
+                (key >= n_keys || entry.code.trim().is_empty() || !seen.insert(entry.key))
+                    .then_some((oryx + layer as u8, key))
+            })
+        });
+        if let Some((layer, key)) = invalid_edit.or(invalid_custom) {
+            self.build_open = true;
+            self.build_phase = "Invalid state".into();
+            self.build_result = Some(Err(format!(
+                "Cannot build: invalid key state at layer {layer}, key {key}."
+            )));
+            return;
+        }
 
         let state = FirmwareState::new(
             id.hash.clone(),
@@ -4728,7 +4756,6 @@ impl App {
             })
             .collect();
         // User-authored layers → new LAYOUT blocks (keys visual→LAYOUT pos).
-        let oryx = self.oryx_layer_count();
         let new_layers: Vec<localbuild::NewLayer> = self
             .custom_layers
             .iter()
@@ -4738,20 +4765,16 @@ impl App {
                 keys: cl
                     .keys
                     .iter()
-                    // Skip any out-of-geometry key from a hand-edited/foreign
-                    // config instead of panicking on the index.
-                    .filter_map(|k| {
-                        self.geometry()
-                            .keys
-                            .get(k.key as usize)
-                            .map(|g| (g.layout_pos as usize, k.code.clone()))
+                    .map(|k| {
+                        (
+                            self.geometry().keys[k.key as usize].layout_pos as usize,
+                            k.code.clone(),
+                        )
                     })
                     .collect(),
             })
             .collect();
         self.build_log.clear();
-        self.last_build_bin = None;
-        self.expected_firmware_state = None;
         self.build_busy = true;
         self.build_flash_after = flash_after;
         self.build_open = true;
