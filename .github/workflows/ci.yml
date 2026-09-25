@@ -20,7 +20,12 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
       - name: Prepare stable Rust
         run: |
           rustup default stable
@@ -29,32 +34,24 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - name: Format
-        run: set -o pipefail; cargo fmt --all -- --check 2>&1 | tee fmt.log
+        run: cargo fmt --all -- --check
       - name: Build
-        run: set -o pipefail; cargo build --locked 2>&1 | tee build.log
-      - name: Clippy (warnings are errors)
-        run: set -o pipefail; cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
+        run: cargo build --locked
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
-        run: set -o pipefail; cargo test --locked 2>&1 | tee test.log
-      - name: Upload CI diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-diagnostics-${{ runner.os }}
-          path: |
-            fmt.log
-            build.log
-            clippy.log
-            test.log
-          if-no-files-found: ignore
+        run: cargo test --locked
 
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        run: |
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit dependencies
