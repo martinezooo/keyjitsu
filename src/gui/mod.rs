@@ -1602,7 +1602,7 @@ impl App {
                             continue;
                         }
                         let is = active.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(is, &name).clicked() && !is {
+                        if ui.selectable_label(is, name).clicked() && !is {
                             switch = Some(Some(name.clone()));
                         }
                     }
