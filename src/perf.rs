@@ -7,6 +7,8 @@
 
 use std::time::Instant;
 
+pub const CPU_SUPPORTED: bool = cfg!(unix);
+
 /// Samples the process CPU% between calls.
 pub struct CpuSampler {
     last_cpu: f64,
