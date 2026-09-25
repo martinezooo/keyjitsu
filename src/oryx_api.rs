@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -174,6 +175,7 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
         "variables": { "hashId": id.hash, "geometry": geometry, "revisionId": id.revision },
     });
     let resp: serde_json::Value = ureq::post(ENDPOINT)
+        .timeout(Duration::from_secs(8))
         .set("Content-Type", "application/json")
         .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
         .send_json(body)
