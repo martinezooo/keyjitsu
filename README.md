@@ -106,7 +106,7 @@ shows your layout, all locally on macOS. This table compares the two desktop app
 
 ## CLI
 
-Every GUI feature also has a command. A few of them:
+The CLI covers the core device, layout, heatmap, RGB, build and flash workflows. A few commands:
 
 | Command | What it does |
 | --- | --- |
