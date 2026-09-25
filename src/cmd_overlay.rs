@@ -41,17 +41,17 @@ pub fn run(serial: Option<&str>, opts: Opts) -> Result<()> {
     let mut active_layer = kb.pair()?.unwrap_or(0);
 
     // Trigger key: flag > interactive pick > saved config.
-    let mut cfg = config::load();
+    let mut cfg = config::load_checked()?;
     let trigger: Option<(u8, u8)> = if let Some(k) = opts.key {
         cfg.overlay_trigger = Some([k.0, k.1]);
-        config::save(&cfg).ok();
+        config::save(&cfg)?;
         Some(k)
     } else if opts.pick {
         println!("Press the key on the keyboard you want as the overlay trigger…");
         let k = wait_for_keydown(&kb)?;
         println!("Trigger set to row {}, col {} (saved).", k.0, k.1);
         cfg.overlay_trigger = Some([k.0, k.1]);
-        config::save(&cfg).ok(); // best-effort, like the --key path; the overlay still runs
+        config::save(&cfg)?;
         Some(k)
     } else {
         cfg.overlay_trigger.map(|[r, c]| (r, c))
