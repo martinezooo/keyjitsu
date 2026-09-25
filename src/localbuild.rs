@@ -251,11 +251,9 @@ pub fn build(
     }
 
     // Drop the layout into a dedicated keymap so we never touch `default`.
-    // Write every generated file (keymap.c pulls in i18n.h, config.h, …), then
-    // overwrite keymap.c / rules.mk with our edited versions.
-    let km_dir = firmware.join("keyboards/zsa/voyager/keymaps/keyjitsu");
-    std::fs::create_dir_all(&km_dir)
-        .with_context(|| format!("creating {}", km_dir.display()))?;
+    // Start clean so files from an older generated source cannot leak into a
+    // later build when Oryx stops emitting one of them.
+    let km_dir = prepare_keymap_dir(&firmware)?;
     for (name, bytes) in &files {
         std::fs::write(km_dir.join(name), bytes)
             .with_context(|| format!("writing {}", km_dir.join(name).display()))?;
@@ -285,6 +283,20 @@ pub fn build(
     }
     log(format!("Built {}", bin.display()));
     Ok(bin)
+}
+
+fn prepare_keymap_dir(firmware: &Path) -> Result<PathBuf> {
+    let km_dir = firmware.join("keyboards/zsa/voyager/keymaps/keyjitsu");
+    match std::fs::remove_dir_all(&km_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("clearing {}", km_dir.display()));
+        }
+    }
+    std::fs::create_dir_all(&km_dir)
+        .with_context(|| format!("creating {}", km_dir.display()))?;
+    Ok(km_dir)
 }
 
 /// Pull a source file out of the list by basename, as UTF-8.
@@ -515,7 +527,25 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
 #[cfg(test)]
 mod tests {
-    use super::{set_rule, validate_revision_id, validate_source_basename};
+    use super::{
+        prepare_keymap_dir, set_rule, validate_revision_id, validate_source_basename,
+    };
+
+    #[test]
+    fn generated_keymap_directory_starts_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir
+            .path()
+            .join("keyboards/zsa/voyager/keymaps/keyjitsu");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("stale.c"), b"old").unwrap();
+
+        let fresh = prepare_keymap_dir(dir.path()).unwrap();
+
+        assert_eq!(fresh, old);
+        assert!(fresh.is_dir());
+        assert!(!fresh.join("stale.c").exists());
+    }
 
     #[test]
     fn generated_source_basenames_cannot_escape_keymap_directory() {
