@@ -147,6 +147,13 @@ pub struct CustomKey {
     pub code: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomLayerSet {
+    pub layout: String,
+    pub layers: Vec<CustomLayer>,
+}
+
+
 /// A user-added entry in the Shortcuts cheatsheet (built-ins ship in the
 /// binary; these extend/customize them and survive restarts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -216,8 +223,11 @@ pub struct Config {
     pub key_fx: Vec<KeyFx>,
     /// User-built step-sequence effects from FX Studio.
     pub custom_fx: Vec<crate::gui::CustomFx>,
-    /// User-authored extra layers (beyond the Oryx source).
+    /// Legacy flat custom-layer storage kept for migration.
     pub custom_layers: Vec<CustomLayer>,
+    /// Desired custom-layer sets that differ from (or have not yet been
+    /// confirmed against) the running firmware.
+    pub custom_layer_sets: Vec<CustomLayerSet>,
     /// Per-key remaps staged in the editor but not yet built into firmware.
     pub staged_edits: Vec<StagedEdit>,
     /// Per-key tap dances staged in the editor but not yet built into firmware.
@@ -378,5 +388,6 @@ mod tests {
         // An OLD config (no staged_* keys) must still load → empty vecs.
         let old: Config = serde_json::from_str(r#"{"guard_enabled":true}"#).unwrap();
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
+        assert!(old.custom_layer_sets.is_empty());
     }
 }
