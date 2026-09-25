@@ -5723,25 +5723,26 @@ impl App {
             });
         }
 
-        if a.effect != Effect::Off {
-            // A constant effect owns the LEDs; disable glow sync to avoid a fight.
+        let owns_leds = a.effect != Effect::Off;
+        let after = (a.effect, a.color, a.speed, a.brightness, a.press_effect, a.press_color, a.custom_name.clone());
+        let rgb = (after != before).then(|| config::RgbState {
+            effect: a.effect,
+            color: a.color,
+            speed: a.speed,
+            brightness: a.brightness,
+            press_effect: a.press_effect,
+            press_color: a.press_color,
+            custom_name: a.custom_name.clone(),
+        });
+        drop(a);
+
+        if owns_leds {
             self.sync_glow = false;
         }
-
-        // Persist the board RGB state so restarts (and profiles) restore it.
-        let after = (a.effect, a.color, a.speed, a.brightness, a.press_effect, a.press_color, a.custom_name.clone());
-        if after != before {
-            let mut cfg = config::load();
-            cfg.rgb = config::RgbState {
-                effect: a.effect,
-                color: a.color,
-                speed: a.speed,
-                brightness: a.brightness,
-                press_effect: a.press_effect,
-                press_color: a.press_color,
-                custom_name: a.custom_name.clone(),
-            };
-            let _ = config::save(&cfg);
+        if let Some(rgb) = rgb {
+            self.persist_config("saving RGB settings", move |cfg| {
+                cfg.rgb = rgb;
+            });
         }
     }
 
