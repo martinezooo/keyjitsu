@@ -267,6 +267,13 @@ pub fn build(
     if cancel.load(Ordering::SeqCst) {
         bail!("canceled");
     }
+
+    // qmk writes this fixed output name into the firmware root. Remove any
+    // previous build first so a successful command that fails to emit a fresh
+    // artifact can never make an old firmware image look like the new result.
+    let bin = firmware.join("zsa_voyager_keyjitsu.bin");
+    clear_build_artifact(&bin)?;
+
     log("Compiling with qmk (this can take a minute)…".into());
     run_streamed(
         Command::new("qmk")
@@ -276,13 +283,19 @@ pub fn build(
         log,
     )?;
 
-    // qmk writes `zsa_voyager_keyjitsu.bin` into the firmware root.
-    let bin = firmware.join("zsa_voyager_keyjitsu.bin");
     if !bin.is_file() {
         bail!("compile finished but {} was not produced", bin.display());
     }
     log(format!("Built {}", bin.display()));
     Ok(bin)
+}
+
+fn clear_build_artifact(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("removing stale build artifact {}", path.display())),
+    }
 }
 
 fn prepare_keymap_dir(firmware: &Path) -> Result<PathBuf> {
@@ -528,8 +541,20 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_keymap_dir, set_rule, validate_revision_id, validate_source_basename,
+        clear_build_artifact, prepare_keymap_dir, set_rule, validate_revision_id,
+        validate_source_basename,
     };
+
+    #[test]
+    fn stale_firmware_artifact_is_removed_before_compile() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("zsa_voyager_keyjitsu.bin");
+        std::fs::write(&bin, b"old firmware").unwrap();
+
+        clear_build_artifact(&bin).unwrap();
+        assert!(!bin.exists());
+        clear_build_artifact(&bin).unwrap();
+    }
 
     #[test]
     fn generated_keymap_directory_starts_clean() {
