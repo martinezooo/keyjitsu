@@ -1931,6 +1931,9 @@ impl App {
     }
 
     fn tick_perf(&mut self) {
+        if !perf::CPU_SUPPORTED {
+            return;
+        }
         // Live CPU read (cheap, sub-Hz).
         if self.perf_tick.elapsed() >= Duration::from_millis(600) {
             self.perf_live = self.perf_sampler.sample();
@@ -2534,16 +2537,19 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().max_height(nav_h).auto_shrink([false, true]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.spacing_mut().interact_size.y = 20.0;
-                    for (tab, name, icon) in [
-                        (Tab::Live, "Live", "⌨"),
-                        (Tab::Layers, "Layers", "▤"),
-                        (Tab::Heatmap, "Heatmap", "🔥"),
-                        (Tab::Peek, "Peek", "👁"),
-                        (Tab::Fx, "FX Studio (exp)", "✨"),
-                        (Tab::Perf, "Performance (exp)", "📈"),
-                        (Tab::Auto, "Autolayer", "⇆"),
-                        (Tab::Tools, "Settings", "⚙"),
+                    for (tab, name, icon, available) in [
+                        (Tab::Live, "Live", "⌨", true),
+                        (Tab::Layers, "Layers", "▤", true),
+                        (Tab::Heatmap, "Heatmap", "🔥", true),
+                        (Tab::Peek, "Peek", "👁", true),
+                        (Tab::Fx, "FX Studio (exp)", "✨", true),
+                        (Tab::Perf, "Performance (exp)", "📈", perf::CPU_SUPPORTED),
+                        (Tab::Auto, "Autolayer", "⇆", cfg!(target_os = "macos")),
+                        (Tab::Tools, "Settings", "⚙", true),
                     ] {
+                        if !available {
+                            continue;
+                        }
                         nav_item(ui, &mut self.tab, tab, icon, name);
                         if self.tab == tab {
                             self.nav_children(ui, tab);
@@ -2581,14 +2587,14 @@ impl eframe::App for App {
                             };
                             egui::Frame::new().show(ui, |ui| status_pill(ui, label, color)).response.on_hover_text(hover);
                         }
-                        if self.autolayer_enabled {
+                        if cfg!(target_os = "macos") && self.autolayer_enabled {
                             egui::Frame::new()
                                 .show(ui, |ui| status_pill(ui, "⇆ autolayer", pal::GREEN))
                                 .response
                                 .on_hover_text("Layers follow the frontmost app.");
                         }
                     });
-                    if self.show_cpu_header {
+                    if perf::CPU_SUPPORTED && self.show_cpu_header {
                         let c = self.perf_live;
                         let resp = egui::Frame::new()
                             .show(ui, |ui| status_pill(ui, &format!("{c:.1}% CPU"), if c > 25.0 { pal::AMBER } else { pal::TEXT_DIM }))
@@ -5626,6 +5632,11 @@ impl App {
 
     /// Performance as its own page (same card style as Settings).
     fn ui_perf_page(&mut self, ui: &mut egui::Ui) {
+        if !perf::CPU_SUPPORTED {
+            ui.add_space(20.0);
+            ui.label("Process CPU sampling is not available on this platform.");
+            return;
+        }
         let full = ui.available_width();
         let w = full.min(1000.0);
         let x = ((full - w) / 2.0).max(12.0);
@@ -5653,7 +5664,9 @@ impl App {
             ui.add_space(x);
             ui.vertical(|ui| {
                 ui.set_width(w - 24.0);
-                let pill = if self.autolayer_enabled {
+                let pill = if !cfg!(target_os = "macos") {
+                    ("macOS only".to_string(), pal::TEXT_DIM)
+                } else if self.autolayer_enabled {
                     (format!("On · {} rule{}", self.rules.len(), if self.rules.len() == 1 { "" } else { "s" }), pal::GREEN)
                 } else {
                     ("Off".to_string(), pal::TEXT_DIM)
