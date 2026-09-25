@@ -212,7 +212,7 @@ void dance_kj_{i}_reset(tap_dance_state_t *state, void *user_data) {{
         let decl = out[..arr].rfind('\n').map(|n| n + 1).unwrap_or(0);
         out.insert_str(decl, &format!("{fns}
 "));
-        let arr = out.find("tap_dance_actions[] = {").unwrap();
+        let arr = out.find("tap_dance_actions[] = {").ok_or_else(|| anyhow!("tap_dance_actions disappeared while patching"))?;
         let close = out[arr..].find("};").map(|r| arr + r).ok_or_else(|| anyhow!("unterminated tap_dance_actions"))?;
         out.insert_str(close, &entries);
     } else {
