@@ -104,17 +104,18 @@ fn hidutil_set(json: &str) -> Result<()> {
 /// SIGKILL/crash recovery path, so the caller warns if it couldn't be written.
 fn write_marker() -> bool {
     let Some(p) = marker_path() else { return false };
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    std::fs::write(&p, b"1").is_ok()
+    crate::config::write_atomic(&p, b"1").is_ok()
 }
 
 fn clear_marker() {
     GUARD_ACTIVE.store(false, Ordering::SeqCst);
     GUARD_WANTED.store(false, Ordering::SeqCst);
     if let Some(p) = marker_path() {
-        let _ = std::fs::remove_file(p);
+        if let Err(e) = std::fs::remove_file(&p) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("keyjitsu: could not clear guard marker {}: {e}", p.display());
+            }
+        }
     }
 }
 
