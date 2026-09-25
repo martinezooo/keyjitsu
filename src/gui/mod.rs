@@ -591,6 +591,38 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+struct LayoutScopedState {
+    custom_layers: Vec<config::CustomLayer>,
+    glow_overrides: Vec<GlowOverride>,
+    key_fx: Vec<config::KeyFx>,
+    staged_edits: Vec<StagedEdit>,
+    staged_dances: Vec<StagedDance>,
+}
+
+fn replace_layout_scoped_state(
+    cfg: &mut config::Config,
+    hash: &str,
+    state: LayoutScopedState,
+) {
+    cfg.custom_layers.retain(|layer| layer.layout != hash);
+    cfg.custom_layer_sets.retain(|set| set.layout != hash);
+    cfg.custom_layer_sets.push(config::CustomLayerSet {
+        layout: hash.to_string(),
+        layers: state.custom_layers,
+    });
+
+    cfg.glow_overrides.retain(|entry| entry.layout != hash);
+    cfg.glow_overrides.extend(state.glow_overrides);
+
+    cfg.key_fx.retain(|entry| entry.layout != hash);
+    cfg.key_fx.extend(state.key_fx);
+
+    cfg.staged_edits.retain(|entry| entry.layout != hash);
+    cfg.staged_edits.extend(state.staged_edits);
+    cfg.staged_dances.retain(|entry| entry.layout != hash);
+    cfg.staged_dances.extend(state.staged_dances);
+}
+
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, serial: Option<String>) -> App {
         setup_style(&cc.egui_ctx);
@@ -965,6 +997,63 @@ impl App {
         self.rebuild_synth_layers();
     }
 
+    fn persist_layout_scoped_state(&mut self) {
+        let Some(hash) = self.layout_hash.clone() else { return };
+        let state = LayoutScopedState {
+            custom_layers: self.custom_layers.clone(),
+            glow_overrides: self
+                .glow_work
+                .iter()
+                .map(|(&(layer, key), &rgb)| GlowOverride {
+                    layout: hash.clone(),
+                    layer,
+                    key: key as u16,
+                    rgb,
+                })
+                .collect(),
+            key_fx: self
+                .key_fx
+                .iter()
+                .map(|(&(layer, key), (trigger, effect, color, custom))| config::KeyFx {
+                    layout: hash.clone(),
+                    layer,
+                    key: key as u16,
+                    trigger: *trigger,
+                    effect: *effect,
+                    color: *color,
+                    custom: custom.clone(),
+                })
+                .collect(),
+            staged_edits: self
+                .key_edits
+                .iter()
+                .map(|(&(layer, key), code)| StagedEdit {
+                    layout: hash.clone(),
+                    layer,
+                    key: key as u16,
+                    code: code.clone(),
+                })
+                .collect(),
+            staged_dances: self
+                .key_dances
+                .iter()
+                .map(|(&(layer, key), slots)| StagedDance {
+                    layout: hash.clone(),
+                    layer,
+                    key: key as u16,
+                    slots: slots.clone(),
+                })
+                .collect(),
+        };
+        let saved = self.persist_config("saving layer changes", move |cfg| {
+            replace_layout_scoped_state(cfg, &hash, state);
+        });
+        if saved {
+            self.glow_saved = self.glow_work.clone();
+        }
+        self.rebuild_synth_layers();
+    }
+
     /// Append a new empty custom layer and view it.
     fn add_custom_layer(&mut self, name: String) {
         let Some(hash) = self.layout_hash.clone() else { return };
@@ -1037,10 +1126,10 @@ impl App {
             }
         }
 
-        self.save_custom_layers();
-        self.save_glow();
-        self.save_key_fx();
-        self.save_staged(); // key_edits/key_dances were shifted + renumbered above
+        // Persist all layout-scoped state in one atomic config replacement.
+        // A crash or disk error can no longer leave layer numbers renumbered in
+        // only some of custom layers, glow/effects, or staged firmware changes.
+        self.persist_layout_scoped_state();
         self.view_layer = self.view_layer.min(self.layer_count().saturating_sub(1));
         self.edit_synced = None; // re-hydrate the editor for the new indices
     }
@@ -6947,9 +7036,85 @@ mod state_composition_tests {
     use std::collections::HashMap;
 
     use super::{
-        merge_firmware_maps, staged_dance_is_pending, staged_edit_is_pending, synth_key,
+        merge_firmware_maps, replace_layout_scoped_state, staged_dance_is_pending,
+        staged_edit_is_pending, synth_key, FxTrigger, LayoutScopedState, PressEffect,
     };
+    use crate::config::{self, GlowOverride, StagedDance, StagedEdit};
     use crate::firmware_state::{FirmwareDance, FirmwareEdit, FirmwareState};
+
+    #[test]
+    fn layer_scoped_state_replacement_updates_all_categories_together() {
+        let mut cfg = config::Config::default();
+        cfg.custom_layer_sets.push(config::CustomLayerSet {
+            layout: "target".into(),
+            layers: vec![],
+        });
+        cfg.glow_overrides.push(GlowOverride {
+            layout: "target".into(),
+            layer: 4,
+            key: 1,
+            rgb: [1, 2, 3],
+        });
+        cfg.key_fx.push(config::KeyFx {
+            layout: "target".into(),
+            layer: 4,
+            key: 2,
+            trigger: FxTrigger::Press,
+            effect: PressEffect::Flash,
+            color: [4, 5, 6],
+            custom: None,
+        });
+        cfg.staged_edits.push(StagedEdit {
+            layout: "target".into(),
+            layer: 4,
+            key: 3,
+            code: "KC_A".into(),
+        });
+        cfg.staged_dances.push(StagedDance {
+            layout: "other".into(),
+            layer: 1,
+            key: 4,
+            slots: [Some("KC_B".into()), None, None, None],
+        });
+
+        replace_layout_scoped_state(
+            &mut cfg,
+            "target",
+            LayoutScopedState {
+                custom_layers: vec![config::CustomLayer {
+                    layout: "target".into(),
+                    name: "Renumbered".into(),
+                    keys: vec![],
+                }],
+                glow_overrides: vec![],
+                key_fx: vec![],
+                staged_edits: vec![StagedEdit {
+                    layout: "target".into(),
+                    layer: 3,
+                    key: 3,
+                    code: "KC_A".into(),
+                }],
+                staged_dances: vec![],
+            },
+        );
+
+        let set = cfg
+            .custom_layer_sets
+            .iter()
+            .find(|set| set.layout == "target")
+            .unwrap();
+        assert_eq!(set.layers[0].name, "Renumbered");
+        assert!(!cfg.glow_overrides.iter().any(|entry| entry.layout == "target"));
+        assert!(!cfg.key_fx.iter().any(|entry| entry.layout == "target"));
+        assert_eq!(
+            cfg.staged_edits
+                .iter()
+                .find(|entry| entry.layout == "target")
+                .map(|entry| entry.layer),
+            Some(3)
+        );
+        assert!(cfg.staged_dances.iter().any(|entry| entry.layout == "other"));
+    }
 
     #[test]
     fn pending_changes_override_applied_firmware_state() {
