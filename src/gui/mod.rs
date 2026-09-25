@@ -4910,6 +4910,9 @@ impl App {
         {
             return (m.x, m.y, m.w, m.h);
         }
+        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+            return (rect.min.x, rect.min.y, rect.width(), rect.height());
+        }
         let mon = ctx.input(|i| i.viewport().monitor_size).unwrap_or(egui::vec2(1440.0, 900.0));
         (0.0, 0.0, mon.x, mon.y)
     }
@@ -6733,7 +6736,7 @@ impl App {
     fn peek_monitor_combo(&self, ui: &mut egui::Ui, monitor: &mut usize) {
         let mons = &self.monitors_cache;
         if mons.is_empty() {
-            ui.weak("display fallback (multi-monitor unverified)");
+            ui.weak("current app window (native monitor list unavailable)");
             *monitor = 0;
             return;
         }
