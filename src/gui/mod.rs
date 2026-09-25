@@ -166,6 +166,10 @@ fn confirm_firmware_state(expected: &str, reported: Option<&str>) -> FirmwareCon
     }
 }
 
+fn is_post_flash_generation(start: Option<u64>, current: u64) -> bool {
+    start.is_none_or(|start| current > start)
+}
+
 /// The four Oryx-style action slots of a key, shown as editor rows.
 /// Index into `App::edit_slots`: 0 tap, 1 hold, 2 double-tap, 3 tap+hold.
 const SLOT_LABELS: [&str; 4] = ["Tap", "Hold", "Double-tap", "Double-tap + hold"];
@@ -4780,10 +4784,7 @@ impl App {
         if !self.flash_write_completed {
             return;
         }
-        if self
-            .expected_firmware_generation
-            .is_some_and(|start| generation <= start)
-        {
+        if !is_post_flash_generation(self.expected_firmware_generation, generation) {
             return;
         }
         let Some(expected) = self.expected_firmware_state.take() else { return };
@@ -6782,7 +6783,9 @@ impl Drop for App {
 
 #[cfg(test)]
 mod firmware_confirmation_tests {
-    use super::{confirm_firmware_state, FirmwareConfirmation};
+    use super::{
+        confirm_firmware_state, is_post_flash_generation, FirmwareConfirmation,
+    };
 
     #[test]
     fn only_the_expected_reported_state_confirms_a_flash() {
@@ -6798,6 +6801,14 @@ mod firmware_confirmation_tests {
             confirm_firmware_state("0123456789", None),
             FirmwareConfirmation::Mismatch
         );
+    }
+
+    #[test]
+    fn reconnect_must_be_newer_than_the_connection_that_started_the_flash() {
+        assert!(!is_post_flash_generation(Some(7), 7));
+        assert!(!is_post_flash_generation(Some(7), 6));
+        assert!(is_post_flash_generation(Some(7), 8));
+        assert!(is_post_flash_generation(None, 1));
     }
 }
 
