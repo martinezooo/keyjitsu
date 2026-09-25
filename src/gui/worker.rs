@@ -415,18 +415,21 @@ pub fn spawn_autolayer(
                         .iter()
                         .find(|r| bundle.contains(r.bundle.as_str()))
                         .map(|r| r.layer);
-                    match (target, active_rule_layer) {
-                        (Some(layer), current) if current != Some(layer) => {
-                            let _ = cmd_tx.send(KbCmd::SetLayer { on: true, layer });
-                            active_rule_layer = Some(layer);
-                            ctx.request_repaint();
+                    let (release, enable) =
+                        crate::cmd_autolayer::layer_transition(active_rule_layer, target);
+                    if let Some(prev) = release {
+                        if cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev }).is_err() {
+                            return;
                         }
-                        (None, Some(prev)) => {
-                            let _ = cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev });
-                            active_rule_layer = None;
-                            ctx.request_repaint();
+                    }
+                    if let Some(layer) = enable {
+                        if cmd_tx.send(KbCmd::SetLayer { on: true, layer }).is_err() {
+                            return;
                         }
-                        _ => {}
+                    }
+                    if release.is_some() || enable.is_some() {
+                        active_rule_layer = target;
+                        ctx.request_repaint();
                     }
                     last_bundle = bundle;
                 }
@@ -439,7 +442,9 @@ pub fn spawn_autolayer(
             }
         }
         if let Some(prev) = active_rule_layer {
-            let _ = cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev });
+            if cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev }).is_err() {
+                return;
+            }
         }
     });
     AutolayerHandle {
