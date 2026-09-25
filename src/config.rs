@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::oryx_api::cache_dir;
@@ -358,6 +358,41 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+pub fn preserve_corrupt_bytes(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let parent = path.parent().context("corrupt recovery file has no parent directory")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut suffix = 0u32;
+    loop {
+        let extension = if suffix == 0 {
+            "json.corrupt".to_string()
+        } else {
+            format!("json.corrupt.{suffix}")
+        };
+        let backup = path.with_extension(extension);
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("creating recovery file in {}", parent.display()))?;
+        tmp.write_all(bytes)
+            .with_context(|| format!("writing recovery copy for {}", path.display()))?;
+        tmp.as_file_mut()
+            .sync_all()
+            .with_context(|| format!("syncing recovery copy for {}", path.display()))?;
+        match tmp.persist_noclobber(&backup) {
+            Ok(_) => return Ok(backup),
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                suffix = suffix
+                    .checked_add(1)
+                    .context("too many corrupt recovery copies")?;
+            }
+            Err(e) => {
+                return Err(e.error)
+                    .with_context(|| format!("preserving recovery copy {}", backup.display()));
+            }
+        }
+    }
+}
+
 pub fn load_checked() -> Result<Config> {
     let p = path()?;
     let bytes = match std::fs::read(&p) {
@@ -372,13 +407,8 @@ pub fn load_checked() -> Result<Config> {
     match serde_json::from_slice(&bytes) {
         Ok(cfg) => migrate(cfg),
         Err(e) => {
-            let backup = p.with_extension("json.corrupt");
-            write_atomic(&backup, &bytes).with_context(|| {
-                format!(
-                    "config is unreadable ({e}); failed to preserve the original bytes in {}",
-                    backup.display()
-                )
-            })?;
+            let backup = preserve_corrupt_bytes(&p, &bytes)
+                .with_context(|| format!("config is unreadable ({e}); failed to preserve the original bytes"))?;
             Err(e).with_context(|| {
                 format!(
                     "config is unreadable; preserved the original bytes in {}",
@@ -415,6 +445,19 @@ pub fn save(config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_recovery_copies_never_overwrite_previous_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        let first = preserve_corrupt_bytes(&path, b"first").unwrap();
+        let second = preserve_corrupt_bytes(&path, b"second").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(first).unwrap(), b"first".to_vec());
+        assert_eq!(std::fs::read(second).unwrap(), b"second".to_vec());
+    }
 
     #[test]
     fn profile_does_not_overwrite_device_state() {

@@ -113,13 +113,8 @@ impl FirmwareState {
         match serde_json::from_slice(&bytes) {
             Ok(state) => Ok(Some(state)),
             Err(e) => {
-                let backup = path.with_extension("json.corrupt");
-                config::write_atomic(&backup, &bytes).with_context(|| {
-                    format!(
-                        "firmware state is unreadable ({e}); failed to preserve the original bytes in {}",
-                        backup.display()
-                    )
-                })?;
+                let backup = config::preserve_corrupt_bytes(&path, &bytes)
+                    .with_context(|| format!("firmware state is unreadable ({e}); failed to preserve the original bytes"))?;
                 Err(e).with_context(|| {
                     format!(
                         "firmware state is unreadable; preserved the original bytes in {}",
