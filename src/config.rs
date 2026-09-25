@@ -373,7 +373,12 @@ pub fn load_checked() -> Result<Config> {
         Ok(cfg) => migrate(cfg),
         Err(e) => {
             let backup = p.with_extension("json.corrupt");
-            let _ = write_atomic(&backup, &bytes);
+            write_atomic(&backup, &bytes).with_context(|| {
+                format!(
+                    "config is unreadable ({e}); failed to preserve the original bytes in {}",
+                    backup.display()
+                )
+            })?;
             Err(e).with_context(|| {
                 format!(
                     "config is unreadable; preserved the original bytes in {}",

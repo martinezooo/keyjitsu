@@ -114,7 +114,12 @@ impl FirmwareState {
             Ok(state) => Ok(Some(state)),
             Err(e) => {
                 let backup = path.with_extension("json.corrupt");
-                let _ = config::write_atomic(&backup, &bytes);
+                config::write_atomic(&backup, &bytes).with_context(|| {
+                    format!(
+                        "firmware state is unreadable ({e}); failed to preserve the original bytes in {}",
+                        backup.display()
+                    )
+                })?;
                 Err(e).with_context(|| {
                     format!(
                         "firmware state is unreadable; preserved the original bytes in {}",
