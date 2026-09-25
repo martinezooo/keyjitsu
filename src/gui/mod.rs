@@ -2873,6 +2873,16 @@ fn status_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         });
 }
 
+fn live_board_size(avail_w: f32, avail_h: f32, cols: f32, rows: f32) -> (f32, f32) {
+    let chrome_h = 88.0;
+    let card_w = 48.0;
+    let card_h = 32.0;
+    let by_height = ((avail_h - chrome_h - card_h).max(120.0)) / rows;
+    let by_width = ((avail_w - card_w).max(120.0)) / cols;
+    let unit = by_height.min(by_width).clamp(34.0, 62.0);
+    (unit * cols + card_w, unit * rows + card_h)
+}
+
 fn centered_page(ui: &mut egui::Ui, max_width: f32, body: impl FnOnce(&mut egui::Ui)) {
     let full = ui.available_width();
     let width = full.min(max_width);
@@ -3590,12 +3600,12 @@ impl App {
         // before any scroll wrapper, so it's the true remaining height.
         let (cols, rows) = self.board_units();
         let chrome = 88.0; // edit bar + canvas margins/shadow
-        let unit_h = ((avail_h - chrome).max(120.0)) / rows;
-        let board_w = (unit_h.clamp(34.0, 62.0) * cols + 48.0).min(ui.available_width());
-        // Centre the canvas in the leftover height, so a small inspector does
-        // not leave a large dead area under the board.
-        let board_h = unit_h.clamp(34.0, 62.0) * rows + 32.0;
-        ui.add_space(((avail_h - chrome - board_h) / 2.0).max(0.0));
+        let (board_w, board_h) =
+            live_board_size(ui.available_width(), avail_h, cols, rows);
+        // Keep the board visually centered when there is spare room, but cap
+        // the spacer so large windows do not turn the Live page into empty
+        // chrome above the primary object.
+        ui.add_space(((avail_h - chrome - board_h) / 2.0).clamp(0.0, 24.0));
 
         let view = self.view_layer;
         // Mirror the LEDs: while the animation engine drives the keyboard, show
@@ -7051,5 +7061,22 @@ mod combo_tests {
         assert!(!combo_merges(Some((5, 2, 120)), 5));
         // No history → new entry.
         assert!(!combo_merges(None, 5));
+    }
+}
+
+
+#[cfg(test)]
+mod live_layout_tests {
+    use super::live_board_size;
+
+    #[test]
+    fn live_board_respects_width_and_height_budgets() {
+        let (w, h) = live_board_size(900.0, 600.0, 14.0, 5.0);
+        assert!(w <= 900.0);
+        assert!(h <= 600.0 - 88.0);
+
+        let (narrow_w, narrow_h) = live_board_size(620.0, 900.0, 14.0, 5.0);
+        assert!(narrow_w <= 620.0);
+        assert!(narrow_h < h);
     }
 }
