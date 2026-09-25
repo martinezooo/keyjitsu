@@ -4945,9 +4945,13 @@ impl App {
         self.flash_write_completed = false;
         self.flash_state = None;
         self.flash_cancel = Arc::new(AtomicBool::new(false));
+        let current_serial = latest
+            .then(|| self.connected.as_ref().map(|(_, serial)| serial.clone()))
+            .flatten();
         self.flash_rx = Some(worker::spawn_flash(
             input,
             latest,
+            current_serial,
             self.flash_cancel.clone(),
             self.egui_ctx.clone(),
         ));
