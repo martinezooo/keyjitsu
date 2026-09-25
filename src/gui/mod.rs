@@ -1995,13 +1995,26 @@ impl App {
     }
 
     /// Keys whose working color differs from the saved snapshot.
-    fn unsaved_count(&self) -> usize {
+    fn unsaved_glow_count(&self) -> usize {
         let mut keys: std::collections::HashSet<(u8, usize)> =
             self.glow_work.keys().copied().collect();
         keys.extend(self.glow_saved.keys().copied());
         keys.into_iter()
             .filter(|k| self.glow_work.get(k) != self.glow_saved.get(k))
             .count()
+    }
+
+    fn custom_layers_pending(&self) -> bool {
+        match &self.firmware_state {
+            Some(state) => self.custom_layers != state.custom_layers,
+            None => !self.custom_layers.is_empty(),
+        }
+    }
+
+    fn pending_firmware_count(&self) -> usize {
+        self.key_edits.len()
+            + self.key_dances.len()
+            + usize::from(self.custom_layers_pending())
     }
 
     fn save_glow(&mut self) {
@@ -3965,9 +3978,9 @@ impl App {
         }
     }
 
-    /// The build/unsaved indicator + actions shown in the inspector header.
+    /// Build actions for firmware changes shown in the inspector header.
     fn inspector_build_actions(&mut self, ui: &mut egui::Ui) {
-        let edits = self.key_edits.len() + self.key_dances.len();
+        let pending = self.pending_firmware_count();
         if self.build_busy {
             ui.spinner();
             if ui.button("✕ cancel").clicked() {
@@ -3976,30 +3989,55 @@ impl App {
             }
             return;
         }
-        if edits == 0 {
+        if pending == 0 {
             return;
         }
-        let ready = self.env.is_ready() && !self.firmware_state_unknown;
+
+        let ready = self.env.is_ready()
+            && self.connected.is_some()
+            && !self.firmware_state_unknown;
         if ui
-            .add_enabled(ready, egui::Button::new(RichText::new("⚙ Build & flash").color(Color32::WHITE)).fill(pal::VIOLET))
+            .add_enabled(
+                ready,
+                egui::Button::new(
+                    RichText::new("⚙ Build & flash").color(Color32::WHITE),
+                )
+                .fill(pal::VIOLET),
+            )
             .clicked()
         {
             self.start_local_build(true);
         }
-        if ui.add_enabled(ready, egui::Button::new("Build only")).on_hover_text("compile without flashing").clicked() {
+        if ui
+            .add_enabled(ready, egui::Button::new("Build only"))
+            .on_hover_text("compile without flashing")
+            .clicked()
+        {
             self.start_local_build(false);
         }
-        if ui.button("Clear").clicked() {
-            self.key_edits.clear();
-            self.key_dances.clear();
-            self.save_staged();
+        if !self.key_edits.is_empty() || !self.key_dances.is_empty() {
+            if ui.button("Clear key changes").clicked() {
+                self.key_edits.clear();
+                self.key_dances.clear();
+                self.save_staged();
+            }
         }
+
         if self.firmware_state_unknown {
             ui.colored_label(pal::AMBER, "device state unknown");
-        } else if !ready {
+        } else if self.connected.is_none() {
+            ui.weak("connect the keyboard to build");
+        } else if !self.env.is_ready() {
             ui.weak("set up QMK →");
         }
-        ui.colored_label(pal::AMBER, RichText::new(format!("● {edits} unsaved")).strong());
+        ui.colored_label(
+            pal::AMBER,
+            RichText::new(format!(
+                "● {pending} pending firmware change{}",
+                if pending == 1 { "" } else { "s" }
+            ))
+            .strong(),
+        );
     }
 
     /// Human name of a layer ("VimLife"), falling back to "Layer n".
@@ -4712,10 +4750,10 @@ impl App {
         ));
     }
 
-    /// The "unsaved changes" bar + glow-sync toggle.
+    /// Live state bar: device/firmware truth, pending firmware edits, and
+    /// local glow edits are separate states with separate actions.
     fn ui_edit_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let unsaved = self.unsaved_count();
             if ui
                 .checkbox(&mut self.sync_glow, "show glow on keyboard")
                 .on_hover_text("mirror these colors onto the physical LEDs (takes RGB control)")
@@ -4727,30 +4765,81 @@ impl App {
                     let _ = self.cmd_tx.send(KbCmd::RgbRelease);
                 }
             }
+
             ui.separator();
-            if unsaved == 0 {
-                ui.weak("no unsaved changes");
+            let pending = self.pending_firmware_count();
+            if self.firmware_state_unknown {
+                status_pill(ui, "⚠ device state unknown", pal::AMBER);
+            } else if pending > 0 {
+                status_pill(
+                    ui,
+                    &format!(
+                        "{pending} pending firmware change{}",
+                        if pending == 1 { "" } else { "s" }
+                    ),
+                    pal::AMBER,
+                );
+            } else if self.connected.is_some() {
+                status_pill(ui, "firmware synced", pal::GREEN);
             } else {
+                ui.weak("no pending firmware changes");
+            }
+
+            let glow_unsaved = self.unsaved_glow_count();
+            if glow_unsaved > 0 {
+                ui.separator();
                 ui.colored_label(
                     pal::AMBER,
-                    format!("● {unsaved} unsaved change{}", if unsaved == 1 { "" } else { "s" }),
+                    format!(
+                        "{glow_unsaved} unsaved glow change{}",
+                        if glow_unsaved == 1 { "" } else { "s" }
+                    ),
                 );
-                if ui.button("save").clicked() {
+                if ui.button("save glow").clicked() {
                     self.save_glow();
                 }
-                if ui.button("discard").clicked() {
+                if ui.button("discard glow").clicked() {
                     self.discard_glow();
                 }
             }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("⚡ Flash firmware…").clicked() {
+                if ui.button("Flash file…").clicked() {
                     self.show_flash = true;
                 }
-                if let Some(FlashState::Working { .. } | FlashState::WaitingForBootloader | FlashState::Downloading) = self.flash_state {
+                if pending > 0 {
+                    let ready = self.env.is_ready()
+                        && self.connected.is_some()
+                        && !self.firmware_state_unknown
+                        && !self.build_busy
+                        && !self.flash_in_progress();
+                    if ui
+                        .add_enabled(
+                            ready,
+                            egui::Button::new(
+                                RichText::new("⚙ Build & flash").color(Color32::WHITE),
+                            )
+                            .fill(pal::VIOLET),
+                        )
+                        .clicked()
+                    {
+                        self.start_local_build(true);
+                    }
+                }
+                if let Some(
+                    FlashState::Working { .. }
+                    | FlashState::WaitingForBootloader
+                    | FlashState::Downloading,
+                ) = self.flash_state
+                {
                     status_pill(ui, "flashing…", pal::AMBER);
                 }
                 if self.layout.is_none() && self.connected.is_some() {
-                    ui.label(RichText::new("no Oryx layout - keys light without legends").size(11.5).color(pal::TEXT_DIM));
+                    ui.label(
+                        RichText::new("no Oryx layout - keys light without legends")
+                            .size(11.5)
+                            .color(pal::TEXT_DIM),
+                    );
                 }
             });
         });
