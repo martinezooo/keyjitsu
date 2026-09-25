@@ -336,10 +336,21 @@ pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
         out.insert_str(km, &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"));
     }
 
-    // 2. One `case MACRO_KJ_i:` per macro, tapping its steps on press.
+    // 2. One `case MACRO_KJ_i:` per macro, executing each full action in
+    // order. Layer-family keycodes need real QMK layer operations rather than
+    // tap_code16, which does not activate layer keycodes.
     let mut cases = String::new();
     for m in macros {
-        let taps: String = m.steps.iter().map(|s| format!("tap_code16({s}); ")).collect();
+        let mut taps = String::new();
+        for step in &m.steps {
+            let (press, release) = action_stmts(step.trim());
+            taps.push_str(&press);
+            if !press.is_empty() && !release.is_empty() {
+                taps.push(' ');
+            }
+            taps.push_str(&release);
+            taps.push(' ');
+        }
         cases.push_str(&format!(
             "        case MACRO_KJ_{}:\n            if (record->event.pressed) {{ {} }}\n            return false;\n",
             m.id,
@@ -579,6 +590,23 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         assert!(case.contains("return false;"), "the macro keycode itself must not also register");
         // Defined before first use (process_record_user references it).
         assert!(out.find("enum keyjitsu_macro_keycodes").unwrap() < out.find("process_record_user").unwrap());
+    }
+
+    #[test]
+    fn macro_layer_steps_use_layer_operations() {
+        let out = apply_macros(
+            SAMPLE,
+            &[MacroSpec {
+                id: 0,
+                steps: vec!["KC_A".into(), "TO(2)".into(), "DF(3)".into()],
+            }],
+        )
+        .unwrap();
+        let case = &out[out.find("case MACRO_KJ_0:").unwrap()..];
+        assert!(case.contains("register_code16(KC_A); unregister_code16(KC_A);"));
+        assert!(case.contains("layer_move(2);"));
+        assert!(case.contains("default_layer_set(1UL << 3);"));
+        assert!(!case.contains("tap_code16(TO(2))"));
     }
 
     #[test]
