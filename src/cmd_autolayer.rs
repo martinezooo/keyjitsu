@@ -14,6 +14,14 @@ use anyhow::{Context, Result};
 use crate::device::Keyboard;
 use crate::protocol::Command;
 
+fn layer_transition(current: Option<u8>, target: Option<u8>) -> (Option<u8>, Option<u8>) {
+    if current == target {
+        (None, None)
+    } else {
+        (current, target)
+    }
+}
+
 /// `--rule com.apple.Terminal=2` (substring match on the bundle id).
 pub fn parse_rule(s: &str) -> Result<(String, u8), String> {
     let (bundle, layer) = s
@@ -52,21 +60,18 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
                     .iter()
                     .find(|(pat, _)| bundle.contains(pat.as_str()))
                     .map(|(_, layer)| *layer);
-                match (target, active_rule_layer) {
-                    (Some(layer), current) if current != Some(layer) => {
-                        kb.send(Command::SetLayer { on: true, layer })
-                            .context("switching layer (keyboard unplugged?)")?;
-                        println!("→ layer {layer}  ({bundle})");
-                        active_rule_layer = Some(layer);
-                    }
-                    (None, Some(prev)) => {
-                        kb.send(Command::SetLayer { on: false, layer: prev })
-                            .context("releasing layer (keyboard unplugged?)")?;
-                        println!("→ layer {prev} released  ({bundle})");
-                        active_rule_layer = None;
-                    }
-                    _ => {}
+                let (release, enable) = layer_transition(active_rule_layer, target);
+                if let Some(prev) = release {
+                    kb.send(Command::SetLayer { on: false, layer: prev })
+                        .context("releasing previous autolayer (keyboard unplugged?)")?;
+                    println!("→ layer {prev} released  ({bundle})");
                 }
+                if let Some(layer) = enable {
+                    kb.send(Command::SetLayer { on: true, layer })
+                        .context("switching layer (keyboard unplugged?)")?;
+                    println!("→ layer {layer}  ({bundle})");
+                }
+                active_rule_layer = target;
                 last_bundle = bundle;
             }
         }
@@ -127,4 +132,18 @@ pub fn running_apps() -> Vec<(String, String)> {
     apps.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
     apps.dedup_by(|a, b| a.1 == b.1);
     apps
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::layer_transition;
+
+    #[test]
+    fn switching_rules_releases_previous_layer_before_enabling_next() {
+        assert_eq!(layer_transition(None, Some(3)), (None, Some(3)));
+        assert_eq!(layer_transition(Some(3), Some(1)), (Some(3), Some(1)));
+        assert_eq!(layer_transition(Some(1), None), (Some(1), None));
+        assert_eq!(layer_transition(Some(2), Some(2)), (None, None));
+    }
 }
