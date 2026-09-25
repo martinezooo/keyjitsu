@@ -15,6 +15,7 @@ use zapp_core::device;
 use zapp_core::firmware::{self, Firmware};
 use zapp_core::flash::{self, FlashProgress};
 
+use crate::device::Keyboard;
 use crate::oryx_api::LayoutId;
 
 const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -23,9 +24,17 @@ const MAX_LATEST_RESPONSE_BYTES: u64 = 64 * 1024;
 
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
-pub fn acquire_firmware(target: Option<&str>, latest: bool) -> Result<Firmware> {
+pub fn acquire_firmware(
+    target: Option<&str>,
+    latest: bool,
+    current_serial: Option<&str>,
+) -> Result<Firmware> {
     match (latest, target) {
-        (true, _) => download_latest_for_connected(),
+        (true, _) => {
+            let serial = current_serial
+                .context("--latest needs the connected keyboard's firmware identity")?;
+            download_latest_for_serial(serial)
+        }
         (false, Some(t)) if t.starts_with("http://") || t.starts_with("https://") => {
             download_from_url(t)
         }
@@ -80,8 +89,18 @@ pub fn wait_for_bootloader(
     }
 }
 
-pub fn run(target: Option<&str>, latest: bool, timeout_secs: u64) -> Result<()> {
-    let fw = acquire_firmware(target, latest)?;
+pub fn run(
+    serial_filter: Option<&str>,
+    target: Option<&str>,
+    latest: bool,
+    timeout_secs: u64,
+) -> Result<()> {
+    let current_serial = if latest {
+        Some(read_connected_firmware_serial(serial_filter)?)
+    } else {
+        None
+    };
+    let fw = acquire_firmware(target, latest, current_serial.as_deref())?;
     println!("{}", firmware_summary(&fw));
 
     println!();
@@ -119,12 +138,21 @@ fn pct(done: usize, total: usize) -> usize {
     }
 }
 
-/// `keyjitsu flash --latest`: read the layout id off the connected keyboard,
-/// ask Oryx for its newest revision, download and flash it.
-fn download_latest_for_connected() -> Result<Firmware> {
-    let kb = device::find_keyboard()
-        .context("no ZSA keyboard on USB (plug it in, in normal mode, not bootloader)")?;
-    let id = LayoutId::from_serial(&kb.serial)?;
+fn read_connected_firmware_serial(serial_filter: Option<&str>) -> Result<String> {
+    let kb = Keyboard::open(serial_filter)
+        .context("no ZSA keyboard available in normal mode")?;
+    let result = (|| {
+        kb.pair()?;
+        kb.fw_version()
+    })();
+    kb.disconnect();
+    result
+}
+
+/// `keyjitsu flash --latest`: use the firmware identity captured before the
+/// keyboard enters the bootloader, then fetch the newest revision from Oryx.
+fn download_latest_for_serial(serial: &str) -> Result<Firmware> {
+    let id = LayoutId::from_serial(serial)?;
     let newest = fetch_latest_revision(&id.hash)?;
     if newest == id.revision {
         println!(
