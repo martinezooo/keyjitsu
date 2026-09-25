@@ -474,22 +474,36 @@ fn matching_brace(source: &str, open: usize) -> Result<usize> {
 /// `[layer] = LAYOUT_*( … )` block: inner spans the arguments between the outer
 /// parentheses.
 fn find_layer_block(source: &str, layer: u8) -> Result<(usize, usize, usize)> {
+    let km = source
+        .find("PROGMEM keymaps")
+        .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
+    let array_open = km
+        + source[km..]
+            .find('{')
+            .ok_or_else(|| anyhow!("keymaps[] has no opening brace"))?;
+    let array_close = matching_brace(source, array_open)?;
     let needle = format!("[{layer}]");
-    let mut search_from = 0;
-    while let Some(rel) = source[search_from..].find(&needle) {
+    let mut search_from = array_open + 1;
+
+    while search_from < array_close {
+        let Some(rel) = source[search_from..array_close].find(&needle) else {
+            break;
+        };
         let idx = search_from + rel;
-        // Expect `[layer] = LAYOUT...(` shortly after.
-        let after = &source[idx + needle.len()..];
+        let after_start = idx + needle.len();
+        let after = &source[after_start..array_close];
         if let Some(paren_rel) = after.find('(') {
             let between = &after[..paren_rel];
             if between.contains('=') && between.contains("LAYOUT") {
-                let open = idx + needle.len() + paren_rel;
+                let open = after_start + paren_rel;
                 let inner_start = open + 1;
                 let inner_end = matching_paren(source, open)?;
-                return Ok((idx, inner_start, inner_end));
+                if inner_end <= array_close {
+                    return Ok((idx, inner_start, inner_end));
+                }
             }
         }
-        search_from = idx + needle.len();
+        search_from = after_start;
     }
     Err(anyhow!("could not find `[{layer}] = LAYOUT…(` in keymap.c"))
 }
@@ -658,6 +672,26 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         // not split the slot.
         assert_eq!(layer_key_count(SAMPLE, 1).unwrap(), 9);
         assert_eq!(layer_key_count(SAMPLE, 0).unwrap(), 9);
+    }
+
+    #[test]
+    fn layer_lookup_ignores_decoy_indices_outside_keymaps_array() {
+        let src = format!(
+            "const uint16_t ledmap[][2] = {{ [0] = {{ 1, 2 }} }};\n{SAMPLE}"
+        );
+        let out = apply_edits(
+            &src,
+            &[Edit {
+                layer: 0,
+                position: 1,
+                keycode: "KC_ESC".into(),
+            }],
+        )
+        .unwrap();
+
+        let layer0 = &out[out.find("[0] = LAYOUT_voyager").unwrap()..out.find("[1] = LAYOUT_voyager").unwrap()];
+        assert!(layer0.contains("KC_ESC"));
+        assert!(out.contains("ledmap[][2] = { [0] = { 1, 2 } }"));
     }
 
     #[test]
