@@ -4,7 +4,7 @@
 //! identifies the running build via a short marker embedded in its USB serial;
 //! this cache maps that marker back to the exact state that produced the binary.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, CustomLayer};
@@ -80,19 +80,59 @@ impl FirmwareState {
         let id = self.state_id();
         let dir = cache_dir()?.join("firmware-states");
         let path = dir.join(format!("{id}.json"));
+
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let existing: FirmwareState = serde_json::from_slice(&bytes)
+                    .with_context(|| format!("existing firmware state {} is unreadable", path.display()))?;
+                if existing != *self {
+                    bail!("firmware state identity collision for {id}; refusing to overwrite");
+                }
+                return Ok(id);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+
         let bytes = serde_json::to_vec_pretty(self)?;
         config::write_atomic(&path, &bytes)
             .with_context(|| format!("persisting {}", path.display()))?;
         Ok(id)
     }
 
-    pub fn load(id: &str) -> Option<Self> {
+    pub fn load_checked(id: &str) -> Result<Option<Self>> {
         if id.len() != STATE_ID_HEX_LEN || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
+            return Ok(None);
         }
-        let path = cache_dir().ok()?.join("firmware-states").join(format!("{id}.json"));
-        let bytes = std::fs::read(path).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        let path = cache_dir()?.join("firmware-states").join(format!("{id}.json"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(state) => Ok(Some(state)),
+            Err(e) => {
+                let backup = path.with_extension("json.corrupt");
+                let _ = config::write_atomic(&backup, &bytes);
+                Err(e).with_context(|| {
+                    format!(
+                        "firmware state is unreadable; preserved the original bytes in {}",
+                        backup.display()
+                    )
+                })
+            }
+        }
+    }
+
+    pub fn load(id: &str) -> Option<Self> {
+        match Self::load_checked(id) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("keyjitsu: {e:#}");
+                None
+            }
+        }
     }
 }
 
@@ -106,6 +146,39 @@ mod tests {
         assert_eq!(state_id_from_serial("abc/rev"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj123"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj012345678z"), None);
+    }
+
+    #[test]
+    fn canonicalizes_custom_layer_key_order() {
+        let a = FirmwareState::new(
+            "layout".into(),
+            "rev".into(),
+            vec![],
+            vec![],
+            vec![CustomLayer {
+                layout: "layout".into(),
+                name: "Extra".into(),
+                keys: vec![
+                    crate::config::CustomKey { key: 4, code: "KC_B".into() },
+                    crate::config::CustomKey { key: 1, code: "KC_A".into() },
+                ],
+            }],
+        );
+        let b = FirmwareState::new(
+            "layout".into(),
+            "rev".into(),
+            vec![],
+            vec![],
+            vec![CustomLayer {
+                layout: "layout".into(),
+                name: "Extra".into(),
+                keys: vec![
+                    crate::config::CustomKey { key: 1, code: "KC_A".into() },
+                    crate::config::CustomKey { key: 4, code: "KC_B".into() },
+                ],
+            }],
+        );
+        assert_eq!(a.state_id(), b.state_id());
     }
 
     #[test]
