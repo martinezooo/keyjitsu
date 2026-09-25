@@ -742,6 +742,78 @@ impl App {
             self.synth_layers.get((n - oryx) as usize)
         }
     }
+    fn effective_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if let Some(slots) = self.key_dances.get(&(layer, key)) {
+            let mut out = synth_slots(slots);
+            let label = slots
+                .iter()
+                .flatten()
+                .map(|code| self.slot_chip_label(code).replace('\n', " then "))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            if !label.is_empty() {
+                out.custom_label = Some(label);
+            }
+            return Some(out);
+        }
+        if let Some(code) = self.key_edits.get(&(layer, key)) {
+            let mut out = synth_key(code);
+            out.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
+            return Some(out);
+        }
+        self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+    }
+
+    fn effective_layer(&self, layer: u8) -> Option<Layer> {
+        let mut out = self.layer_def(layer)?.clone();
+        for key in 0..out.keys.len() {
+            if let Some(effective) = self.effective_key(layer, key) {
+                out.keys[key] = effective;
+            }
+        }
+        Some(out)
+    }
+
+    fn effective_firmware_maps(
+        &self,
+    ) -> (
+        HashMap<(u8, usize), String>,
+        HashMap<(u8, usize), [Option<String>; 4]>,
+    ) {
+        let mut edits: HashMap<(u8, usize), String> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state
+                    .edits
+                    .iter()
+                    .map(|e| ((e.layer, e.key as usize), e.code.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut dances: HashMap<(u8, usize), [Option<String>; 4]> = self
+            .firmware_state
+            .as_ref()
+            .map(|state| {
+                state
+                    .dances
+                    .iter()
+                    .map(|d| ((d.layer, d.key as usize), d.slots.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for (&pos, code) in &self.key_edits {
+            dances.remove(&pos);
+            edits.insert(pos, code.clone());
+        }
+        for (&pos, slots) in &self.key_dances {
+            edits.remove(&pos);
+            dances.insert(pos, slots.clone());
+        }
+        (edits, dances)
+    }
+
 
     fn layer_count(&self) -> u8 {
         (self.oryx_layer_count() + self.custom_layers.len() as u8)
@@ -3317,10 +3389,8 @@ impl App {
         // legends - so a staged combo looked assigned but invisible on the
         // keyboard itself. Preview it there too: same label text as the
         // editor's chip (slot_chip_label), just overlaid on a cloned layer.
-        let real_layer = self.layer_def(view);
-        let has_staged = self.key_edits.keys().any(|&(l, _)| l == view) || self.key_dances.keys().any(|&(l, _)| l == view);
-        let overlay_owned: Option<Layer> = if has_staged { real_layer.map(|l| self.apply_staged_preview(l.clone(), view)) } else { None };
-        let layer = overlay_owned.as_ref().or(real_layer);
+        let effective_layer = self.effective_layer(view);
+        let layer = effective_layer.as_ref();
         let sel = self.selected_key;
         // The keyboard sits on its own raised canvas card with a soft top
         // sheen + shadow, so it reads as the main object.
@@ -3404,8 +3474,8 @@ impl App {
             self.edit_color = self.current_key_srgb(view, i);
             self.edit_synced = Some((view, i));
         }
-        let tap = match self.layer_def(view).and_then(|l| l.keys.get(i)) {
-            Some(key) => labels_for(key).tap,
+        let tap = match self.effective_key(view, i) {
+            Some(key) => labels_for(&key).tap,
             None => format!("key {i}"),
         };
 
@@ -3909,11 +3979,7 @@ impl App {
             return;
         }
 
-        let staged = self.key_edits.get(&(layer, i)).map(|code| synth_key(code));
-        let key = staged
-            .as_ref()
-            .or_else(|| self.layer_def(layer).and_then(|l| l.keys.get(i)));
-        let Some(key) = key else {
+        let Some(key) = self.effective_key(layer, i) else {
             self.edit_slots = [None, None, None, None];
             return;
         };
@@ -3931,37 +3997,6 @@ impl App {
     }
 
     /// Human chip label for a slot's working keycode ("MO → VimLife", "⇧"…).
-    /// Overlay every staged (not yet built) edit for `view` onto a cloned
-    /// layer, so the board preview matches what the editor panel already
-    /// shows as "staged: ...". `custom_label` is checked before anything
-    /// else a key might carry, so this cleanly overrides tap/hold legends
-    /// without needing to reconstruct Oryx's own KeyAction/layer fields.
-    fn apply_staged_preview(&self, mut layer: Layer, view: u8) -> Layer {
-        for (&(l, i), code) in &self.key_edits {
-            if l == view {
-                if let Some(k) = layer.keys.get_mut(i) {
-                    k.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
-                }
-            }
-        }
-        for (&(l, i), slots) in &self.key_dances {
-            if l == view {
-                if let Some(k) = layer.keys.get_mut(i) {
-                    let label = slots
-                        .iter()
-                        .flatten()
-                        .map(|c| self.slot_chip_label(c).replace('\n', " then "))
-                        .collect::<Vec<_>>()
-                        .join(" / ");
-                    if !label.is_empty() {
-                        k.custom_label = Some(label);
-                    }
-                }
-            }
-        }
-        layer
-    }
-
     fn slot_chip_label(&self, code: &str) -> String {
         for p in ["MO", "OSL", "TO", "TG", "TT", "DF", "LT"] {
             if let Some(rest) = code.strip_prefix(p).and_then(|r| r.strip_prefix('(')) {
@@ -4484,32 +4519,7 @@ impl App {
         }
         let n_keys = self.geometry().len();
 
-        // A rebuild must start from what is ACTUALLY running on the keyboard,
-        // not from the original Oryx layout. Otherwise changing one key after a
-        // previous Keyjitsu flash would silently drop all older Keyjitsu edits.
-        let mut full_edits: HashMap<(u8, usize), String> = self
-            .firmware_state
-            .as_ref()
-            .map(|state| {
-                state.edits.iter().map(|e| ((e.layer, e.key as usize), e.code.clone())).collect()
-            })
-            .unwrap_or_default();
-        let mut full_dances: HashMap<(u8, usize), [Option<String>; 4]> = self
-            .firmware_state
-            .as_ref()
-            .map(|state| {
-                state.dances.iter().map(|d| ((d.layer, d.key as usize), d.slots.clone())).collect()
-            })
-            .unwrap_or_default();
-
-        for (&pos, code) in &self.key_edits {
-            full_dances.remove(&pos);
-            full_edits.insert(pos, code.clone());
-        }
-        for (&pos, slots) in &self.key_dances {
-            full_edits.remove(&pos);
-            full_dances.insert(pos, slots.clone());
-        }
+        let (full_edits, full_dances) = self.effective_firmware_maps();
 
         let state = FirmwareState::new(
             id.hash.clone(),
