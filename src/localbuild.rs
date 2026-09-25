@@ -327,8 +327,13 @@ fn set_rule(rules: &str, key: &str, value: &str) -> String {
 /// `(basename, bytes)`. Non-source extras (the prebuilt .bin, build.log,
 /// README) are skipped.
 fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    // Keep the revision from escaping the cache dir / URL path.
-    if revision.is_empty() || revision.contains(['/', '\\', '.']) {
+    // Keep the revision safe both as an URL segment and as part of a cache
+    // filename. Oryx revision ids are short opaque identifiers; accepting
+    // punctuation here only creates filesystem/URL ambiguity.
+    if revision.is_empty()
+        || revision.len() > 128
+        || !revision.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         bail!("invalid revision id {revision:?}");
     }
     // Cache the zip so rebuilds are offline - but only once it's validated as a
