@@ -45,7 +45,7 @@ fn is_layer_switch(code: &str) -> bool {
 /// The (press, release) C statements for an action keycode inside a tap dance.
 /// Layer-switch families become real layer ops (a raw `register_code16(MO(1))`
 /// would NOT switch layers); everything else is a plain keycode.
-fn validate_dance_action(code: &str) -> Result<()> {
+fn validate_generated_action(code: &str) -> Result<()> {
     for step in code.split('\n').map(str::trim).filter(|step| !step.is_empty()) {
         let nested_tap_hold = step.starts_with("TT(")
             || step.starts_with("LT(")
@@ -58,7 +58,7 @@ fn validate_dance_action(code: &str) -> Result<()> {
             .any(|prefix| step.starts_with(prefix));
         if nested_tap_hold {
             bail!(
-                "{step} cannot be nested inside a generated tap dance; use the separate Tap/Hold slots or a plain key assignment"
+                "{step} cannot be nested inside a generated sequence; use the separate Tap/Hold slots or a plain key assignment"
             );
         }
     }
@@ -140,7 +140,7 @@ pub fn apply_dances(source: &str, dances: &[DanceSpec]) -> Result<String> {
             ("tap-hold", &dance.tap_hold),
         ] {
             if let Some(code) = code {
-                validate_dance_action(code).map_err(|e| {
+                validate_generated_action(code).map_err(|e| {
                     anyhow!("tap dance {} {slot}: {e}", index + 1)
                 })?;
             }
@@ -384,6 +384,8 @@ pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
     for m in macros {
         let mut taps = String::new();
         for step in &m.steps {
+            validate_generated_action(step)
+                .map_err(|e| anyhow!("macro {}: {e}", m.id + 1))?;
             let (press, release) = action_stmts(step.trim());
             taps.push_str(&press);
             if !press.is_empty() && !release.is_empty() {
@@ -650,6 +652,22 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     }
 
     #[test]
+    fn generated_macros_reject_nested_tap_hold_keycodes() {
+        for code in ["TT(2)", "LT(2,KC_A)", "LGUI_T(KC_SPC)", "MT(MOD_LSFT,KC_A)"] {
+            let err = apply_macros(
+                SAMPLE,
+                &[MacroSpec {
+                    id: 0,
+                    steps: vec!["KC_A".into(), code.into()],
+                }],
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("cannot be nested inside a generated sequence"));
+        }
+    }
+
+    #[test]
     fn macro_layer_steps_use_layer_operations() {
         let out = apply_macros(
             SAMPLE,
@@ -874,7 +892,7 @@ tap_dance_action_t tap_dance_actions[] = {{
                 ..Default::default()
             };
             let err = apply_dances(SAMPLE, &[dance]).unwrap_err().to_string();
-            assert!(err.contains("cannot be nested inside a generated tap dance"));
+            assert!(err.contains("cannot be nested inside a generated sequence"));
         }
     }
 
