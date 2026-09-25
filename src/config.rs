@@ -441,6 +441,21 @@ mod tests {
     }
 
     #[test]
+    fn profile_roundtrip_restores_only_profile_scoped_state() {
+        let mut cfg = Config::default();
+        cfg.last_layout = Some("device-state".into());
+        cfg.peek.enabled = true;
+        let saved = Profile::from_config(&cfg);
+
+        cfg.peek.enabled = false;
+        cfg.last_layout = Some("new-device-state".into());
+        saved.apply_to(&mut cfg);
+
+        assert!(cfg.peek.enabled);
+        assert_eq!(cfg.last_layout.as_deref(), Some("new-device-state"));
+    }
+
+    #[test]
     fn staged_roundtrip_and_old_config_compat() {
         // New fields round-trip (incl. the [Option<String>;4] dance slots).
         let mut c = Config::default();
