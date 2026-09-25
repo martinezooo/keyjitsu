@@ -66,6 +66,12 @@ pub struct Keyboard {
     pub info: Found,
 }
 
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        let _ = self.send(Command::Disconnect);
+    }
+}
+
 impl Keyboard {
     /// Open the first ZSA keyboard, or the one whose USB serial contains
     /// `serial_filter`.
