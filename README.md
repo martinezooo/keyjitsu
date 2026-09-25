@@ -60,7 +60,7 @@ losing anything.
 - **Peek.** A small, see-through overlay that shows the current layer's keys,
   so you can glance at what a layer does without leaving what you are doing. It
   appears when you switch layers (and can stay up the whole time you are on a
-  non-base layer), floats click-through over everything on any monitor, and can
+  non-base layer), floats click-through over everything; on macOS you can choose any monitor, and can
   be summoned by holding a key or chord on the Voyager.
 - **FX Studio** (experimental). Build and test RGB effects: built-in constant
   and press effects, plus a step sequencer for your own (paint keys, duplicate
@@ -149,7 +149,7 @@ Oryx later would overwrite your Keyjitsu changes.
 
 ## How it works
 
-- **Protocol.** ZSA's open Oryx raw-HID protocol v4 (32-byte reports, usage
+- **Protocol.** ZSA's open Oryx raw-HID protocol v5 (32-byte reports, usage
   page `0xFF60`), as published in [zsa/qmk_modules](https://github.com/zsa/qmk_modules).
 - **Layout state.** Stock Oryx firmware identifies itself as `hash/revision`.
   Keyjitsu-built firmware extends that identity with a local state id. The base
