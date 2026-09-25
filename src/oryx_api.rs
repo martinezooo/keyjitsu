@@ -15,7 +15,11 @@ const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
 const LAYOUT_QUERY: &str = r#"query Layout($hashId: String!, $geometry: String!, $revisionId: String!) {
   layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {
     hashId title geometry
-    revision { hashId title model layers { title position color keys } }
+    revision {
+      hashId title model
+      layers { title position color keys }
+      combos { keyIndices layerIdx trigger }
+    }
   }
 }"#;
 
@@ -35,6 +39,22 @@ pub struct Revision {
     #[allow(dead_code)]
     pub title: Option<String>,
     pub layers: Vec<Layer>,
+    /// Oryx combos are revision-level chords, not properties of an individual
+    /// key. Keep them in the canonical layout model so every UI surface sees
+    /// the same relation between physical key positions and the emitted action.
+    #[serde(default)]
+    pub combos: Vec<OryxCombo>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OryxCombo {
+    /// Physical key positions (same index space as Layer::keys / Voyager LAYOUT).
+    pub key_indices: Vec<usize>,
+    /// Layer index on which the chord is active.
+    pub layer_idx: u8,
+    /// Action emitted when all combo keys are pressed.
+    pub trigger: Option<KeyAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,9 +106,26 @@ impl KeyModifiers {
             && !self.right_shift
     }
 
-    /// Convert Oryx modifier flags into the QMK wrapper form used everywhere
-    /// else in Keyjitsu. The wrapper order is deterministic; modifier order
-    /// does not change the chord received by the OS.
+    /// Oryx has used both a singular `modifier: "LALT"` field and the
+    /// newer `modifiers: { leftAlt: true }` mask. Normalize both into this
+    /// one mask before anything reaches the UI/editor.
+    pub fn apply_token(&mut self, token: &str) -> bool {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "LALT" | "LEFT_ALT" => self.left_alt = true,
+            "RALT" | "RIGHT_ALT" => self.right_alt = true,
+            "LCTL" | "LCTRL" | "LEFT_CTRL" => self.left_ctrl = true,
+            "RCTL" | "RCTRL" | "RIGHT_CTRL" => self.right_ctrl = true,
+            "LGUI" | "LEFT_GUI" => self.left_gui = true,
+            "RGUI" | "RIGHT_GUI" => self.right_gui = true,
+            "LSFT" | "LSHIFT" | "LEFT_SHIFT" => self.left_shift = true,
+            "RSFT" | "RSHIFT" | "RIGHT_SHIFT" => self.right_shift = true,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Convert normalized Oryx modifier flags into the QMK wrapper form used
+    /// everywhere else in Keyjitsu. Modifier order does not change the chord.
     pub fn wrap_qmk(&self, base: &str) -> String {
         let mut code = base.to_string();
         for (enabled, wrapper) in [
@@ -120,9 +157,9 @@ pub struct KeyAction {
     /// Oryx stores precomposed shortcuts (for example Option+Tab) as a base
     /// keycode plus modifier flags instead of a wrapped QMK code.
     pub modifiers: Option<KeyModifiers>,
-    /// Preserve action semantics we do not edit yet instead of silently
-    /// dropping them while deserializing Oryx JSON.
-    pub modifier: Option<serde_json::Value>,
+    /// Older/current Oryx payloads may carry one modifier separately from
+    /// the boolean modifier mask. It is part of the action, not metadata.
+    pub modifier: Option<String>,
     #[serde(rename = "macro")]
     pub macro_action: Option<serde_json::Value>,
     pub color: Option<String>,
@@ -146,29 +183,26 @@ impl KeyAction {
         if base.is_empty() {
             return None;
         }
-        Some(
-            self.modifiers
-                .as_ref()
-                .filter(|mods| !mods.is_empty())
-                .map(|mods| mods.wrap_qmk(base))
-                .unwrap_or_else(|| base.to_string()),
-        )
+        let mut mods = self.modifiers.clone().unwrap_or_default();
+        if let Some(modifier) = self.modifier.as_deref() {
+            let _ = mods.apply_token(modifier);
+        }
+        Some(if mods.is_empty() {
+            base.to_string()
+        } else {
+            mods.wrap_qmk(base)
+        })
     }
 
     /// False means editing this action as a plain QMK string could lose Oryx
     /// semantics that Keyjitsu does not model yet.
     pub fn roundtrip_safe(&self) -> bool {
-        self.modifier.is_none()
-            && self.macro_action.is_none()
-            && self.color.is_none()
-            && self.extra.is_empty()
+        self.macro_action.is_none() && self.color.is_none() && self.extra.is_empty()
     }
 
     pub fn fallback_kind(&self) -> Option<&'static str> {
         if self.macro_action.is_some() {
             Some("Macro")
-        } else if self.modifier.is_some() {
-            Some("Modifier")
         } else if self.color.is_some() {
             Some("RGB action")
         } else if !self.extra.is_empty() {
@@ -267,9 +301,10 @@ fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
     LayoutId::validate_part("layout hash", &id.hash)?;
     LayoutId::validate_part("revision", &id.revision)?;
     LayoutId::validate_part("geometry", geometry)?;
-    // v2: layer `color` added to the query - old caches lack it.
+    // v3: revision-level Oryx combos added. Do not reuse v2 while connected:
+    // a v2 cache silently makes every combo disappear from Live/Peek.
     Ok(cache_dir()?.join(format!(
-        "layout-{geometry}-{}-{}-v2.json",
+        "layout-{geometry}-{}-{}-v3.json",
         id.hash, id.revision
     )))
 }
@@ -312,7 +347,9 @@ pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            if !name.starts_with(&prefix) || !name.ends_with("-v2.json") {
+            if !name.starts_with(&prefix)
+                || !(name.ends_with("-v3.json") || name.ends_with("-v2.json"))
+            {
                 return None;
             }
             let mtime = e.metadata().ok()?.modified().ok()?;
@@ -429,10 +466,19 @@ mod tests {
 
     #[test]
     fn modifier_chords_have_one_canonical_qmk_form() {
-        let action: KeyAction =
+        let mask: KeyAction =
             serde_json::from_str(r#"{"code":"KC_TAB","modifiers":{"leftAlt":true}}"#).unwrap();
-        assert_eq!(action.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
-        assert!(action.roundtrip_safe());
+        assert_eq!(mask.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(mask.roundtrip_safe());
+
+        let singular: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"LALT"}"#).unwrap();
+        assert_eq!(singular.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(singular.roundtrip_safe());
+
+        let long_form: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"left_alt"}"#).unwrap();
+        assert_eq!(long_form.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
     }
 
     #[test]
@@ -457,7 +503,11 @@ mod tests {
                "glowColor": "#C30CFF", "customLabel": null},
               {"tap": {"code": "KC_TAB", "modifiers": {"leftAlt": true}}},
               {"tap": {"code": "TO", "layer": 2}}
-            ]}]
+            ]}],
+            "combos": [
+              {"keyIndices": [1, 2], "layerIdx": 0,
+               "trigger": {"code": "KC_TAB", "modifier": "LALT"}}
+            ]
           }
         }"##;
         let l: Layout = serde_json::from_str(json).unwrap();
@@ -482,6 +532,17 @@ mod tests {
                 .and_then(|a| a.modifiers.as_ref())
                 .map(|m| m.left_alt),
             Some(true)
+        );
+        assert_eq!(l.revision.combos.len(), 1);
+        assert_eq!(l.revision.combos[0].key_indices, vec![1, 2]);
+        assert_eq!(l.revision.combos[0].layer_idx, 0);
+        assert_eq!(
+            l.revision.combos[0]
+                .trigger
+                .as_ref()
+                .and_then(KeyAction::qmk_code)
+                .as_deref(),
+            Some("LALT(KC_TAB)")
         );
     }
 }
