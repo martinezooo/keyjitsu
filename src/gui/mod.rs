@@ -5202,7 +5202,16 @@ impl App {
                             self.confirm_reset = true;
                         }
                         if ui.button("⬇ Export CSV").clicked() {
-                            self.csv_saved = self.export_heatmap_csv(&counts, layer_total).ok();
+                            match self.export_heatmap_csv(&counts, layer_total) {
+                                Ok(path) => {
+                                    self.csv_saved = Some(path);
+                                    self.heat_error = None;
+                                }
+                                Err(e) => {
+                                    self.csv_saved = None;
+                                    self.heat_error = Some(format!("exporting heatmap CSV: {e:#}"));
+                                }
+                            }
                         }
                     });
                 });
@@ -5210,7 +5219,10 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.colored_label(pal::GREEN, "✓ saved:");
                         if ui.link(RichText::new(p.display().to_string()).size(11.5).monospace()).clicked() {
-                            let _ = crate::platform::reveal_path(p);
+                            if let Err(e) = crate::platform::reveal_path(p) {
+                                self.heat_error =
+                                    Some(format!("opening exported heatmap location: {e:#}"));
+                            }
                         }
                     });
                 }
