@@ -9,28 +9,28 @@ mod cmd_overlay;
 mod config;
 mod device;
 mod firmware_state;
+mod geometry;
 mod gui;
+mod heatmap;
 mod keycodes;
 mod keymap;
+mod legend;
 mod localbuild;
-mod perf;
-mod platform;
-mod shortcuts;
 #[cfg(target_os = "macos")]
 mod macos_display;
 #[cfg(target_os = "macos")]
-mod macos_kb;
-#[cfg(target_os = "macos")]
 mod macos_guard_test;
+#[cfg(target_os = "macos")]
+mod macos_kb;
 #[cfg(target_os = "macos")]
 mod macos_lockwatch;
 #[cfg(target_os = "macos")]
 mod macos_overlay;
-mod geometry;
-mod heatmap;
-mod legend;
 mod oryx_api;
+mod perf;
+mod platform;
 mod protocol;
+mod shortcuts;
 mod ui;
 
 use std::io::Write as _;
@@ -296,9 +296,12 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Status => cmd_status(serial),
         Cmd::Watch { json } => cmd_watch(serial, json),
         Cmd::Live => cmd_live::run(serial),
-        Cmd::Layout { source, layer, refresh, json } => {
-            cmd_layout(serial, &source, layer, refresh, json)
-        }
+        Cmd::Layout {
+            source,
+            layer,
+            refresh,
+            json,
+        } => cmd_layout(serial, &source, layer, refresh, json),
         Cmd::Heatmap { action } => match action {
             HeatmapAction::Show { source, layer } => cmd_heatmap_show(serial, &source, layer),
             HeatmapAction::Reset { source, yes } => cmd_heatmap_reset(serial, &source, yes),
@@ -322,19 +325,40 @@ fn run(cli: Cli) -> Result<()> {
             }),
             StatusLedAction::Release => kb.send(Command::StatusLedControl(false)),
         }),
-        Cmd::BuildLocal { rev, sets, dance, new_layer } => cmd_build_local(serial, rev, &sets, &dance, &new_layer),
-        Cmd::Flash { target, latest, timeout } => {
-            cmd_flash::run(serial, target.as_deref(), latest, timeout)
-        }
+        Cmd::BuildLocal {
+            rev,
+            sets,
+            dance,
+            new_layer,
+        } => cmd_build_local(serial, rev, &sets, &dance, &new_layer),
+        Cmd::Flash {
+            target,
+            latest,
+            timeout,
+        } => cmd_flash::run(serial, target.as_deref(), latest, timeout),
         #[cfg(target_os = "macos")]
         Cmd::Guard => cmd_guard::run(serial),
         #[cfg(target_os = "macos")]
-        Cmd::Overlay { key, pick, toggle, show_on_layers, opacity, scale, position } => {
-            cmd_overlay::run(
-                serial,
-                cmd_overlay::Opts { key, pick, toggle, show_on_layers, opacity, scale, position },
-            )
-        }
+        Cmd::Overlay {
+            key,
+            pick,
+            toggle,
+            show_on_layers,
+            opacity,
+            scale,
+            position,
+        } => cmd_overlay::run(
+            serial,
+            cmd_overlay::Opts {
+                key,
+                pick,
+                toggle,
+                show_on_layers,
+                opacity,
+                scale,
+                position,
+            },
+        ),
         #[cfg(target_os = "macos")]
         Cmd::Autolayer { rules, poll_ms } => cmd_autolayer::run(serial, &rules, poll_ms),
         Cmd::Brightness { direction, steps } => with_paired(serial, |kb| {
@@ -348,10 +372,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-fn with_keyboard<T>(
-    serial: Option<&str>,
-    f: impl FnOnce(&Keyboard) -> Result<T>,
-) -> Result<T> {
+fn with_keyboard<T>(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<T>) -> Result<T> {
     let kb = Keyboard::open(serial)?;
     let result = f(&kb);
     kb.disconnect();
@@ -375,9 +396,7 @@ fn parse_dance_arg(s: &str) -> Result<keymap::DanceSpec> {
     let (lhs, spec) = s
         .split_once('=')
         .context("expected LAYER,POSITION=TAP,HOLD,DOUBLE,TAPHOLD")?;
-    let (layer, position) = lhs
-        .split_once(',')
-        .context("expected LAYER,POSITION=…")?;
+    let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=…")?;
     let slots = keymap::split_top_level(spec);
     if slots.len() > 4 {
         anyhow::bail!("tap dance has more than four action slots");
@@ -407,9 +426,7 @@ fn parse_new_layer_arg(s: &str) -> Result<localbuild::NewLayer> {
         .into_iter()
         .filter(|part| !part.trim().is_empty())
         .map(|part| {
-            let (pos, code) = part
-                .split_once('=')
-                .context("expected POS=CODE")?;
+            let (pos, code) = part.split_once('=').context("expected POS=CODE")?;
             let code = code.trim();
             if code.is_empty() {
                 anyhow::bail!("empty keycode");
@@ -426,7 +443,13 @@ fn parse_new_layer_arg(s: &str) -> Result<localbuild::NewLayer> {
     })
 }
 
-fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], dance: &[String], new_layer: &[String]) -> Result<()> {
+fn cmd_build_local(
+    serial: Option<&str>,
+    rev: Option<String>,
+    sets: &[String],
+    dance: &[String],
+    new_layer: &[String],
+) -> Result<()> {
     use anyhow::Context as _;
 
     let revision = match rev {
@@ -441,8 +464,12 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
     let edits = sets
         .iter()
         .map(|s| {
-            let (lhs, keycode) = s.split_once('=').context("expected LAYER,POSITION=KEYCODE")?;
-            let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=KEYCODE")?;
+            let (lhs, keycode) = s
+                .split_once('=')
+                .context("expected LAYER,POSITION=KEYCODE")?;
+            let (layer, position) = lhs
+                .split_once(',')
+                .context("expected LAYER,POSITION=KEYCODE")?;
             Ok::<_, anyhow::Error>(localbuild::KeyEdit {
                 layer: layer.trim().parse().context("bad layer")?,
                 position: position.trim().parse().context("bad position")?,
@@ -462,7 +489,15 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
         .collect::<Result<Vec<_>>>()?;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let bin = localbuild::build(&revision, &edits, &dances, &new_layers, None, &cancel, &|line| println!("{line}"))?;
+    let bin = localbuild::build(
+        &revision,
+        &edits,
+        &dances,
+        &new_layers,
+        None,
+        &cancel,
+        &|line| println!("{line}"),
+    )?;
     println!("\n✓ built: {}", bin.display());
     Ok(())
 }
@@ -495,7 +530,9 @@ fn cmd_status(serial: Option<&str>) -> Result<()> {
         let proto = kb.protocol_version()?;
         print!("Protocol : v{proto}");
         if proto != PROTOCOL_VERSION {
-            print!("  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)");
+            print!(
+                "  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)"
+            );
         }
         println!();
         let layer = kb.pair()?;
@@ -573,11 +610,18 @@ fn print_layout_header(layout: &Layout) {
         layout.title, layout.hash_id, layout.revision.hash_id, layout.geometry
     );
     if layout.geometry != "voyager" {
-        println!("warning: keyjitsu renders the Voyager geometry, but this layout is for {:?}", layout.geometry);
+        println!(
+            "warning: keyjitsu renders the Voyager geometry, but this layout is for {:?}",
+            layout.geometry
+        );
     }
 }
 
-fn cmd_heatmap_show(serial: Option<&str>, source: &LayoutSource, only_layer: Option<u8>) -> Result<()> {
+fn cmd_heatmap_show(
+    serial: Option<&str>,
+    source: &LayoutSource,
+    only_layer: Option<u8>,
+) -> Result<()> {
     let id = source.resolve(serial)?;
     let geo = geometry::voyager();
     let store = HeatmapStore::load(&id.hash, geo.len())?;
@@ -647,7 +691,10 @@ fn cmd_heatmap_show(serial: Option<&str>, source: &LayoutSource, only_layer: Opt
 fn cmd_heatmap_reset(serial: Option<&str>, source: &LayoutSource, yes: bool) -> Result<()> {
     let id = source.resolve(serial)?;
     if !yes {
-        print!("Delete recorded key statistics for layout {}? [y/N] ", id.hash);
+        print!(
+            "Delete recorded key statistics for layout {}? [y/N] ",
+            id.hash
+        );
         std::io::stdout().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;

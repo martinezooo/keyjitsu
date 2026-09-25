@@ -56,20 +56,40 @@ pub enum Command {
     Disconnect,
     /// Activate (`on = true`, firmware calls `layer_move`) or release
     /// (`on = false`, `layer_off`) a layer.
-    SetLayer { on: bool, layer: u8 },
+    SetLayer {
+        on: bool,
+        layer: u8,
+    },
     /// Take over (`true`) or release (`false`) RGB control. Acked by the
     /// firmware with an `Event::RgbControl`.
     RgbControl(bool),
-    SetRgbLed { led: u8, r: u8, g: u8, b: u8 },
-    SetRgbLedAll { r: u8, g: u8, b: u8 },
+    SetRgbLed {
+        led: u8,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    SetRgbLedAll {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
     /// Status LEDs are indexed 0..=5.
-    SetStatusLed { led: u8, on: bool },
+    SetStatusLed {
+        led: u8,
+        on: bool,
+    },
     /// Take over (`true`) or release (`false`) status-LED control.
     StatusLedControl(bool),
     /// `up = true` increases brightness, `false` decreases.
-    UpdateBrightness { up: bool },
+    UpdateBrightness {
+        up: bool,
+    },
     /// Enable/disable automouse for a ZSA pointing device index.
-    SetAutomouse { device: u8, enabled: bool },
+    SetAutomouse {
+        device: u8,
+        enabled: bool,
+    },
     /// Query trackball/trackpad automouse state.
     GetAutomouse,
     GetProtocolVersion,
@@ -89,7 +109,9 @@ impl Command {
             Command::SetStatusLed { led, on } => packet(C::SetStatusLed, &[led, on as u8]),
             Command::StatusLedControl(on) => packet(C::StatusLedControl, &[on as u8]),
             Command::UpdateBrightness { up } => packet(C::UpdateBrightness, &[up as u8]),
-            Command::SetAutomouse { device, enabled } => packet(C::SetAutomouse, &[device, enabled as u8]),
+            Command::SetAutomouse { device, enabled } => {
+                packet(C::SetAutomouse, &[device, enabled as u8])
+            }
             Command::GetAutomouse => packet(C::GetAutomouse, &[]),
             // A fully 0xFE-padded packet doubles as the version probe.
             Command::GetProtocolVersion => [STOP; REPORT_SIZE],
@@ -109,19 +131,31 @@ pub enum Event {
     PairingSuccess,
     /// Active layer changed (also emitted right after pairing).
     Layer(u8),
-    KeyDown { col: u8, row: u8 },
-    KeyUp { col: u8, row: u8 },
+    KeyDown {
+        col: u8,
+        row: u8,
+    },
+    KeyUp {
+        col: u8,
+        row: u8,
+    },
     /// Ack for `RgbControl`; payload is the current takeover state.
     RgbControl(bool),
     ToggleSmartLayer(u8),
     TriggerSmartLayer(u8),
     StatusLedControl(bool),
     /// Current automouse state: (trackball, trackpad).
-    Automouse { trackball: bool, trackpad: bool },
+    Automouse {
+        trackball: bool,
+        trackpad: bool,
+    },
     /// Response to `GetProtocolVersion`.
     ProtocolVersion(u8),
     Error(Vec<u8>),
-    Unknown { id: u8, params: Vec<u8> },
+    Unknown {
+        id: u8,
+        params: Vec<u8>,
+    },
 }
 
 /// Event ids (see `Oryx_Event_Code` in `oryx.h`).
@@ -147,10 +181,7 @@ impl Event {
     /// Decode a single report. Returns `None` for empty/truncated reads.
     pub fn decode(report: &[u8]) -> Option<Event> {
         let (&id, rest) = report.split_first()?;
-        let params: &[u8] = rest
-            .split(|&b| b == STOP)
-            .next()
-            .unwrap_or(&[]);
+        let params: &[u8] = rest.split(|&b| b == STOP).next().unwrap_or(&[]);
         use event_id as E;
         Some(match id {
             E::FW_VERSION => Event::FwVersion(String::from_utf8_lossy(params).into_owned()),
@@ -159,21 +190,28 @@ impl Event {
             E::PAIRING_FAILED => Event::PairingFailed,
             E::PAIRING_SUCCESS => Event::PairingSuccess,
             E::LAYER => Event::Layer(*params.first()?),
-            E::KEYDOWN => Event::KeyDown { col: *params.first()?, row: *params.get(1)? },
-            E::KEYUP => Event::KeyUp { col: *params.first()?, row: *params.get(1)? },
+            E::KEYDOWN => Event::KeyDown {
+                col: *params.first()?,
+                row: *params.get(1)?,
+            },
+            E::KEYUP => Event::KeyUp {
+                col: *params.first()?,
+                row: *params.get(1)?,
+            },
             E::RGB_CONTROL => Event::RgbControl(*params.first()? != 0),
             E::TOGGLE_SMART_LAYER => Event::ToggleSmartLayer(*params.first()?),
             E::TRIGGER_SMART_LAYER => Event::TriggerSmartLayer(*params.first()?),
-            E::STATUS_LED_CONTROL => {
-                Event::StatusLedControl(*params.first()? != 0)
-            }
+            E::STATUS_LED_CONTROL => Event::StatusLedControl(*params.first()? != 0),
             E::AUTOMOUSE => Event::Automouse {
                 trackball: *params.first()? != 0,
                 trackpad: *params.get(1)? != 0,
             },
             E::PROTOCOL_VERSION => Event::ProtocolVersion(*params.first()?),
             E::ERROR => Event::Error(params.to_vec()),
-            other => Event::Unknown { id: other, params: params.to_vec() },
+            other => Event::Unknown {
+                id: other,
+                params: params.to_vec(),
+            },
         })
     }
 }
@@ -198,13 +236,23 @@ mod tests {
 
     #[test]
     fn encode_set_layer_off() {
-        let p = Command::SetLayer { on: false, layer: 2 }.encode();
+        let p = Command::SetLayer {
+            on: false,
+            layer: 2,
+        }
+        .encode();
         assert_eq!(&p[..3], &[0x04, 0x00, 0x02]);
     }
 
     #[test]
     fn encode_rgb_led() {
-        let p = Command::SetRgbLed { led: 12, r: 255, g: 128, b: 0 }.encode();
+        let p = Command::SetRgbLed {
+            led: 12,
+            r: 255,
+            g: 128,
+            b: 0,
+        }
+        .encode();
         assert_eq!(&p[..5], &[0x06, 12, 255, 128, 0]);
     }
 
@@ -237,12 +285,22 @@ mod tests {
 
     #[test]
     fn decode_protocol_version() {
-        assert_eq!(Event::decode(&report(0xFE, &[5])), Some(Event::ProtocolVersion(5)));
+        assert_eq!(
+            Event::decode(&report(0xFE, &[5])),
+            Some(Event::ProtocolVersion(5))
+        );
     }
 
     #[test]
     fn encode_automouse_commands() {
-        assert_eq!(&Command::SetAutomouse { device: 1, enabled: true }.encode()[..3], &[0x0B, 1, 1]);
+        assert_eq!(
+            &Command::SetAutomouse {
+                device: 1,
+                enabled: true
+            }
+            .encode()[..3],
+            &[0x0B, 1, 1]
+        );
         assert_eq!(Command::GetAutomouse.encode()[0], 0x0C);
     }
 
@@ -250,7 +308,10 @@ mod tests {
     fn decode_automouse_event() {
         assert_eq!(
             Event::decode(&report(0x0C, &[1, 0])),
-            Some(Event::Automouse { trackball: true, trackpad: false })
+            Some(Event::Automouse {
+                trackball: true,
+                trackpad: false
+            })
         );
     }
 
@@ -269,6 +330,9 @@ mod tests {
 
     #[test]
     fn decode_pairing_success() {
-        assert_eq!(Event::decode(&report(0x04, &[])), Some(Event::PairingSuccess));
+        assert_eq!(
+            Event::decode(&report(0x04, &[])),
+            Some(Event::PairingSuccess)
+        );
     }
 }

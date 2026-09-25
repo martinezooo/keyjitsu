@@ -4,7 +4,11 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 pub fn reveal_path(path: &Path) -> Result<()> {
-    let target = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
+    let target = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
 
     #[cfg(target_os = "macos")]
     let mut cmd = {
@@ -56,8 +60,10 @@ pub fn open_url(url: &str) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn autostart_location() -> Option<PathBuf> {
-    directories::UserDirs::new()
-        .map(|u| u.home_dir().join("Library/LaunchAgents/com.keyjitsu.gui.plist"))
+    directories::UserDirs::new().map(|u| {
+        u.home_dir()
+            .join("Library/LaunchAgents/com.keyjitsu.gui.plist")
+    })
 }
 
 #[cfg(not(target_os = "macos"))]

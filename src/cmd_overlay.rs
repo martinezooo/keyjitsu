@@ -30,7 +30,9 @@ pub struct Opts {
 
 /// `--key 4,0` → matrix (row, col); see `keyjitsu watch` output for values.
 pub fn parse_matrix_key(s: &str) -> Result<(u8, u8), String> {
-    let (r, c) = s.split_once(',').ok_or_else(|| format!("expected ROW,COL - got {s:?}"))?;
+    let (r, c) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected ROW,COL - got {s:?}"))?;
     let row = r.trim().parse().map_err(|_| format!("bad row {r:?}"))?;
     let col = c.trim().parse().map_err(|_| format!("bad col {c:?}"))?;
     Ok((row, col))
@@ -159,14 +161,23 @@ fn apply_layer(overlay: &Overlay, layout: Option<&Layout>, layer_no: u8) {
     let (labels, glow, title) = match layer {
         Some(layer) => (
             layer.keys.iter().map(labels_for).collect::<Vec<_>>(),
-            layer.keys.iter().map(|k| k.glow_color.as_deref().and_then(parse_hex)).collect(),
+            layer
+                .keys
+                .iter()
+                .map(|k| k.glow_color.as_deref().and_then(parse_hex))
+                .collect(),
             format!(
                 "L{layer_no} · {}",
                 layer.title.as_deref().unwrap_or("(unnamed)")
             ),
         ),
         None => (
-            (0..geo.len()).map(|_| KeyLabels { tap: String::new(), hold: None }).collect(),
+            (0..geo.len())
+                .map(|_| KeyLabels {
+                    tap: String::new(),
+                    hold: None,
+                })
+                .collect(),
             vec![None; geo.len()],
             format!("L{layer_no}"),
         ),

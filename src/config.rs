@@ -4,9 +4,9 @@
 //! migrations are applied before any mutation.
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
 
 use crate::oryx_api::cache_dir;
 
@@ -154,7 +154,6 @@ pub struct CustomLayerSet {
     pub layout: String,
     pub layers: Vec<CustomLayer>,
 }
-
 
 /// A user-added entry in the Shortcuts cheatsheet (built-ins ship in the
 /// binary; these extend/customize them and survive restarts).
@@ -339,11 +338,11 @@ fn migrate(mut cfg: Config) -> Result<Config> {
     Ok(cfg)
 }
 
-
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().context("persisted file has no parent directory")?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("creating {}", parent.display()))?;
+    let parent = path
+        .parent()
+        .context("persisted file has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
 
     let mut tmp = tempfile::NamedTempFile::new_in(parent)
         .with_context(|| format!("creating temporary file in {}", parent.display()))?;
@@ -359,9 +358,10 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 pub fn preserve_corrupt_bytes(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let parent = path.parent().context("corrupt recovery file has no parent directory")?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("creating {}", parent.display()))?;
+    let parent = path
+        .parent()
+        .context("corrupt recovery file has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
 
     let mut suffix = 0u32;
     loop {
@@ -407,8 +407,9 @@ pub fn load_checked() -> Result<Config> {
     match serde_json::from_slice(&bytes) {
         Ok(cfg) => migrate(cfg),
         Err(e) => {
-            let backup = preserve_corrupt_bytes(&p, &bytes)
-                .with_context(|| format!("config is unreadable ({e}); failed to preserve the original bytes"))?;
+            let backup = preserve_corrupt_bytes(&p, &bytes).with_context(|| {
+                format!("config is unreadable ({e}); failed to preserve the original bytes")
+            })?;
             Err(e).with_context(|| {
                 format!(
                     "config is unreadable; preserved the original bytes in {}",
@@ -475,11 +476,19 @@ mod tests {
         let mut cfg = Config::default();
         cfg.last_layout = Some("layout/rev~kj0123456789".into());
         cfg.qmk_firmware_dir = Some("/qmk".into());
-        cfg.staged_edits.push(StagedEdit { layout: "layout".into(), layer: 0, key: 1, code: "KC_A".into() });
+        cfg.staged_edits.push(StagedEdit {
+            layout: "layout".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
         cfg.custom_layers.push(CustomLayer {
             layout: "layout".into(),
             name: "Extra".into(),
-            keys: vec![CustomKey { key: 2, code: "KC_B".into() }],
+            keys: vec![CustomKey {
+                key: 2,
+                code: "KC_B".into(),
+            }],
         });
 
         let mut profile = Profile::from_config(&cfg);
@@ -487,7 +496,10 @@ mod tests {
 
         let mut target = cfg;
         profile.apply_to(&mut target);
-        assert_eq!(target.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(
+            target.last_layout.as_deref(),
+            Some("layout/rev~kj0123456789")
+        );
         assert_eq!(target.qmk_firmware_dir.as_deref(), Some("/qmk"));
         assert_eq!(target.staged_edits.len(), 1);
         assert_eq!(target.custom_layers.len(), 1);
@@ -551,12 +563,22 @@ mod tests {
     fn staged_roundtrip_and_old_config_compat() {
         // New fields round-trip (incl. the [Option<String>;4] dance slots).
         let mut c = Config::default();
-        c.staged_edits.push(StagedEdit { layout: "H".into(), layer: 0, key: 1, code: "KC_A".into() });
+        c.staged_edits.push(StagedEdit {
+            layout: "H".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
         c.staged_dances.push(StagedDance {
             layout: "H".into(),
             layer: 0,
             key: 2,
-            slots: [Some("KC_A".into()), Some("MO(2)".into()), Some("KC_B".into()), None],
+            slots: [
+                Some("KC_A".into()),
+                Some("MO(2)".into()),
+                Some("KC_B".into()),
+                None,
+            ],
         });
         let js = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&js).unwrap();

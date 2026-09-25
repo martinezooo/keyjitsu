@@ -83,8 +83,10 @@ impl FirmwareState {
 
         match std::fs::read(&path) {
             Ok(bytes) => {
-                let existing: FirmwareState = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("existing firmware state {} is unreadable", path.display()))?;
+                let existing: FirmwareState =
+                    serde_json::from_slice(&bytes).with_context(|| {
+                        format!("existing firmware state {} is unreadable", path.display())
+                    })?;
                 if existing != *self {
                     bail!("firmware state identity collision for {id}; refusing to overwrite");
                 }
@@ -104,7 +106,9 @@ impl FirmwareState {
         if id.len() != STATE_ID_HEX_LEN || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Ok(None);
         }
-        let path = cache_dir()?.join("firmware-states").join(format!("{id}.json"));
+        let path = cache_dir()?
+            .join("firmware-states")
+            .join(format!("{id}.json"));
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -113,8 +117,11 @@ impl FirmwareState {
         match serde_json::from_slice(&bytes) {
             Ok(state) => Ok(Some(state)),
             Err(e) => {
-                let backup = config::preserve_corrupt_bytes(&path, &bytes)
-                    .with_context(|| format!("firmware state is unreadable ({e}); failed to preserve the original bytes"))?;
+                let backup = config::preserve_corrupt_bytes(&path, &bytes).with_context(|| {
+                    format!(
+                        "firmware state is unreadable ({e}); failed to preserve the original bytes"
+                    )
+                })?;
                 Err(e).with_context(|| {
                     format!(
                         "firmware state is unreadable; preserved the original bytes in {}",
@@ -142,7 +149,10 @@ mod tests {
 
     #[test]
     fn parses_state_marker_only_when_complete() {
-        assert_eq!(state_id_from_serial("abc/rev~kj0123456789"), Some("0123456789"));
+        assert_eq!(
+            state_id_from_serial("abc/rev~kj0123456789"),
+            Some("0123456789")
+        );
         assert_eq!(state_id_from_serial("abc/rev"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj123"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj012345678z"), None);
@@ -159,8 +169,14 @@ mod tests {
                 layout: "layout".into(),
                 name: "Extra".into(),
                 keys: vec![
-                    crate::config::CustomKey { key: 4, code: "KC_B".into() },
-                    crate::config::CustomKey { key: 1, code: "KC_A".into() },
+                    crate::config::CustomKey {
+                        key: 4,
+                        code: "KC_B".into(),
+                    },
+                    crate::config::CustomKey {
+                        key: 1,
+                        code: "KC_A".into(),
+                    },
                 ],
             }],
         );
@@ -173,8 +189,14 @@ mod tests {
                 layout: "layout".into(),
                 name: "Extra".into(),
                 keys: vec![
-                    crate::config::CustomKey { key: 1, code: "KC_A".into() },
-                    crate::config::CustomKey { key: 4, code: "KC_B".into() },
+                    crate::config::CustomKey {
+                        key: 1,
+                        code: "KC_A".into(),
+                    },
+                    crate::config::CustomKey {
+                        key: 4,
+                        code: "KC_B".into(),
+                    },
                 ],
             }],
         );
@@ -187,8 +209,16 @@ mod tests {
             "layout".into(),
             "rev".into(),
             vec![
-                FirmwareEdit { layer: 1, key: 4, code: "KC_B".into() },
-                FirmwareEdit { layer: 0, key: 2, code: "KC_A".into() },
+                FirmwareEdit {
+                    layer: 1,
+                    key: 4,
+                    code: "KC_B".into(),
+                },
+                FirmwareEdit {
+                    layer: 0,
+                    key: 2,
+                    code: "KC_A".into(),
+                },
             ],
             Vec::new(),
             Vec::new(),
@@ -197,8 +227,16 @@ mod tests {
             "layout".into(),
             "rev".into(),
             vec![
-                FirmwareEdit { layer: 0, key: 2, code: "KC_A".into() },
-                FirmwareEdit { layer: 1, key: 4, code: "KC_B".into() },
+                FirmwareEdit {
+                    layer: 0,
+                    key: 2,
+                    code: "KC_A".into(),
+                },
+                FirmwareEdit {
+                    layer: 1,
+                    key: 4,
+                    code: "KC_B".into(),
+                },
             ],
             Vec::new(),
             Vec::new(),

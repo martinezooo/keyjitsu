@@ -83,7 +83,10 @@ pub fn wait_for_bootloader(
         }
 
         if Instant::now() >= deadline {
-            bail!("no bootloader appeared within {}s - was the reset button pressed?", timeout.as_secs());
+            bail!(
+                "no bootloader appeared within {}s - was the reset button pressed?",
+                timeout.as_secs()
+            );
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -107,7 +110,9 @@ pub fn run(
     println!("Put the keyboard into bootloader mode now - press its RESET button");
     println!("(Voyager: the tiny button on the left half, see https://www.zsa.io/flash).");
     println!("Waiting up to {timeout_secs}s for the bootloader…");
-    std::io::stdout().flush().context("flushing bootloader prompt")?;
+    std::io::stdout()
+        .flush()
+        .context("flushing bootloader prompt")?;
 
     let dev = wait_for_bootloader(Duration::from_secs(timeout_secs), None, |name| {
         println!("Bootloader detected: {name}");
@@ -115,10 +120,16 @@ pub fn run(
     .context("bootloader detection failed")?;
 
     flash::flash_device(&dev, &fw, &|p| match p {
-        FlashProgress::Erasing { bytes_erased, total_bytes } => {
+        FlashProgress::Erasing {
+            bytes_erased,
+            total_bytes,
+        } => {
             eprint!("\rErasing… {:>3}%", pct(bytes_erased, total_bytes));
         }
-        FlashProgress::Writing { bytes_written, total_bytes } => {
+        FlashProgress::Writing {
+            bytes_written,
+            total_bytes,
+        } => {
             eprint!("\rWriting… {:>3}%", pct(bytes_written, total_bytes));
         }
         FlashProgress::Resetting => eprint!("\rRestarting keyboard…      "),
@@ -139,8 +150,7 @@ fn pct(done: usize, total: usize) -> usize {
 }
 
 fn read_connected_firmware_serial(serial_filter: Option<&str>) -> Result<String> {
-    let kb = Keyboard::open(serial_filter)
-        .context("no ZSA keyboard available in normal mode")?;
+    let kb = Keyboard::open(serial_filter).context("no ZSA keyboard available in normal mode")?;
     let result = (|| {
         kb.pair()?;
         kb.fw_version()
@@ -197,8 +207,7 @@ fn fetch_latest_revision(layout_id: &str) -> Result<String> {
     if bytes.len() as u64 > MAX_LATEST_RESPONSE_BYTES {
         bail!("latest-revision response is unexpectedly large");
     }
-    let latest: Latest =
-        serde_json::from_slice(&bytes).context("malformed response from Oryx")?;
+    let latest: Latest = serde_json::from_slice(&bytes).context("malformed response from Oryx")?;
     let validated = LayoutId::new(layout_id.to_string(), latest.latest)?;
     Ok(validated.revision)
 }
@@ -246,7 +255,6 @@ pub fn firmware_summary(fw: &Firmware) -> String {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -162,10 +162,7 @@ impl Keyboard {
         }
     }
 
-    pub fn pair_with_events(
-        &self,
-        mut on_other: impl FnMut(Event),
-    ) -> Result<Option<u8>> {
+    pub fn pair_with_events(&self, mut on_other: impl FnMut(Event)) -> Result<Option<u8>> {
         self.request(
             Command::PairingInit,
             Duration::from_secs(2),
@@ -197,10 +194,7 @@ impl Keyboard {
         self.pair_with_events(|_| {})
     }
 
-    pub fn fw_version_with_events(
-        &self,
-        on_other: impl FnMut(Event),
-    ) -> Result<String> {
+    pub fn fw_version_with_events(&self, on_other: impl FnMut(Event)) -> Result<String> {
         match self.request(
             Command::GetFwVersion,
             Duration::from_secs(2),

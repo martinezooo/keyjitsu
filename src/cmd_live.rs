@@ -205,7 +205,10 @@ fn draw(f: &mut Frame, app: &App) {
 
     // Header: layout name + layer tabs.
     let mut spans: Vec<Span> = vec![
-        Span::styled(" keyjitsu live ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " keyjitsu live ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(&app.status),
         Span::raw("   "),
     ];
@@ -230,7 +233,9 @@ fn draw(f: &mut Frame, app: &App) {
     let mut widget = KeyboardWidget::new(geo, app.layer(app.view_layer));
     widget.pressed = app.pressed.clone();
     if app.show_heat {
-        widget.heat = Some(normalize(&app.heat.counts(Some(app.view_layer), app.key_count)));
+        widget.heat = Some(normalize(
+            &app.heat.counts(Some(app.view_layer), app.key_count),
+        ));
     }
     let kb_area = Rect {
         x: chunks[1].x,

@@ -20,19 +20,40 @@ const RESCAN_INTERVAL: Duration = Duration::from_millis(900);
 const READ_TIMEOUT: Duration = Duration::from_millis(25);
 
 pub enum DevEvent {
-    Connected { model: String, serial: String, generation: u64 },
-    LayoutLoaded { generation: u64, layout: Box<Layout> },
+    Connected {
+        model: String,
+        serial: String,
+        generation: u64,
+    },
+    LayoutLoaded {
+        generation: u64,
+        layout: Box<Layout>,
+    },
     Hid(Event),
-    Disconnected { generation: u64 },
+    Disconnected {
+        generation: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum KbCmd {
-    SetLayer { on: bool, layer: u8 },
+    SetLayer {
+        on: bool,
+        layer: u8,
+    },
     // SetRgbLed / SetRgbLedAll auto-enable RGB control in the firmware, so no
     // explicit takeover command is needed (or wanted - see the priming logic).
-    SetRgbLed { led: u8, r: u8, g: u8, b: u8 },
-    SetRgbLedAll { r: u8, g: u8, b: u8 },
+    SetRgbLed {
+        led: u8,
+        r: u8,
+        g: u8,
+        b: u8,
+    },
+    SetRgbLedAll {
+        r: u8,
+        g: u8,
+        b: u8,
+    },
     /// A full LED frame from the animation engine. The device loop keeps only
     /// the NEWEST pending frame (older ones are dropped) and sends just the
     /// per-key diff - so a slow HID write can never make the command queue
@@ -45,9 +66,21 @@ impl KbCmd {
     /// The discrete (non-frame) commands map 1:1 to a protocol command.
     fn to_protocol(&self) -> Option<Command> {
         match self {
-            KbCmd::SetLayer { on, layer } => Some(Command::SetLayer { on: *on, layer: *layer }),
-            KbCmd::SetRgbLed { led, r, g, b } => Some(Command::SetRgbLed { led: *led, r: *r, g: *g, b: *b }),
-            KbCmd::SetRgbLedAll { r, g, b } => Some(Command::SetRgbLedAll { r: *r, g: *g, b: *b }),
+            KbCmd::SetLayer { on, layer } => Some(Command::SetLayer {
+                on: *on,
+                layer: *layer,
+            }),
+            KbCmd::SetRgbLed { led, r, g, b } => Some(Command::SetRgbLed {
+                led: *led,
+                r: *r,
+                g: *g,
+                b: *b,
+            }),
+            KbCmd::SetRgbLedAll { r, g, b } => Some(Command::SetRgbLedAll {
+                r: *r,
+                g: *g,
+                b: *b,
+            }),
             KbCmd::RgbRelease => Some(Command::RgbControl(false)),
             KbCmd::SetFrame(_) => None, // handled with coalescing + diffing
         }
@@ -264,7 +297,14 @@ fn device_loop(
                     if frame.len() == n_leds {
                         if !took_over {
                             let approx = crate::gui::rgb_anim::dominant(&frame);
-                            if kb.send(Command::SetRgbLedAll { r: approx[0], g: approx[1], b: approx[2] }).is_err() {
+                            if kb
+                                .send(Command::SetRgbLedAll {
+                                    r: approx[0],
+                                    g: approx[1],
+                                    b: approx[2],
+                                })
+                                .is_err()
+                            {
                                 write_failed = true;
                             } else {
                                 last_frame = vec![approx; n_leds];
@@ -274,7 +314,14 @@ fn device_loop(
                         if !write_failed {
                             for (i, c) in frame.iter().enumerate() {
                                 if *c != last_frame[i]
-                                    && kb.send(Command::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] }).is_err()
+                                    && kb
+                                        .send(Command::SetRgbLed {
+                                            led: i as u8,
+                                            r: c[0],
+                                            g: c[1],
+                                            b: c[2],
+                                        })
+                                        .is_err()
                                 {
                                     write_failed = true;
                                     break;
@@ -370,18 +417,30 @@ pub fn spawn_flash(
         let res = zapp_core::flash::flash_device(&dev, &fw, &|p| {
             use zapp_core::flash::FlashProgress as P;
             let state = match p {
-                P::Erasing { bytes_erased, total_bytes } => FlashState::Working {
+                P::Erasing {
+                    bytes_erased,
+                    total_bytes,
+                } => FlashState::Working {
                     phase: "Erasing",
                     fraction: frac(bytes_erased, total_bytes),
                 },
-                P::Writing { bytes_written, total_bytes } => FlashState::Working {
+                P::Writing {
+                    bytes_written,
+                    total_bytes,
+                } => FlashState::Working {
                     phase: "Writing",
                     fraction: frac(bytes_written, total_bytes),
                 },
-                P::Resetting => FlashState::Working { phase: "Restarting keyboard", fraction: 1.0 },
+                P::Resetting => FlashState::Working {
+                    phase: "Restarting keyboard",
+                    fraction: 1.0,
+                },
                 // zapp also returns Ok(()) after this callback. Keep the callback
                 // as progress only and emit the terminal Done exactly once below.
-                P::Complete => FlashState::Working { phase: "Complete", fraction: 1.0 },
+                P::Complete => FlashState::Working {
+                    phase: "Complete",
+                    fraction: 1.0,
+                },
             };
             let _ = tx.send(state);
             ctx.request_repaint();
@@ -440,7 +499,13 @@ pub fn spawn_autolayer(
                     let (release, enable) =
                         crate::cmd_autolayer::layer_transition(active_rule_layer, target);
                     if let Some(prev) = release {
-                        if cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev }).is_err() {
+                        if cmd_tx
+                            .send(KbCmd::SetLayer {
+                                on: false,
+                                layer: prev,
+                            })
+                            .is_err()
+                        {
                             return;
                         }
                     }
@@ -464,7 +529,13 @@ pub fn spawn_autolayer(
             }
         }
         if let Some(prev) = active_rule_layer {
-            if cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev }).is_err() {
+            if cmd_tx
+                .send(KbCmd::SetLayer {
+                    on: false,
+                    layer: prev,
+                })
+                .is_err()
+            {
                 return;
             }
         }

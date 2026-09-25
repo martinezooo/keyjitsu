@@ -53,7 +53,9 @@ static GUARD_WANTED: AtomicBool = AtomicBool::new(false);
 /// Marker file: present iff the guard is engaged. If it survives to the next
 /// launch, the app didn't release cleanly and we heal on startup.
 fn marker_path() -> Option<PathBuf> {
-    crate::oryx_api::cache_dir().ok().map(|d| d.join("guard-active.lock"))
+    crate::oryx_api::cache_dir()
+        .ok()
+        .map(|d| d.join("guard-active.lock"))
 }
 
 /// RAII token: while it's alive the built-in keyboard is disabled; dropping it
@@ -113,7 +115,10 @@ fn clear_marker() {
     if let Some(p) = marker_path() {
         if let Err(e) = std::fs::remove_file(&p) {
             if e.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("keyjitsu: could not clear guard marker {}: {e}", p.display());
+                eprintln!(
+                    "keyjitsu: could not clear guard marker {}: {e}",
+                    p.display()
+                );
             }
         }
     }
@@ -169,9 +174,13 @@ pub fn ensure_input_monitoring() -> Result<()> {
 /// error" was never proof anything actually changed - this asks hidutil what
 /// it thinks is really in effect right now.
 fn hidutil_applied_entry_count() -> usize {
-    let out = Command::new(HIDUTIL).args(["property", "--matching", MATCH, "--get", "UserKeyMapping"]).output();
+    let out = Command::new(HIDUTIL)
+        .args(["property", "--matching", MATCH, "--get", "UserKeyMapping"])
+        .output();
     match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).matches("HIDKeyboardModifierMappingSrc").count(),
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .matches("HIDKeyboardModifierMappingSrc")
+            .count(),
         _ => 0,
     }
 }
@@ -197,7 +206,8 @@ pub fn recheck() -> bool {
     if !GUARD_WANTED.load(Ordering::SeqCst) {
         return true;
     }
-    verify_hidutil_applied() || (hidutil_set(&disable_mapping()).is_ok() && verify_hidutil_applied())
+    verify_hidutil_applied()
+        || (hidutil_set(&disable_mapping()).is_ok() && verify_hidutil_applied())
 }
 
 pub fn seize_builtin() -> Result<BuiltinKeyboardGuard> {

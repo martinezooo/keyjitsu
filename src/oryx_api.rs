@@ -100,12 +100,15 @@ impl LayoutId {
     pub fn from_serial(serial: &str) -> Result<LayoutId> {
         match serial.split_once('/') {
             Some((h, r)) if !h.is_empty() && !r.is_empty() => {
-                let revision = r.split_once(crate::firmware_state::SERIAL_MARKER).map(|(rev, _)| rev).unwrap_or(r);
+                let revision = r
+                    .split_once(crate::firmware_state::SERIAL_MARKER)
+                    .map(|(rev, _)| rev)
+                    .unwrap_or(r);
                 if revision.is_empty() {
                     bail!("keyboard serial {serial:?} has an empty revision before the Keyjitsu state marker");
                 }
                 Self::new(h.to_string(), revision.to_string())
-            },
+            }
             _ => bail!(
                 "keyboard serial {serial:?} does not look like an Oryx layout id \
                  (expected \"hash/revision\"). Pass --url or --hash instead"
@@ -225,7 +228,10 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
     let response = ureq::post(ENDPOINT)
         .timeout(Duration::from_secs(8))
         .set("Content-Type", "application/json")
-        .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
+        .set(
+            "User-Agent",
+            concat!("keyjitsu/", env!("CARGO_PKG_VERSION")),
+        )
         .send_json(body)
         .context("Oryx API request failed (offline? cached layouts still work)")?;
     let bytes = read_layout_bytes(response.into_reader(), "Oryx API response")?;
@@ -287,10 +293,9 @@ mod tests {
         assert_eq!(id.revision, "latest");
         let id2 = LayoutId::from_url("https://configure.zsa.io/voyager/layouts/AbCdE").unwrap();
         assert_eq!(id2.revision, "latest");
-        assert!(LayoutId::from_url(
-            "https://configure.zsa.io/voyager/layouts/../../escape"
-        )
-        .is_err());
+        assert!(
+            LayoutId::from_url("https://configure.zsa.io/voyager/layouts/../../escape").is_err()
+        );
     }
 
     #[test]
@@ -315,9 +320,17 @@ mod tests {
         let l: Layout = serde_json::from_str(json).unwrap();
         assert_eq!(l.revision.layers[0].keys.len(), 2);
         assert_eq!(
-            l.revision.layers[0].keys[0].tap.as_ref().unwrap().code.as_deref(),
+            l.revision.layers[0].keys[0]
+                .tap
+                .as_ref()
+                .unwrap()
+                .code
+                .as_deref(),
             Some("KC_ESCAPE")
         );
-        assert_eq!(l.revision.layers[0].keys[1].tap.as_ref().unwrap().layer, Some(2));
+        assert_eq!(
+            l.revision.layers[0].keys[1].tap.as_ref().unwrap().layer,
+            Some(2)
+        );
     }
 }

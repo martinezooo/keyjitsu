@@ -59,7 +59,10 @@ impl HeatmapStore {
     }
 
     pub fn record(&mut self, layer: u8, key_idx: usize, key_count: usize) {
-        let counts = self.layers.entry(layer).or_insert_with(|| vec![0; key_count]);
+        let counts = self
+            .layers
+            .entry(layer)
+            .or_insert_with(|| vec![0; key_count]);
         if key_idx < counts.len() {
             counts[key_idx] += 1;
             self.dirty += 1;
@@ -68,9 +71,12 @@ impl HeatmapStore {
 
     /// Persist now.
     pub fn save(&mut self) -> Result<()> {
-        let Some(path) = &self.path else { return Ok(()) };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         let bytes = serde_json::to_vec(self)?;
-        config::write_atomic(path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+        config::write_atomic(path, &bytes)
+            .with_context(|| format!("writing {}", path.display()))?;
         self.dirty = 0;
         Ok(())
     }

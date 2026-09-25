@@ -39,7 +39,8 @@ pub fn run(serial: Option<&str>) -> Result<()> {
     let mut announced_waiting = false;
 
     while running.load(Ordering::SeqCst) {
-        api.refresh_devices().context("refreshing USB device list")?;
+        api.refresh_devices()
+            .context("refreshing USB device list")?;
         let present = device::enumerate(&api).iter().any(|k| match serial {
             Some(f) => k.serial.as_deref().is_some_and(|s| s.contains(f)),
             None => true,

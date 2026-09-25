@@ -37,7 +37,9 @@ pub fn parse_rule(s: &str) -> Result<(String, u8), String> {
         .ok_or_else(|| format!("expected BUNDLE_ID=LAYER, got {s:?}"))?;
     let bundle = bundle.trim();
     let layer = layer.trim();
-    let layer: u8 = layer.parse().map_err(|_| format!("{layer:?} is not a layer number"))?;
+    let layer: u8 = layer
+        .parse()
+        .map_err(|_| format!("{layer:?} is not a layer number"))?;
     if bundle.is_empty() {
         return Err("empty bundle id".into());
     }
@@ -48,7 +50,10 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
     let kb = Keyboard::open(serial)?;
     kb.pair()?;
 
-    println!("autolayer: watching the frontmost app ({} rules). Ctrl+C to stop.", rules.len());
+    println!(
+        "autolayer: watching the frontmost app ({} rules). Ctrl+C to stop.",
+        rules.len()
+    );
     for (bundle, layer) in rules {
         println!("  {bundle} → layer {layer}");
     }
@@ -72,8 +77,11 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
                     .map(|(_, layer)| *layer);
                 let (release, enable) = layer_transition(active_rule_layer, target);
                 if let Some(prev) = release {
-                    kb.send(Command::SetLayer { on: false, layer: prev })
-                        .context("releasing previous autolayer (keyboard unplugged?)")?;
+                    kb.send(Command::SetLayer {
+                        on: false,
+                        layer: prev,
+                    })
+                    .context("releasing previous autolayer (keyboard unplugged?)")?;
                     println!("→ layer {prev} released  ({bundle})");
                 }
                 if let Some(layer) = enable {
@@ -89,8 +97,11 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
     }
 
     if let Some(prev) = active_rule_layer {
-        kb.send(Command::SetLayer { on: false, layer: prev })
-            .context("releasing autolayer on exit (keyboard unplugged?)")?;
+        kb.send(Command::SetLayer {
+            on: false,
+            layer: prev,
+        })
+        .context("releasing autolayer on exit (keyboard unplugged?)")?;
         println!("→ layer {prev} released (exit)");
     }
     kb.disconnect();
@@ -143,7 +154,6 @@ pub fn running_apps() -> Vec<(String, String)> {
     apps.dedup_by(|a, b| a.1 == b.1);
     apps
 }
-
 
 #[cfg(test)]
 mod tests {

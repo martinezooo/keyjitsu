@@ -20,7 +20,10 @@ pub(super) fn spawn_update_check() -> Receiver<UpdateCheck> {
     std::thread::spawn(move || {
         let result = (|| -> Result<UpdateCheck, String> {
             let response = ureq::get(RELEASES_API)
-                .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
+                .set(
+                    "User-Agent",
+                    concat!("keyjitsu/", env!("CARGO_PKG_VERSION")),
+                )
                 .set("Accept", "application/vnd.github+json")
                 .timeout(Duration::from_secs(8))
                 .call()

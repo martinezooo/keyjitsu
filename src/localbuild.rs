@@ -114,7 +114,15 @@ pub fn spawn_build(
             let _ = tx.send(BuildMsg::Log(s));
             ctx.request_repaint();
         };
-        match build(&revision, &edits, &dances, &new_layers, firmware_serial.as_deref(), &cancel, &log) {
+        match build(
+            &revision,
+            &edits,
+            &dances,
+            &new_layers,
+            firmware_serial.as_deref(),
+            &cancel,
+            &log,
+        ) {
             Ok(bin) => {
                 let _ = tx.send(BuildMsg::Built(bin));
             }
@@ -155,7 +163,9 @@ pub fn build(
         bail!("the ARM GCC toolchain isn't installed - see Tools for setup");
     }
 
-    log(format!("Fetching generated source for revision {revision}…"));
+    log(format!(
+        "Fetching generated source for revision {revision}…"
+    ));
     let mut files = fetch_source_files(revision)?;
 
     let keymap_c = take_file(&mut files, "keymap.c")
@@ -174,7 +184,10 @@ pub fn build(
         format!("MACRO_KJ_{id}")
     };
 
-    log(format!("Applying {} key change(s) to keymap.c…", edits.len()));
+    log(format!(
+        "Applying {} key change(s) to keymap.c…",
+        edits.len()
+    ));
     let km_edits: Vec<keymap::Edit> = edits
         .iter()
         .map(|e| keymap::Edit {
@@ -185,8 +198,16 @@ pub fn build(
         .collect();
     let mut patched = keymap::apply_edits(&keymap_c, &km_edits)?;
     for nl in new_layers {
-        log(format!("Adding layer [{}] ({} keys)…", nl.position, nl.keys.len()));
-        let keys: Vec<(usize, String)> = nl.keys.iter().map(|(pos, code)| (*pos, macro_for(code))).collect();
+        log(format!(
+            "Adding layer [{}] ({} keys)…",
+            nl.position,
+            nl.keys.len()
+        ));
+        let keys: Vec<(usize, String)> = nl
+            .keys
+            .iter()
+            .map(|(pos, code)| (*pos, macro_for(code)))
+            .collect();
         patched = keymap::add_layer(&patched, nl.position, &keys)?;
     }
     if !dances.is_empty() {
@@ -200,10 +221,14 @@ pub fn build(
         if !valid_firmware_serial(serial) {
             bail!("invalid firmware serial (must be <= 30 safe ASCII bytes)");
         }
-        let cfg = files.iter_mut().find(|(n, _)| n == "config.h")
+        let cfg = files
+            .iter_mut()
+            .find(|(n, _)| n == "config.h")
             .ok_or_else(|| anyhow!("generated source has no config.h for firmware identity"))?;
         let mut text = String::from_utf8_lossy(&cfg.1).into_owned();
-        text.push_str("\n// Keyjitsu: identify the exact authored state running on the keyboard.\n");
+        text.push_str(
+            "\n// Keyjitsu: identify the exact authored state running on the keyboard.\n",
+        );
         text.push_str("#undef SERIAL_NUMBER\n");
         text.push_str(&format!("#define SERIAL_NUMBER \"{}\"\n", serial));
         cfg.1 = text.into_bytes();
@@ -219,9 +244,15 @@ pub fn build(
         .iter()
         .map(|e| e.keycode.as_str())
         .chain(dances.iter().flat_map(|d| {
-            [&d.tap, &d.hold, &d.double_tap, &d.tap_hold].into_iter().filter_map(|s| s.as_deref())
+            [&d.tap, &d.hold, &d.double_tap, &d.tap_hold]
+                .into_iter()
+                .filter_map(|s| s.as_deref())
         }))
-        .chain(new_layers.iter().flat_map(|l| l.keys.iter().map(|(_, c)| c.as_str())))
+        .chain(
+            new_layers
+                .iter()
+                .flat_map(|l| l.keys.iter().map(|(_, c)| c.as_str())),
+        )
         .collect();
     let mut rules = rules_mk;
     if all_codes.iter().any(|c| crate::keycodes::needs_mousekey(c)) {
@@ -261,7 +292,11 @@ pub fn build(
         .with_context(|| format!("writing {}", km_dir.join("keymap.c").display()))?;
     std::fs::write(km_dir.join("rules.mk"), rules)
         .with_context(|| format!("writing {}", km_dir.join("rules.mk").display()))?;
-    log(format!("Wrote {} source file(s) to {}", files.len() + 2, km_dir.display()));
+    log(format!(
+        "Wrote {} source file(s) to {}",
+        files.len() + 2,
+        km_dir.display()
+    ));
 
     if cancel.load(Ordering::SeqCst) {
         bail!("canceled");
@@ -275,9 +310,13 @@ pub fn build(
 
     log("Compiling with qmk (this can take a minute)…".into());
     run_streamed(
-        Command::new("qmk")
-            .current_dir(&firmware)
-            .args(["compile", "-kb", "zsa/voyager", "-km", "keyjitsu"]),
+        Command::new("qmk").current_dir(&firmware).args([
+            "compile",
+            "-kb",
+            "zsa/voyager",
+            "-km",
+            "keyjitsu",
+        ]),
         cancel,
         log,
     )?;
@@ -293,7 +332,9 @@ fn clear_build_artifact(path: &Path) -> Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("removing stale build artifact {}", path.display())),
+        Err(e) => {
+            Err(e).with_context(|| format!("removing stale build artifact {}", path.display()))
+        }
     }
 }
 
@@ -306,8 +347,7 @@ fn prepare_keymap_dir(firmware: &Path) -> Result<PathBuf> {
             return Err(e).with_context(|| format!("clearing {}", km_dir.display()));
         }
     }
-    std::fs::create_dir_all(&km_dir)
-        .with_context(|| format!("creating {}", km_dir.display()))?;
+    std::fs::create_dir_all(&km_dir).with_context(|| format!("creating {}", km_dir.display()))?;
     Ok(km_dir)
 }
 
@@ -344,8 +384,6 @@ fn set_rule(rules: &str, key: &str, value: &str) -> String {
     s.push('\n');
     s
 }
-
-
 
 /// All files inside the generated `*_source/` directory of Oryx's zip, as
 /// `(basename, bytes)`. Non-source extras (the prebuilt .bin, build.log,
@@ -402,8 +440,9 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
             bail!("generated source from {url} is larger than {MAX_SOURCE_ZIP_BYTES} bytes - refusing to cache a truncated download");
         }
         // Validate BEFORE caching.
-        zip::ZipArchive::new(std::io::Cursor::new(&b[..]))
-            .with_context(|| format!("downloaded source from {url} is not a valid zip (not caching)"))?;
+        zip::ZipArchive::new(std::io::Cursor::new(&b[..])).with_context(|| {
+            format!("downloaded source from {url} is not a valid zip (not caching)")
+        })?;
         if let Err(e) = crate::config::write_atomic(&cache, &b) {
             eprintln!("keyjitsu: could not cache generated source {revision}: {e:#}");
         }
@@ -422,7 +461,9 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
                     ));
                 }
             }
-            return Err(anyhow!("cached source is not a valid zip ({e}). Removed it, retry the build"));
+            return Err(anyhow!(
+                "cached source is not a valid zip ({e}). Removed it, retry the build"
+            ));
         }
     };
     let mut out = Vec::new();
@@ -435,7 +476,9 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let name = f.name().to_string();
         // Only the compilable source, not build.log / README / the prebuilt bin.
         let is_source = name.contains("_source/")
-            && (name.ends_with(".c") || name.ends_with(".h") || name.ends_with(".mk")
+            && (name.ends_with(".c")
+                || name.ends_with(".h")
+                || name.ends_with(".mk")
                 || name.ends_with(".json"));
         if !is_source {
             continue;
@@ -444,17 +487,13 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
             bail!("generated source contains more than {MAX_SOURCE_FILES} source files");
         }
         if f.size() > MAX_SOURCE_FILE_BYTES {
-            bail!(
-                "generated source file {name:?} is larger than {MAX_SOURCE_FILE_BYTES} bytes"
-            );
+            bail!("generated source file {name:?} is larger than {MAX_SOURCE_FILE_BYTES} bytes");
         }
         extracted_bytes = extracted_bytes
             .checked_add(f.size())
             .context("generated source size overflow")?;
         if extracted_bytes > MAX_SOURCE_EXTRACTED_BYTES {
-            bail!(
-                "generated source expands beyond {MAX_SOURCE_EXTRACTED_BYTES} bytes"
-            );
+            bail!("generated source expands beyond {MAX_SOURCE_EXTRACTED_BYTES} bytes");
         }
 
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
@@ -507,8 +546,14 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
     let (line_tx, line_rx) = channel::<String>();
     let readers: [Option<Box<dyn Read + Send>>; 2] = [
-        child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>),
-        child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>),
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn Read + Send>),
     ];
     let mut reader_threads = Vec::new();
     for reader in readers.into_iter().flatten() {
@@ -589,9 +634,7 @@ mod tests {
     #[test]
     fn generated_keymap_directory_starts_clean() {
         let dir = tempfile::tempdir().unwrap();
-        let old = dir
-            .path()
-            .join("keyboards/zsa/voyager/keymaps/keyjitsu");
+        let old = dir.path().join("keyboards/zsa/voyager/keymaps/keyjitsu");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("stale.c"), b"old").unwrap();
 
