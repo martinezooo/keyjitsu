@@ -1,9 +1,9 @@
 //! Persisted app settings: overlay trigger/chord, RGB + layer-peek HUD,
 //! autolayer rules, per-key glow and press effects, custom layers/shortcuts,
-//! saved profiles, and local toolchain paths. One JSON file, loaded once at
-//! startup and rewritten atomically on change.
+//! saved profiles, and local toolchain paths. Writes are atomic and schema
+//! migrations are applied before any mutation.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::io::Write;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
@@ -182,8 +182,7 @@ pub struct KeyFx {
 }
 
 /// A per-key remap the user staged but hasn't built into firmware yet. Keyed
-/// by layout hash (like [`GlowOverride`]) so it survives restarts and rides
-/// along in profiles, instead of living only in memory until the next build.
+/// by layout hash so it survives restarts without becoming profile state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagedEdit {
     pub layout: String,
@@ -202,9 +201,12 @@ pub struct StagedDance {
     pub slots: [Option<String>; 4],
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub schema_version: u32,
     /// Matrix position `[row, col]` of the key that summons the overlay.
     pub overlay_trigger: Option<[u8; 2]>,
     /// Chord (one or more matrix positions held together) that shows the
@@ -305,6 +307,39 @@ fn path() -> Result<std::path::PathBuf> {
     Ok(cache_dir()?.join("config.json"))
 }
 
+fn migrate(mut cfg: Config) -> Result<Config> {
+    if cfg.schema_version > CURRENT_SCHEMA_VERSION {
+        bail!(
+            "config schema {} is newer than this Keyjitsu supports ({CURRENT_SCHEMA_VERSION})",
+            cfg.schema_version
+        );
+    }
+
+    if cfg.schema_version == 0 {
+        if cfg.custom_layer_sets.is_empty() && !cfg.custom_layers.is_empty() {
+            for layer in &cfg.custom_layers {
+                if let Some(set) = cfg
+                    .custom_layer_sets
+                    .iter_mut()
+                    .find(|set| set.layout == layer.layout)
+                {
+                    set.layers.push(layer.clone());
+                } else {
+                    cfg.custom_layer_sets.push(CustomLayerSet {
+                        layout: layer.layout.clone(),
+                        layers: vec![layer.clone()],
+                    });
+                }
+            }
+            cfg.custom_layers.clear();
+        }
+        cfg.schema_version = 1;
+    }
+
+    Ok(cfg)
+}
+
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("persisted file has no parent directory")?;
     std::fs::create_dir_all(parent)
@@ -327,11 +362,15 @@ pub fn load_checked() -> Result<Config> {
     let p = path()?;
     let bytes = match std::fs::read(&p) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut cfg = Config::default();
+            cfg.schema_version = CURRENT_SCHEMA_VERSION;
+            return Ok(cfg);
+        }
         Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
     };
     match serde_json::from_slice(&bytes) {
-        Ok(cfg) => Ok(cfg),
+        Ok(cfg) => migrate(cfg),
         Err(e) => {
             let backup = p.with_extension("json.corrupt");
             let _ = write_atomic(&backup, &bytes);
@@ -363,7 +402,8 @@ pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
 
 pub fn save(config: &Config) -> Result<()> {
     let p = path()?;
-    let bytes = serde_json::to_vec_pretty(config)?;
+    let config = migrate(config.clone())?;
+    let bytes = serde_json::to_vec_pretty(&config)?;
     write_atomic(&p, &bytes)
 }
 
@@ -413,7 +453,37 @@ mod tests {
         assert_eq!(back.staged_dances[0].slots[3], None);
         // An OLD config (no staged_* keys) must still load → empty vecs.
         let old: Config = serde_json::from_str(r#"{"guard_enabled":true}"#).unwrap();
+        let old = migrate(old).unwrap();
+        assert_eq!(old.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
         assert!(old.custom_layer_sets.is_empty());
+    #[test]
+    fn migrates_legacy_custom_layers_into_pending_sets() {
+        let mut cfg = Config::default();
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout-a".into(),
+            name: "One".into(),
+            keys: vec![],
+        });
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout-a".into(),
+            name: "Two".into(),
+            keys: vec![],
+        });
+
+        let cfg = migrate(cfg).unwrap();
+        assert!(cfg.custom_layers.is_empty());
+        assert_eq!(cfg.custom_layer_sets.len(), 1);
+        assert_eq!(cfg.custom_layer_sets[0].layers.len(), 2);
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn rejects_newer_config_schema() {
+        let mut cfg = Config::default();
+        cfg.schema_version = CURRENT_SCHEMA_VERSION + 1;
+        assert!(migrate(cfg).is_err());
+    }
+
     }
 }
