@@ -250,6 +250,7 @@ struct App {
     build_state_id: Option<String>,
     expected_firmware_state: Option<String>,
     last_build_bin: Option<std::path::PathBuf>,
+    last_build_state_id: Option<String>,
     build_cancel: Arc<AtomicBool>,
     /// Build/flash progress modal: open, current phase, 0..1 progress, and a
     /// running count of compiled files (for the compile-band estimate).
@@ -2329,23 +2330,20 @@ impl App {
                         self.build_log.push('\n');
                     }
                     BuildMsg::Built(bin) => {
+                        let state_id = self.build_state_id.take();
                         self.last_build_bin = Some(bin.clone());
+                        self.last_build_state_id = state_id.clone();
                         if self.build_flash_after {
-                            self.expected_firmware_state = self.build_state_id.clone();
                             self.build_phase = "Compiled - flashing…".into();
                             self.build_progress = 0.97;
                             self.build_log.push_str("✓ compiled - flashing…\n");
-                            self.flash_state = None;
-                            self.flash_cancel = Arc::new(AtomicBool::new(false));
-                            self.flash_rx = Some(worker::spawn_flash(
+                            self.start_flash_job(
                                 Some(bin.to_string_lossy().into_owned()),
                                 false,
-                                self.flash_cancel.clone(),
-                                self.egui_ctx.clone(),
-                            ));
+                                state_id,
+                            );
                         } else {
                             self.build_busy = false;
-                            self.build_state_id = None;
                             self.build_phase = "Done".into();
                             self.build_progress = 1.0;
                             self.build_result = Some(Ok(format!("Built {}", bin.display())));
@@ -4742,6 +4740,45 @@ impl App {
             )
     }
 
+    fn start_flash_job(
+        &mut self,
+        input: Option<String>,
+        latest: bool,
+        expected_state: Option<String>,
+    ) {
+        if self.flash_in_progress() {
+            return;
+        }
+        self.expected_firmware_state = expected_state;
+        self.flash_state = None;
+        self.flash_cancel = Arc::new(AtomicBool::new(false));
+        self.flash_rx = Some(worker::spawn_flash(
+            input,
+            latest,
+            self.flash_cancel.clone(),
+            self.egui_ctx.clone(),
+        ));
+    }
+
+    fn flash_last_build(&mut self) {
+        if self.build_busy || self.flash_in_progress() {
+            return;
+        }
+        let Some(bin) = self.last_build_bin.clone() else { return };
+        let Some(state_id) = self.last_build_state_id.clone() else { return };
+
+        self.build_busy = true;
+        self.build_open = true;
+        self.build_phase = "Flashing built firmware…".into();
+        self.build_progress = 0.97;
+        self.build_result = None;
+        self.start_flash_job(
+            Some(bin.to_string_lossy().into_owned()),
+            false,
+            Some(state_id),
+        );
+    }
+
     fn start_local_build(&mut self, flash_after: bool) {
         // Don't start a build while one is running, or on top of a flash that's
         // still writing to the device (would spawn a second concurrent flasher).
@@ -4763,6 +4800,7 @@ impl App {
         self.build_state_id = None;
         self.expected_firmware_state = None;
         self.last_build_bin = None;
+        self.last_build_state_id = None;
         self.build_result = None;
 
         let n_keys = self.geometry().len();
@@ -6590,12 +6628,18 @@ impl App {
             }
         });
 
-        if let Some(bin) = &self.last_build_bin {
+        if let Some(bin) = self.last_build_bin.clone() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.colored_label(pal::GREEN, "✓ built");
                 if ui.link(RichText::new(bin.display().to_string()).size(11.5).monospace()).clicked() {
-                    let _ = crate::platform::reveal_path(bin);
+                    let _ = crate::platform::reveal_path(&bin);
+                }
+                let can_flash = self.last_build_state_id.is_some()
+                    && !self.build_busy
+                    && !self.flash_in_progress();
+                if ui.add_enabled(can_flash, egui::Button::new("Flash this build")).clicked() {
+                    self.flash_last_build();
                 }
             });
         }
@@ -6634,21 +6678,11 @@ impl App {
                 .on_hover_text("updates to the newest revision of the layout already on the keyboard")
                 .clicked()
             {
-                self.flash_state = None;
-                self.flash_cancel = Arc::new(AtomicBool::new(false));
-                self.flash_rx =
-                    Some(worker::spawn_flash(None, true, self.flash_cancel.clone(), ui.ctx().clone()));
+                self.start_flash_job(None, true, None);
             }
             let can_input = !self.flash_input.trim().is_empty() && !busy;
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
-                self.flash_state = None;
-                self.flash_cancel = Arc::new(AtomicBool::new(false));
-                self.flash_rx = Some(worker::spawn_flash(
-                    Some(self.flash_input.trim().to_string()),
-                    false,
-                    self.flash_cancel.clone(),
-                    ui.ctx().clone(),
-                ));
+                self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
             }
             if busy && ui.button("✕ cancel").clicked() {
                 self.flash_cancel.store(true, Ordering::SeqCst);
