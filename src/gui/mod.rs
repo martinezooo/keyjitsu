@@ -2821,18 +2821,6 @@ fn position_grid(ui: &mut egui::Ui, valign: &mut VAlign, halign: &mut HAlign) {
         });
 }
 
-/// Reveal a path in Finder (macOS) - `open` selects/creates the folder view.
-fn reveal_in_finder(path: &std::path::Path) {
-    #[cfg(target_os = "macos")]
-    {
-        // Open the folder itself if it exists, else its parent.
-        let target = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
-        let _ = std::process::Command::new("open").arg(target).spawn();
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = path;
-}
-
 /// 14207 → "14,207".
 fn format_thousands(n: u64) -> String {
     let s = n.to_string();
@@ -2853,11 +2841,6 @@ fn perf_bar(ui: &mut egui::Ui, frac: f32, color: egui::Color32) {
     let mut fill = rect;
     fill.set_width(rect.width() * frac.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, egui::CornerRadius::same(3), color);
-}
-
-/// LaunchAgent plist path for autostart at login.
-fn autostart_plist() -> Option<std::path::PathBuf> {
-    directories::UserDirs::new().map(|u| u.home_dir().join("Library/LaunchAgents/com.keyjitsu.gui.plist"))
 }
 
 /// Directory holding saved profile snapshots.
@@ -3042,43 +3025,6 @@ fn list_profiles() -> Vec<String> {
         .unwrap_or_default();
     out.sort();
     out
-}
-
-fn autostart_enabled() -> bool {
-    autostart_plist().is_some_and(|p| p.exists())
-}
-
-/// Enable/disable start-at-login via a per-user LaunchAgent (RunAtLoad).
-fn set_autostart(on: bool) -> anyhow::Result<()> {
-    let path = autostart_plist().ok_or_else(|| anyhow::anyhow!("no home dir"))?;
-    if on {
-        let exe = std::env::current_exe()?;
-        let plist = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key><string>com.keyjitsu.gui</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{}</string>
-        <string>gui</string>
-    </array>
-    <key>RunAtLoad</key><true/>
-    <key>LimitLoadToSessionType</key><string>Aqua</string>
-</dict>
-</plist>
-"#,
-            exe.display()
-        );
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(&path, plist)?;
-    } else if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
 }
 
 /// Result of a manual "check for updates" against GitHub Releases.
@@ -4788,7 +4734,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.colored_label(pal::GREEN, "✓ saved:");
                         if ui.link(RichText::new(p.display().to_string()).size(11.5).monospace()).clicked() {
-                            reveal_in_finder(p);
+                            let _ = crate::platform::reveal_path(p);
                         }
                     });
                 }
@@ -5358,7 +5304,7 @@ impl App {
                 let guard_pill = ("macOS only".to_string(), pal::TEXT_DIM);
                 tool_card(ui, "🔒", "Keyboard guard", "Disables the Mac's built-in keyboard while the ZSA board is connected.", Some(guard_pill), self, |ui, app| app.ui_guard(ui));
 
-                let app_pill = if autostart_enabled() {
+                let app_pill = if crate::platform::autostart_enabled() {
                     ("Autostart on".to_string(), pal::GREEN)
                 } else {
                     ("Manual start".to_string(), pal::TEXT_DIM)
@@ -5461,14 +5407,14 @@ impl App {
     }
 
     fn ui_app_card(&mut self, ui: &mut egui::Ui) {
-        let mut on = autostart_enabled();
+        let mut on = crate::platform::autostart_enabled();
         if toggle_row(ui, "Start keyjitsu at login (GUI)", &mut on) {
-            self.autostart_error = set_autostart(on).err().map(|e| format!("{e:#}"));
+            self.autostart_error = crate::platform::set_autostart(on).err().map(|e| format!("{e:#}"));
         }
         if let Some(e) = &self.autostart_error {
             ui.colored_label(pal::RED, format!("autostart failed: {e}"));
         }
-        if let Some(p) = autostart_plist() {
+        if let Some(p) = crate::platform::autostart_location() {
             ui.label(RichText::new(format!("LaunchAgent: {}", p.display())).size(11.0).color(pal::TEXT_DIM));
         }
         ui.label(
@@ -5515,7 +5461,9 @@ impl App {
                 ui.colored_label(pal::AMBER, format!("{tag} is available."));
                 ui.horizontal(|ui| {
                     if ui.button("Open release page").clicked() {
-                        let _ = std::process::Command::new("open").arg(&url).spawn();
+                        if let Err(e) = crate::platform::open_url(&url) {
+                            self.update_state = Some(UpdateCheck::Error(format!("could not open release page: {e:#}")));
+                        }
                     }
                     ui.label(RichText::new("then rebuild: ").size(11.5).color(pal::TEXT_DIM));
                     ui.code("scripts/bundle.sh --install");
@@ -6255,7 +6203,7 @@ impl App {
             }
             if ui.button("📂 Open firmware folder").clicked() {
                 if let Some(d) = &self.env.firmware_dir {
-                    reveal_in_finder(&d.join("keyboards/zsa/voyager/keymaps/keyjitsu"));
+                    let _ = crate::platform::reveal_path(&d.join("keyboards/zsa/voyager/keymaps/keyjitsu"));
                 }
             }
             if ui.button("↻ Recheck").clicked() {
@@ -6274,7 +6222,7 @@ impl App {
             ui.horizontal(|ui| {
                 ui.colored_label(pal::GREEN, "✓ built");
                 if ui.link(RichText::new(bin.display().to_string()).size(11.5).monospace()).clicked() {
-                    reveal_in_finder(bin);
+                    let _ = crate::platform::reveal_path(bin);
                 }
             });
         }
