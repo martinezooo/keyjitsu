@@ -761,21 +761,34 @@ impl App {
         (n >= oryx).then(|| (n - oryx) as usize).filter(|&i| i < self.custom_layers.len())
     }
 
-    /// Load the current layout's custom layers from config and (re)synthesize.
     fn hydrate_custom_layers(&mut self, hash: &str) {
         let cfg = config::load();
-        self.custom_layers = cfg.custom_layers.into_iter().filter(|c| c.layout == hash).collect();
+        if let Some(set) = cfg.custom_layer_sets.iter().find(|s| s.layout == hash) {
+            self.custom_layers = set.layers.clone();
+        } else {
+            let legacy: Vec<_> = cfg.custom_layers.into_iter().filter(|c| c.layout == hash).collect();
+            self.custom_layers = if !legacy.is_empty() {
+                legacy
+            } else {
+                self.firmware_state
+                    .as_ref()
+                    .filter(|state| state.layout_hash == hash)
+                    .map(|state| state.custom_layers.clone())
+                    .unwrap_or_default()
+            };
+        }
         self.rebuild_synth_layers();
     }
 
-    /// Persist custom layers for this layout (replacing its slice).
     fn save_custom_layers(&mut self) {
         let Some(hash) = self.layout_hash.clone() else { return };
         let mut cfg = config::load();
         cfg.custom_layers.retain(|c| c.layout != hash);
-        for c in &self.custom_layers {
-            cfg.custom_layers.push(c.clone());
-        }
+        cfg.custom_layer_sets.retain(|s| s.layout != hash);
+        cfg.custom_layer_sets.push(config::CustomLayerSet {
+            layout: hash,
+            layers: self.custom_layers.clone(),
+        });
         let _ = config::save(&cfg);
         self.rebuild_synth_layers();
     }
@@ -943,12 +956,7 @@ impl App {
         self.layout = Some(layout);
         self.hydrate_glow(&id.hash); // also sets self.layout_hash
         self.hydrate_key_fx(&id.hash);
-        if let Some(state) = &self.firmware_state {
-            self.custom_layers = state.custom_layers.clone();
-            self.rebuild_synth_layers();
-        } else {
-            self.hydrate_custom_layers(&id.hash);
-        }
+        self.hydrate_custom_layers(&id.hash);
         self.hydrate_staged(&id.hash);
         self.drop_applied_from_staged();
         self.heat = HeatmapStore::load(&id.hash, self.geometry().len()).ok();
@@ -1066,6 +1074,14 @@ impl App {
             !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots.as_slice() == slots.as_slice())
         });
         self.save_staged();
+
+        let mut cfg = config::load();
+        let before = cfg.custom_layer_sets.len();
+        cfg.custom_layer_sets
+            .retain(|set| !(set.layout == state.layout_hash && set.layers == state.custom_layers));
+        if cfg.custom_layer_sets.len() != before {
+            let _ = config::save(&cfg);
+        }
     }
 
     /// Load this layout's staged (not-yet-built) remaps and tap dances into the
@@ -1906,15 +1922,7 @@ impl App {
                             layout
                         });
 
-                        if let Some(state) = &self.firmware_state {
-                            self.custom_layers = state.custom_layers.clone();
-                            self.rebuild_synth_layers();
-                        } else if self.firmware_state_unknown {
-                            self.custom_layers.clear();
-                            self.rebuild_synth_layers();
-                        } else {
-                            self.hydrate_custom_layers(&id.hash);
-                        }
+                        self.hydrate_custom_layers(&id.hash);
                         self.hydrate_staged(&id.hash);
                         self.drop_applied_from_staged();
 
