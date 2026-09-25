@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config;
 use crate::oryx_api::cache_dir;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -49,11 +50,8 @@ impl HeatmapStore {
     /// Persist now.
     pub fn save(&mut self) -> Result<()> {
         let Some(path) = &self.path else { return Ok(()) };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).ok();
-        }
         let bytes = serde_json::to_vec(self)?;
-        fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
+        config::write_atomic(path, &bytes).with_context(|| format!("writing {}", path.display()))?;
         self.dirty = 0;
         Ok(())
     }
