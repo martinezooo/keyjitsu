@@ -378,7 +378,9 @@ struct App {
     guard_test_result: Option<crate::macos_guard_test::GuardTestOutcome>,
     #[cfg(target_os = "macos")]
     guard_test_started: Option<Instant>,
+    #[cfg(target_os = "macos")]
     guard_enabled: bool,
+    #[cfg(target_os = "macos")]
     guard_error: Option<String>,
     rules: Vec<AutolayerRule>,
     rules_dirty: bool,
@@ -437,6 +439,7 @@ struct App {
     /// Last failure while opening/revealing a build-related path.
     file_action_error: Option<String>,
     /// Last autostart toggle error (shown in the App card).
+    #[cfg(target_os = "macos")]
     autostart_error: Option<String>,
     /// In-flight "check for updates" request (manual, from Settings).
     update_rx: Option<std::sync::mpsc::Receiver<UpdateCheck>>,
@@ -733,6 +736,7 @@ impl App {
             profile_error: None,
             persist_error: config_load_error,
             file_action_error: None,
+            #[cfg(target_os = "macos")]
             autostart_error: None,
             update_rx: None,
             update_state: None,
@@ -809,7 +813,9 @@ impl App {
             guard_test_result: None,
             #[cfg(target_os = "macos")]
             guard_test_started: None,
+            #[cfg(target_os = "macos")]
             guard_enabled: cfg.guard_enabled,
+            #[cfg(target_os = "macos")]
             guard_error: None,
             rules: cfg.autolayer_rules,
             rules_dirty: false,
@@ -2592,7 +2598,7 @@ impl App {
         self.build_progress = self.build_progress.max(prog);
     }
 
-    fn reconcile_background_jobs(&mut self, ctx: &egui::Context) {
+    fn reconcile_background_jobs(&mut self, _ctx: &egui::Context) {
         // Guard: seize while enabled AND a keyboard is connected.
         #[cfg(target_os = "macos")]
         {
@@ -2654,7 +2660,7 @@ impl App {
                 self.autolayer = Some(worker::spawn_autolayer(
                     self.rules.clone(),
                     self.cmd_tx.clone(),
-                    ctx.clone(),
+                    _ctx.clone(),
                 ));
             }
         } else if !want_autolayer && self.autolayer.is_some() {
