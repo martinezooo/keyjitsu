@@ -241,6 +241,54 @@ pub struct Config {
     pub autolayer_enabled: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub overlay_trigger: Option<[u8; 2]>,
+    pub overlay_chord: Vec<[u8; 2]>,
+    pub hidden_shortcuts: Vec<String>,
+    pub autolayer_rules: Vec<AutolayerRule>,
+    pub glow_overrides: Vec<GlowOverride>,
+    pub key_fx: Vec<KeyFx>,
+    pub custom_fx: Vec<crate::gui::CustomFx>,
+    pub custom_shortcuts: Vec<CustomShortcut>,
+    pub rgb: RgbState,
+    pub peek: PeekConfig,
+    pub autolayer_enabled: bool,
+}
+
+impl Profile {
+    pub fn from_config(c: &Config) -> Self {
+        Self {
+            overlay_trigger: c.overlay_trigger,
+            overlay_chord: c.overlay_chord.clone(),
+            hidden_shortcuts: c.hidden_shortcuts.clone(),
+            autolayer_rules: c.autolayer_rules.clone(),
+            glow_overrides: c.glow_overrides.clone(),
+            key_fx: c.key_fx.clone(),
+            custom_fx: c.custom_fx.clone(),
+            custom_shortcuts: c.custom_shortcuts.clone(),
+            rgb: c.rgb.clone(),
+            peek: c.peek.clone(),
+            autolayer_enabled: c.autolayer_enabled,
+        }
+    }
+
+    pub fn apply_to(&self, c: &mut Config) {
+        c.overlay_trigger = self.overlay_trigger;
+        c.overlay_chord = self.overlay_chord.clone();
+        c.hidden_shortcuts = self.hidden_shortcuts.clone();
+        c.autolayer_rules = self.autolayer_rules.clone();
+        c.glow_overrides = self.glow_overrides.clone();
+        c.key_fx = self.key_fx.clone();
+        c.custom_fx = self.custom_fx.clone();
+        c.custom_shortcuts = self.custom_shortcuts.clone();
+        c.rgb = self.rgb.clone();
+        c.peek = self.peek.clone();
+        c.autolayer_enabled = self.autolayer_enabled;
+    }
+}
+
 fn path() -> Result<std::path::PathBuf> {
     Ok(cache_dir()?.join("config.json"))
 }
@@ -286,6 +334,30 @@ pub fn save(config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_does_not_overwrite_device_state() {
+        let mut cfg = Config::default();
+        cfg.last_layout = Some("layout/rev~kj0123456789".into());
+        cfg.qmk_firmware_dir = Some("/qmk".into());
+        cfg.staged_edits.push(StagedEdit { layout: "layout".into(), layer: 0, key: 1, code: "KC_A".into() });
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout".into(),
+            name: "Extra".into(),
+            keys: vec![CustomKey { key: 2, code: "KC_B".into() }],
+        });
+
+        let mut profile = Profile::from_config(&cfg);
+        profile.peek.enabled = false;
+
+        let mut target = cfg;
+        profile.apply_to(&mut target);
+        assert_eq!(target.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(target.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(target.staged_edits.len(), 1);
+        assert_eq!(target.custom_layers.len(), 1);
+        assert!(!target.peek.enabled);
+    }
 
     #[test]
     fn staged_roundtrip_and_old_config_compat() {
