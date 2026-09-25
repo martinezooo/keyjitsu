@@ -6774,8 +6774,16 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
             }
-            if busy && ui.button("✕ cancel").clicked() {
+            let flash_is_writing =
+                matches!(self.flash_state, Some(FlashState::Working { .. }));
+            if busy && !flash_is_writing && ui.button("✕ cancel").clicked() {
                 self.flash_cancel.store(true, Ordering::SeqCst);
+            } else if flash_is_writing {
+                ui.label(
+                    RichText::new("Writing firmware - do not unplug")
+                        .size(11.0)
+                        .color(pal::TEXT_DIM),
+                );
             }
         });
         ui.add_space(8.0);
