@@ -23,8 +23,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       - name: Build app bundle
         run: scripts/bundle.sh
       - name: Package
@@ -48,8 +50,10 @@ jobs:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libxkbcommon-dev libwayland-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       - name: Build
         run: cargo build --release --locked
       - name: Package
@@ -71,8 +75,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
       - name: Build
         run: cargo build --release --locked
       - name: Package
