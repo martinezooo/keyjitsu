@@ -211,7 +211,7 @@ impl LayoutSource {
             return LayoutId::from_url(url);
         }
         if let Some(hash) = &self.hash {
-            return Ok(LayoutId { hash: hash.clone(), revision: self.rev.clone() });
+            return LayoutId::new(hash.clone(), self.rev.clone());
         }
         let kb = Keyboard::open(serial)?;
         kb.pair()?;
