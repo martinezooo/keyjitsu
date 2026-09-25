@@ -820,6 +820,32 @@ impl App {
             }
         }
 
+        if let Some(state) = &self.firmware_state {
+            for edit in &state.edits {
+                let pos = (edit.layer, edit.key as usize);
+                let rewritten = renumber_layer_ref(&edit.code, del);
+                if rewritten != edit.code
+                    && !self.key_edits.contains_key(&pos)
+                    && !self.key_dances.contains_key(&pos)
+                {
+                    self.key_edits.insert(pos, rewritten);
+                }
+            }
+            for dance in &state.dances {
+                let pos = (dance.layer, dance.key as usize);
+                let mut rewritten = dance.slots.clone();
+                for slot in rewritten.iter_mut().flatten() {
+                    *slot = renumber_layer_ref(slot, del);
+                }
+                if rewritten != dance.slots
+                    && !self.key_edits.contains_key(&pos)
+                    && !self.key_dances.contains_key(&pos)
+                {
+                    self.key_dances.insert(pos, rewritten);
+                }
+            }
+        }
+
         self.save_custom_layers();
         self.save_glow();
         self.save_key_fx();
@@ -2828,20 +2854,31 @@ fn combo_strip(ui: &mut egui::Ui, entries: &[ComboChip], a: f32, accent: Color32
 /// removed: a reference to a layer ABOVE `del` shifts down by one; references
 /// to `del` or below (and non-layer codes) are unchanged.
 fn renumber_layer_ref(code: &str, del: u8) -> String {
-    let shift = |n: &str| -> String {
-        match n.trim().parse::<u8>() {
-            Ok(v) if v > del => (v - 1).to_string(),
-            _ => n.trim().to_string(),
-        }
-    };
+    if code.contains('\n') {
+        return code
+            .split('\n')
+            .map(|step| renumber_layer_ref(step, del))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    let target = |n: &str| n.trim().parse::<u8>().ok();
     for fam in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
         if let Some(rest) = code.strip_prefix(fam).and_then(|r| r.strip_prefix('(')).and_then(|r| r.strip_suffix(')')) {
-            return format!("{fam}({})", shift(rest));
+            return match target(rest) {
+                Some(v) if v == del => "KC_NO".to_string(),
+                Some(v) if v > del => format!("{fam}({})", v - 1),
+                _ => code.to_string(),
+            };
         }
     }
     if let Some(rest) = code.strip_prefix("LT(").and_then(|r| r.strip_suffix(')')) {
         if let Some((n, tap)) = rest.split_once(',') {
-            return format!("LT({},{})", shift(n), tap.trim());
+            return match target(n) {
+                Some(v) if v == del => tap.trim().to_string(),
+                Some(v) if v > del => format!("LT({},{})", v - 1, tap.trim()),
+                _ => code.to_string(),
+            };
         }
     }
     code.to_string()
@@ -6309,18 +6346,17 @@ mod layer_ref_tests {
     use super::renumber_layer_ref;
 
     #[test]
-    fn shifts_refs_above_deleted_layer() {
-        // Deleting layer 2: refs to 3+ shift down, 2 and below unchanged.
-        assert_eq!(renumber_layer_ref("MO(3)", 2), "MO(3)".replace('3', "2")); // MO(3)→MO(2)
+    fn rewrites_refs_after_deleted_layer() {
         assert_eq!(renumber_layer_ref("MO(3)", 2), "MO(2)");
         assert_eq!(renumber_layer_ref("MO(1)", 2), "MO(1)");
-        assert_eq!(renumber_layer_ref("MO(2)", 2), "MO(2)"); // the deleted one: left as-is
+        assert_eq!(renumber_layer_ref("MO(2)", 2), "KC_NO");
+        assert_eq!(renumber_layer_ref("LT(2,KC_A)", 2), "KC_A");
         assert_eq!(renumber_layer_ref("LT(4,KC_A)", 2), "LT(3,KC_A)");
         assert_eq!(renumber_layer_ref("OSL(5)", 2), "OSL(4)");
         assert_eq!(renumber_layer_ref("DF(3)", 2), "DF(2)");
-        // Non-layer codes untouched.
         assert_eq!(renumber_layer_ref("KC_A", 2), "KC_A");
         assert_eq!(renumber_layer_ref("LSFT_T(KC_A)", 2), "LSFT_T(KC_A)");
+        assert_eq!(renumber_layer_ref("KC_A\nMO(2)\nMO(4)", 2), "KC_A\nKC_NO\nMO(3)");
     }
 }
 
