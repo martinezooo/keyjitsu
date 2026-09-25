@@ -280,38 +280,13 @@ pub fn spawn_flash(
         };
         send(FlashState::WaitingForBootloader);
 
-        // zapp-core's timeout only fires on USB events; poll our own deadline
-        // and the cancel flag so a never-pressed reset can't hang us. We hand
-        // the watcher a timeout of its own (longer than our deadline, so our
-        // friendlier message wins) purely so a canceled/timed-out attempt's
-        // thread self-terminates on the next USB event instead of leaking.
-        let (btx, brx) = channel();
-        std::thread::spawn(move || {
-            let watcher_timeout = Duration::from_secs(360);
-            let _ = btx.send(zapp_core::device::wait_for_bootloader(
-                Some(watcher_timeout),
-                |_| {},
-            ));
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(300);
-        let dev = loop {
-            if canceled() {
-                return send(FlashState::Failed("canceled".into()));
-            }
-            match brx.recv_timeout(Duration::from_millis(300)) {
-                Ok(Ok(dev)) => break dev,
-                Ok(Err(e)) => return send(FlashState::Failed(format!("bootloader detection: {e}"))),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if std::time::Instant::now() >= deadline {
-                        return send(FlashState::Failed(
-                            "no bootloader within 5 minutes - reset button not pressed?".into(),
-                        ));
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return send(FlashState::Failed("bootloader watcher stopped".into()))
-                }
-            }
+        let dev = match crate::cmd_flash::wait_for_bootloader(
+            Duration::from_secs(300),
+            Some(&cancel),
+            |_| {},
+        ) {
+            Ok(dev) => dev,
+            Err(e) => return send(FlashState::Failed(format!("{e:#}"))),
         };
 
         let res = zapp_core::flash::flash_device(&dev, &fw, &|p| {
