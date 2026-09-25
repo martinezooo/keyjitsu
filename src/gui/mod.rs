@@ -1346,11 +1346,9 @@ impl App {
     /// shown live with a counting-up hold duration.
     fn combo_recent(&self) -> Vec<ComboChip> {
         let now = Instant::now();
-        let layer = self.layer_def(self.active_layer);
         let label = |k: usize| {
-            layer
-                .and_then(|l| l.keys.get(k))
-                .map(|key| labels_for(key).tap)
+            self.applied_key(self.active_layer, k)
+                .map(|key| labels_for(&key).tap)
                 .filter(|t| !t.is_empty())
                 .unwrap_or_else(|| format!("k{k}"))
         };
@@ -3331,9 +3329,9 @@ impl App {
                     let custom = n >= oryx;
                     let name = self.layer_name(n);
                     let keycount = self
-                        .layer_def(n)
-                        .map(|l| l.keys.iter().filter(|k| {
-                            k.tap.as_ref().and_then(|a| a.code.as_deref()).is_some_and(|c| c != "KC_NO" && c != "KC_TRANSPARENT")
+                        .effective_layer(n)
+                        .map(|l| l.keys.into_iter().filter(|k| {
+                            k.tap.as_ref().and_then(|a| a.code.as_deref()).is_some_and(|c| c != "KC_NO" && c != "KC_TRANSPARENT" && c != "KC_TRNS")
                                 || k.hold.is_some()
                         }).count())
                         .unwrap_or(0);
@@ -3595,9 +3593,8 @@ impl App {
                     ui.add_space(6.0);
                     ui.label(RichText::new(format!("{} · key {i}", self.layer_name(view))).size(12.5).color(pal::TEXT_MUTED));
                     let assigned = self
-                        .layer_def(view)
-                        .and_then(|l| l.keys.get(i))
-                        .map(|k| self.describe_assignment(k))
+                        .effective_key(view, i)
+                        .map(|k| self.describe_assignment(&k))
                         .unwrap_or_else(|| "No assignment".into());
                     ui.label(RichText::new(assigned).strong().size(13.0).color(pal::VIOLET_HI));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -4470,10 +4467,11 @@ impl App {
             .with_mouse_passthrough(true)
             .with_always_on_top();
 
-        let layer_def = self.layer_def(self.peek_layer);
+        let applied_layer = self.applied_layer(self.peek_layer);
         let glow = self.glow_colors(self.peek_layer);
-        let legends = if self.peek.show_legends { layer_def } else { None };
-        let title = layer_def
+        let legends = if self.peek.show_legends { applied_layer.as_ref() } else { None };
+        let title = applied_layer
+            .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {}", self.peek_layer));
         // Overall translucency, applied to the whole overlay so it reads like
@@ -4776,9 +4774,8 @@ impl App {
         ranked.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
         let layer = self.heat_layer.unwrap_or(self.view_layer);
         let top_label = ranked.first().map(|(idx, _)| {
-            self.layer_def(layer)
-                .and_then(|l| l.keys.get(*idx))
-                .map(|k| labels_for(k).tap)
+            self.applied_key(layer, *idx)
+                .map(|k| labels_for(&k).tap)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| format!("key {idx}"))
         });
@@ -4853,7 +4850,8 @@ impl App {
         // Board width capped by the height budget (34px/unit legibility floor).
         let board_cap = (((budget - 76.0) / g_rows).clamp(34.0, 62.0) * g_cols + 48.0).min(left_w);
         let rank_rows = (((budget - 84.0) / 27.0) as usize).clamp(5, 20);
-        let layer_def = self.layer_def(layer);
+        let applied_layer = self.applied_layer(layer);
+        let layer_def = applied_layer.as_ref();
         let glow: Vec<Option<Color32>> =
             norm.iter().map(|&t| (t > 0.0).then(|| widget::heat_color(t))).collect();
 
@@ -5312,8 +5310,8 @@ impl App {
             .map(|c| (*c != [0, 0, 0]).then(|| Color32::from_rgb(c[0], c[1], c[2])))
             .collect();
         let no_press = vec![false; n];
-        let layer = self.layer_def(self.view_layer);
-        let kb = draw_keyboard(ui, geo, layer, &glow, &no_press, None, 1.0, false);
+        let applied_layer = self.applied_layer(self.view_layer);
+        let kb = draw_keyboard(ui, geo, applied_layer.as_ref(), &glow, &no_press, None, 1.0, false);
         // Clicking the preview: fire the press effect, or paint the custom step.
         if let Some(i) = kb.clicked {
             match self.fx_sel {
@@ -5344,7 +5342,8 @@ impl App {
     fn export_heatmap_csv(&self, counts: &[u64], layer_total: u64) -> anyhow::Result<std::path::PathBuf> {
         use std::io::Write as _;
         let layer = self.heat_layer.unwrap_or(self.view_layer);
-        let layer_def = self.layer_def(layer);
+        let applied_layer = self.applied_layer(layer);
+        let layer_def = applied_layer.as_ref();
         let scope = match self.heat_layer {
             None => "all-layers".to_string(),
             Some(n) => format!("layer{n}"),
@@ -6090,7 +6089,7 @@ impl App {
             .map(|&[r, c]| {
                 self.geometry()
                     .key_index(r, c)
-                    .and_then(|i| self.layer_def(0).and_then(|l| l.keys.get(i)).map(|k| labels_for(k).tap))
+                    .and_then(|i| self.applied_key(0, i).map(|k| labels_for(&k).tap))
                     .filter(|t| !t.is_empty())
                     .unwrap_or_else(|| format!("r{r}c{c}"))
             })
@@ -6164,9 +6163,10 @@ impl App {
         let layer = self.active_layer.max(if self.layer_count() > 1 { 1 } else { 0 });
         let geo = self.geometry();
         let glow = self.glow_colors(layer);
-        let legends = if c.show_legends { self.layer_def(layer) } else { None };
-        let title = self
-            .layer_def(layer)
+        let applied_layer = self.applied_layer(layer);
+        let legends = if c.show_legends { applied_layer.as_ref() } else { None };
+        let title = applied_layer
+            .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {layer}"));
         let a = (c.opacity.clamp(0.08, 1.0) * 255.0) as u8;
