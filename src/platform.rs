@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 pub fn reveal_path(path: &Path) -> Result<()> {
     let target = if path.is_dir() { path } else { path.parent().unwrap_or(path) };
@@ -94,11 +94,6 @@ pub fn set_autostart(on: bool) -> Result<()> {
 </dict>\n</plist>\n"
     );
     crate::config::write_atomic(&path, plist.as_bytes())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn set_autostart(_on: bool) -> Result<()> {
-    bail!("start-at-login is not implemented on this platform yet")
 }
 
 #[cfg(target_os = "macos")]
