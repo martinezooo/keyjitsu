@@ -8687,6 +8687,14 @@ mod state_composition_tests {
     }
 
     #[test]
+    fn picker_modified_tab_survives_staging_and_display_synthesis() {
+        let key = synth_key("LALT(KC_TAB)");
+        let action = key.tap.as_ref().expect("tap action");
+        assert_eq!(action.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert_eq!(crate::legend::action_label(action), "⌥Tab");
+    }
+
+    #[test]
     fn synthesized_keys_preserve_disabled_transparent_and_dual_role_codes() {
         let disabled = synth_key("KC_NO");
         assert_eq!(
