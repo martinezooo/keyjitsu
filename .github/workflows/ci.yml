@@ -37,7 +37,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-ci-diagnostics
+          name: ci-diagnostics-${{ matrix.os }}
           path: |
             fmt.log
             build.log
