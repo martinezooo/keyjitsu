@@ -206,6 +206,12 @@ fn device_loop(
 
         loop {
             if stop.load(Ordering::SeqCst) {
+                // Shutdown must hand RGB control back to firmware before the
+                // worker exits. Relying on a queued RgbRelease from the GUI is
+                // racy because DeviceWorkerHandle::drop sets this stop flag.
+                if took_over {
+                    let _ = kb.send(Command::RgbControl(false));
+                }
                 kb.disconnect();
                 return;
             }
