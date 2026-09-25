@@ -1210,12 +1210,10 @@ impl App {
     /// where the app was killed after flashing but before it could clear them.
     fn drop_applied_from_staged(&mut self) {
         let Some(state) = self.firmware_state.clone() else { return };
-        self.key_edits.retain(|&(layer, key), code| {
-            !state.edits.iter().any(|e| e.layer == layer && e.key as usize == key && e.code.as_str() == code.as_str())
-        });
-        self.key_dances.retain(|&(layer, key), slots| {
-            !state.dances.iter().any(|d| d.layer == layer && d.key as usize == key && d.slots.as_slice() == slots.as_slice())
-        });
+        self.key_edits
+            .retain(|&(layer, key), code| staged_edit_is_pending(&state, layer, key, code));
+        self.key_dances
+            .retain(|&(layer, key), slots| staged_dance_is_pending(&state, layer, key, slots));
         self.save_staged();
 
         let layout_hash = state.layout_hash.clone();
@@ -3292,6 +3290,30 @@ fn renumber_layer_ref(code: &str, del: u8) -> String {
 /// Turn a QMK keycode string into an `OryxKey` for display: layer-switch
 /// families render as `CODE → layer` (via the layer field), everything else
 /// as its plain legend. A dual-role `LT(n,tap)` shows the tap with a hold hint.
+fn staged_edit_is_pending(
+    state: &FirmwareState,
+    layer: u8,
+    key: usize,
+    code: &str,
+) -> bool {
+    !state
+        .edits
+        .iter()
+        .any(|edit| edit.layer == layer && edit.key as usize == key && edit.code == code)
+}
+
+fn staged_dance_is_pending(
+    state: &FirmwareState,
+    layer: u8,
+    key: usize,
+    slots: &[Option<String>; 4],
+) -> bool {
+    !state
+        .dances
+        .iter()
+        .any(|dance| dance.layer == layer && dance.key as usize == key && dance.slots == *slots)
+}
+
 fn merge_firmware_maps(
     state: Option<&FirmwareState>,
     staged_edits: &HashMap<(u8, usize), String>,
@@ -7017,7 +7039,9 @@ mod firmware_confirmation_tests {
 mod state_composition_tests {
     use std::collections::HashMap;
 
-    use super::{merge_firmware_maps, synth_key};
+    use super::{
+        merge_firmware_maps, staged_dance_is_pending, staged_edit_is_pending, synth_key,
+    };
     use crate::firmware_state::{FirmwareDance, FirmwareEdit, FirmwareState};
 
     #[test]
@@ -7053,6 +7077,34 @@ mod state_composition_tests {
             dances.get(&(0, 2)).and_then(|slots| slots[0].as_deref()),
             Some("KC_X")
         );
+    }
+
+    #[test]
+    fn flashing_an_older_build_keeps_newer_pending_changes() {
+        let state = FirmwareState::new(
+            "layout".into(),
+            "revision".into(),
+            vec![FirmwareEdit {
+                layer: 0,
+                key: 1,
+                code: "KC_A".into(),
+            }],
+            vec![FirmwareDance {
+                layer: 0,
+                key: 2,
+                slots: [Some("KC_B".into()), None, None, None],
+            }],
+            vec![],
+        );
+
+        assert!(!staged_edit_is_pending(&state, 0, 1, "KC_A"));
+        assert!(staged_edit_is_pending(&state, 0, 1, "KC_Z"));
+        assert!(staged_edit_is_pending(&state, 0, 3, "KC_A"));
+
+        let applied_dance = [Some("KC_B".into()), None, None, None];
+        let newer_dance = [Some("KC_C".into()), None, None, None];
+        assert!(!staged_dance_is_pending(&state, 0, 2, &applied_dance));
+        assert!(staged_dance_is_pending(&state, 0, 2, &newer_dance));
     }
 
     #[test]
