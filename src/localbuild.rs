@@ -429,8 +429,14 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
             log(line);
         }
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
+            if child
+                .try_wait()
+                .context("checking qmk compile before cancellation")?
+                .is_none()
+            {
+                child.kill().context("terminating qmk compile")?;
+                child.wait().context("waiting for canceled qmk compile")?;
+            }
             bail!("canceled");
         }
         match child.try_wait().context("waiting for qmk")? {
