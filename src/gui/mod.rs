@@ -376,6 +376,7 @@ struct App {
     /// Draft name for "save current as profile" (Settings).
     profile_draft: String,
     profile_error: Option<String>,
+    persist_error: Option<String>,
     /// Last autostart toggle error (shown in the App card).
     autostart_error: Option<String>,
     /// In-flight "check for updates" request (manual, from Settings).
@@ -612,6 +613,7 @@ impl App {
             keys_adding: false,
             profile_draft: String::new(),
             profile_error: None,
+            persist_error: None,
             autostart_error: None,
             update_rx: None,
             update_state: None,
@@ -858,14 +860,12 @@ impl App {
 
     fn save_custom_layers(&mut self) {
         let Some(hash) = self.layout_hash.clone() else { return };
-        let mut cfg = config::load();
-        cfg.custom_layers.retain(|c| c.layout != hash);
-        cfg.custom_layer_sets.retain(|s| s.layout != hash);
-        cfg.custom_layer_sets.push(config::CustomLayerSet {
-            layout: hash,
-            layers: self.custom_layers.clone(),
+        let layers = self.custom_layers.clone();
+        self.persist_config("saving custom layers", move |cfg| {
+            cfg.custom_layers.retain(|c| c.layout != hash);
+            cfg.custom_layer_sets.retain(|s| s.layout != hash);
+            cfg.custom_layer_sets.push(config::CustomLayerSet { layout: hash, layers });
         });
-        let _ = config::save(&cfg);
         self.rebuild_synth_layers();
     }
 
@@ -1181,27 +1181,43 @@ impl App {
     /// Persist this layout's staged remaps + tap dances. Mirrors [`Self::save_glow`]:
     /// they used to live only in memory until the next build, so a restart
     /// silently dropped them.
-    fn save_staged(&self) {
+    fn save_staged(&mut self) {
         let Some(hash) = self.layout_hash.clone() else { return };
-        let mut cfg = config::load();
-        cfg.staged_edits.retain(|e| e.layout != hash);
-        cfg.staged_dances.retain(|d| d.layout != hash);
-        for (&(layer, key), code) in &self.key_edits {
-            cfg.staged_edits.push(StagedEdit { layout: hash.clone(), layer, key: key as u16, code: code.clone() });
-        }
-        for (&(layer, key), slots) in &self.key_dances {
-            cfg.staged_dances.push(StagedDance { layout: hash.clone(), layer, key: key as u16, slots: slots.clone() });
-        }
-        let _ = config::save(&cfg);
+        let edits: Vec<_> = self
+            .key_edits
+            .iter()
+            .map(|(&(layer, key), code)| StagedEdit {
+                layout: hash.clone(),
+                layer,
+                key: key as u16,
+                code: code.clone(),
+            })
+            .collect();
+        let dances: Vec<_> = self
+            .key_dances
+            .iter()
+            .map(|(&(layer, key), slots)| StagedDance {
+                layout: hash.clone(),
+                layer,
+                key: key as u16,
+                slots: slots.clone(),
+            })
+            .collect();
+        self.persist_config("saving pending key changes", move |cfg| {
+            cfg.staged_edits.retain(|e| e.layout != hash);
+            cfg.staged_dances.retain(|d| d.layout != hash);
+            cfg.staged_edits.extend(edits);
+            cfg.staged_dances.extend(dances);
+        });
     }
 
     /// Persist the current key_fx map for this layout.
-    fn save_key_fx(&self) {
+    fn save_key_fx(&mut self) {
         let Some(hash) = self.layout_hash.clone() else { return };
-        let mut cfg = config::load();
-        cfg.key_fx.retain(|f| f.layout != hash);
-        for (&(layer, key), (trigger, effect, color, custom)) in &self.key_fx {
-            cfg.key_fx.push(config::KeyFx {
+        let entries: Vec<_> = self
+            .key_fx
+            .iter()
+            .map(|(&(layer, key), (trigger, effect, color, custom))| config::KeyFx {
                 layout: hash.clone(),
                 layer,
                 key: key as u16,
@@ -1209,16 +1225,20 @@ impl App {
                 effect: *effect,
                 color: *color,
                 custom: custom.clone(),
-            });
-        }
-        let _ = config::save(&cfg);
+            })
+            .collect();
+        self.persist_config("saving per-key effects", move |cfg| {
+            cfg.key_fx.retain(|f| f.layout != hash);
+            cfg.key_fx.extend(entries);
+        });
     }
 
     /// Persist the user-built custom effects.
-    fn save_custom_fx(&self) {
-        let mut cfg = config::load();
-        cfg.custom_fx = self.custom_fx.clone();
-        let _ = config::save(&cfg);
+    fn save_custom_fx(&mut self) {
+        let custom_fx = self.custom_fx.clone();
+        self.persist_config("saving custom effects", move |cfg| {
+            cfg.custom_fx = custom_fx;
+        });
     }
 
     /// Translate a custom-effect step by one grid unit; keys that would land
@@ -1397,6 +1417,23 @@ impl App {
     fn set_anim_effect(&self, effect: Effect) {
         if let Ok(mut a) = self.anim.lock() {
             a.effect = effect;
+        }
+    }
+
+    fn persist_config(
+        &mut self,
+        context: &str,
+        mutate: impl FnOnce(&mut config::Config),
+    ) -> bool {
+        match config::update(mutate) {
+            Ok(()) => {
+                self.persist_error = None;
+                true
+            }
+            Err(e) => {
+                self.persist_error = Some(format!("{context}: {e:#}"));
+                false
+            }
         }
     }
 
@@ -1606,10 +1643,11 @@ impl App {
         ui.add_space(4.0);
     }
 
-    fn save_custom_shortcuts(&self) {
-        let mut cfg = config::load();
-        cfg.custom_shortcuts = self.custom_shortcuts.clone();
-        let _ = config::save(&cfg);
+    fn save_custom_shortcuts(&mut self) {
+        let shortcuts = self.custom_shortcuts.clone();
+        self.persist_config("saving shortcuts", move |cfg| {
+            cfg.custom_shortcuts = shortcuts;
+        });
     }
 
     /// The Shortcuts tab: a searchable cheatsheet of ready-made shortcuts
@@ -1930,12 +1968,20 @@ impl App {
 
     fn save_glow(&mut self) {
         let Some(hash) = self.layout_hash.clone() else { return };
-        let mut cfg = config::load();
-        cfg.glow_overrides.retain(|o| o.layout != hash);
-        for (&(layer, key), &rgb) in &self.glow_work {
-            cfg.glow_overrides.push(GlowOverride { layout: hash.clone(), layer, key: key as u16, rgb });
-        }
-        if config::save(&cfg).is_ok() {
+        let entries: Vec<_> = self
+            .glow_work
+            .iter()
+            .map(|(&(layer, key), &rgb)| GlowOverride {
+                layout: hash.clone(),
+                layer,
+                key: key as u16,
+                rgb,
+            })
+            .collect();
+        if self.persist_config("saving glow overrides", move |cfg| {
+            cfg.glow_overrides.retain(|o| o.layout != hash);
+            cfg.glow_overrides.extend(entries);
+        }) {
             self.glow_saved = self.glow_work.clone();
         }
     }
@@ -2417,6 +2463,12 @@ impl eframe::App for App {
                         if resp.clicked() {
                             self.tab = Tab::Tools;
                         }
+                    }
+                    if let Some(e) = &self.persist_error {
+                        egui::Frame::new()
+                            .show(ui, |ui| status_pill(ui, "⚠ save failed", pal::RED))
+                            .response
+                            .on_hover_text(e);
                     }
                     ui.horizontal_wrapped(|ui| {
                         #[cfg(target_os = "macos")]
