@@ -2,6 +2,7 @@
 //! parity (live view, layers, heatmap, flashing) plus keyjitsu's extras
 //! (per-key RGB, built-in-keyboard guard, autolayer rules).
 
+mod profiles;
 mod rgb_anim;
 mod widget;
 mod worker;
@@ -14,6 +15,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use profiles::{
+    create_profile, list_profiles, load_profile, next_profile_copy_name, profile_file_name,
+    profile_path, snapshot_profile,
+};
 use rgb_anim::{Anim, FxEvent};
 
 use anyhow::{anyhow, Context, Result};
@@ -1507,59 +1512,15 @@ impl App {
         }
     }
 
-    fn snapshot_profile(&self, name: &str) -> Result<()> {
-        let path = profile_path(name)?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let cfg = config::load_checked()?;
-        let profile = config::Profile::from_config(&cfg);
-        let json = serde_json::to_vec_pretty(&profile)?;
-        config::write_atomic(&path, &json)?;
-        Ok(())
-    }
-
-    fn load_profile(&self, name: &str) -> Result<config::Profile> {
-        let bytes = std::fs::read(profile_path(name)?)?;
-        Ok(serde_json::from_slice(&bytes)?)
-    }
-
-    fn create_profile(&self, name: &str) -> Result<()> {
-        if list_profiles()?
-            .iter()
-            .any(|saved| saved.eq_ignore_ascii_case(name.trim()))
-        {
-            return Err(anyhow!("profile {name:?} already exists"));
-        }
-        self.snapshot_profile(name)
-    }
-
-    fn next_profile_copy_name(&self, source: &str) -> Result<String> {
-        let saved = list_profiles()?;
-        for n in 1..=999 {
-            let candidate = if n == 1 {
-                format!("{source} copy")
-            } else {
-                format!("{source} copy {n}")
-            };
-            if profile_file_name(&candidate).is_ok()
-                && !saved.iter().any(|name| name.eq_ignore_ascii_case(&candidate))
-            {
-                return Ok(candidate);
-            }
-        }
-        Ok(format!("profile copy {}", std::process::id()))
-    }
-
     fn switch_profile(&mut self, target: Option<String>) {
         let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
-        if let Err(e) = self.snapshot_profile(&current) {
+        if let Err(e) = snapshot_profile(&current) {
             self.profile_error = Some(format!("could not save {current}: {e:#}"));
             return;
         }
 
         let target_name = target.clone().unwrap_or_else(|| "default".into());
-        let profile = match self.load_profile(&target_name) {
+        let profile = match load_profile(&target_name) {
             Ok(profile) => profile,
             Err(e) => {
                 self.profile_error = Some(format!("could not load {target_name}: {e:#}"));
@@ -1627,8 +1588,8 @@ impl App {
                     let result = self
                         .next_profile_copy_name(&active_label)
                         .and_then(|clone| {
-                            self.snapshot_profile(&current)
-                                .and_then(|_| self.create_profile(&clone))
+                            snapshot_profile(&current)
+                                .and_then(|_| create_profile(&clone))
                         });
                     self.profile_error = result.err().map(|e| format!("could not clone profile: {e:#}"));
                     ui.close_menu();
@@ -1675,7 +1636,7 @@ impl App {
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
                     let result = self
                         .snapshot_profile(&current)
-                        .and_then(|_| self.create_profile(&name))
+                        .and_then(|_| create_profile(&name))
                         .and_then(|_| {
                             let active = name.clone();
                             config::update(move |cfg| cfg.active_profile = Some(active))
@@ -3197,11 +3158,6 @@ fn perf_bar(ui: &mut egui::Ui, frac: f32, color: egui::Color32) {
     ui.painter().rect_filled(fill, egui::CornerRadius::same(3), color);
 }
 
-/// Directory holding saved profile snapshots.
-fn profiles_dir() -> Result<std::path::PathBuf> {
-    Ok(crate::oryx_api::cache_dir()?.join("profiles"))
-}
-
 /// Whether a fresh tap of `key` should merge into the previous log entry as a
 /// double-tap: same key, still a single, within the press-to-press window
 /// (`gap` = ms between the two DOWN presses, like a double-click).
@@ -3416,53 +3372,6 @@ fn synth_key(code: &str) -> OryxKey {
     }
     k.tap = Some(KeyAction { code: Some(code.to_string()), layer: None, description: None });
     k
-}
-
-fn profile_file_name(name: &str) -> Result<String> {
-    let name = name.trim();
-    let valid = !name.is_empty()
-        && name.chars().count() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_');
-    let upper = name.to_ascii_uppercase();
-    let windows_reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (upper.len() == 4
-            && (upper.starts_with("COM") || upper.starts_with("LPT"))
-            && upper.as_bytes()[3].is_ascii_digit()
-            && upper.as_bytes()[3] != b'0');
-    if !valid || windows_reserved {
-        return Err(anyhow!("invalid profile name"));
-    }
-    Ok(format!("{name}.json"))
-}
-
-fn profile_path(name: &str) -> Result<std::path::PathBuf> {
-    Ok(profiles_dir()?.join(profile_file_name(name)?))
-}
-
-/// Sorted names of saved profiles. A missing directory is a valid empty
-/// profile set; other filesystem failures are surfaced instead of pretending
-/// that all profiles disappeared.
-fn list_profiles() -> Result<Vec<String>> {
-    let dir = profiles_dir()?;
-    let rd = match std::fs::read_dir(&dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
-    };
-    let mut out = Vec::new();
-    for entry in rd {
-        let entry = entry.with_context(|| format!("reading an entry in {}", dir.display()))?;
-        let p = entry.path();
-        if p.extension().and_then(|x| x.to_str()) == Some("json") {
-            if let Some(name) = p.file_stem().and_then(|x| x.to_str()) {
-                out.push(name.to_string());
-            }
-        }
-    }
-    out.sort();
-    Ok(out)
 }
 
 /// Result of a manual "check for updates" against GitHub Releases.
@@ -7151,22 +7060,6 @@ mod state_composition_tests {
             mod_tap.hold.as_ref().and_then(|a| a.code.as_deref()),
             Some("KC_LGUI")
         );
-    }
-}
-
-#[cfg(test)]
-mod profile_name_tests {
-    use super::profile_file_name;
-
-    #[test]
-    fn profile_names_do_not_collapse_to_the_same_file() {
-        assert_eq!(profile_file_name("work").unwrap(), "work.json");
-        assert_eq!(profile_file_name("work copy").unwrap(), "work copy.json");
-        assert!(profile_file_name("work/dev").is_err());
-        assert!(profile_file_name("work?dev").is_err());
-        assert!(profile_file_name("").is_err());
-        assert!(profile_file_name("CON").is_err());
-        assert!(profile_file_name("com1").is_err());
     }
 }
 
