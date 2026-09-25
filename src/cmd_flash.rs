@@ -6,10 +6,12 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use zapp_core::device::{self, WatchStatus};
+use nusb::MaybeFuture;
+use zapp_core::device;
 use zapp_core::firmware::{self, Firmware};
 use zapp_core::flash::{self, FlashProgress};
 
@@ -32,6 +34,48 @@ pub fn acquire_firmware(target: Option<&str>, latest: bool) -> Result<Firmware> 
     }
 }
 
+pub fn wait_for_bootloader(
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+    on_found: impl Fn(&'static str),
+) -> Result<device::BootloaderDevice> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            bail!("canceled");
+        }
+
+        for info in nusb::list_devices().wait().context("listing USB devices")? {
+            let vid = info.vendor_id();
+            let pid = info.product_id();
+            let Some(kind) = device::ids::identify_bootloader(vid, pid) else {
+                continue;
+            };
+
+            std::thread::sleep(Duration::from_millis(500));
+            if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                bail!("canceled");
+            }
+
+            let usb = info.open().wait().context("opening bootloader device")?;
+            let name = device::ids::friendly_name(vid, pid);
+            on_found(name);
+            return Ok(device::BootloaderDevice {
+                device: usb,
+                vid,
+                pid,
+                kind,
+                keyboard: device::ids::keyboard_for_bootloader(vid, pid),
+            });
+        }
+
+        if Instant::now() >= deadline {
+            bail!("no bootloader appeared within {}s - was the reset button pressed?", timeout.as_secs());
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 pub fn run(target: Option<&str>, latest: bool, timeout_secs: u64) -> Result<()> {
     let fw = acquire_firmware(target, latest)?;
     println!("{}", firmware_summary(&fw));
@@ -42,25 +86,10 @@ pub fn run(target: Option<&str>, latest: bool, timeout_secs: u64) -> Result<()> 
     println!("Waiting up to {timeout_secs}s for the bootloader…");
     std::io::stdout().flush().ok();
 
-    // zapp-core's own timeout only fires when *some* USB event arrives, so a
-    // keyboard that never enters the bootloader would hang it forever. Run the
-    // watcher on a thread and enforce the deadline ourselves; on timeout the
-    // process exits and the abandoned watcher thread goes with it.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let res = device::wait_for_bootloader(None, |s| {
-            if let WatchStatus::Found { name, .. } = s {
-                println!("Bootloader detected: {name}");
-            }
-        });
-        let _ = tx.send(res);
-    });
-    let dev = match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(res) => res.context("bootloader detection failed")?,
-        Err(_) => bail!(
-            "no bootloader appeared within {timeout_secs}s - was the reset button pressed?"
-        ),
-    };
+    let dev = wait_for_bootloader(Duration::from_secs(timeout_secs), None, |name| {
+        println!("Bootloader detected: {name}");
+    })
+    .context("bootloader detection failed")?;
 
     flash::flash_device(&dev, &fw, &|p| match p {
         FlashProgress::Erasing { bytes_erased, total_bytes } => {
