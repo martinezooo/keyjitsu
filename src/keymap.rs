@@ -573,7 +573,7 @@ fn matching_paren(source: &str, open: usize) -> Result<usize> {
 
 /// Split a `LAYOUT(...)` argument list on commas that are at paren depth 0, so
 /// that nested keycodes like `LT(2, KC_SPC)` stay intact.
-fn split_top_level(inner: &str) -> Vec<String> {
+pub(crate) fn split_top_level(inner: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
