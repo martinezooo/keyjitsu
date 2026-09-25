@@ -20,10 +20,10 @@ const RESCAN_INTERVAL: Duration = Duration::from_millis(900);
 const READ_TIMEOUT: Duration = Duration::from_millis(25);
 
 pub enum DevEvent {
-    Connected { model: String, serial: String },
-    LayoutLoaded(Box<Layout>),
+    Connected { model: String, serial: String, generation: u64 },
+    LayoutLoaded { generation: u64, layout: Box<Layout> },
     Hid(Event),
-    Disconnected,
+    Disconnected { generation: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -72,12 +72,13 @@ fn device_loop(
     ctx: egui::Context,
 ) {
     let mut was_connected = true; // force an initial Disconnected if nothing is there
+    let mut generation = 0u64;
     loop {
         let kb = match Keyboard::open(serial.as_deref()) {
             Ok(kb) => kb,
             Err(_) => {
                 if was_connected {
-                    if etx.send(DevEvent::Disconnected).is_err() {
+                    if etx.send(DevEvent::Disconnected { generation }).is_err() {
                         return; // app is gone
                     }
                     ctx.request_repaint();
@@ -93,7 +94,7 @@ fn device_loop(
             Ok(layer) => layer,
             Err(_) => {
                 kb.disconnect();
-                if was_connected && etx.send(DevEvent::Disconnected).is_err() {
+                if was_connected && etx.send(DevEvent::Disconnected { generation }).is_err() {
                     return;
                 }
                 ctx.request_repaint();
@@ -108,7 +109,7 @@ fn device_loop(
             Ok(serial) => serial,
             Err(_) => {
                 kb.disconnect();
-                if was_connected && etx.send(DevEvent::Disconnected).is_err() {
+                if was_connected && etx.send(DevEvent::Disconnected { generation }).is_err() {
                     return;
                 }
                 ctx.request_repaint();
@@ -117,8 +118,14 @@ fn device_loop(
                 continue;
             }
         };
+        generation = generation.wrapping_add(1);
+        let connection_generation = generation;
         if etx
-            .send(DevEvent::Connected { model: kb.info.model().to_string(), serial: serial.clone() })
+            .send(DevEvent::Connected {
+                model: kb.info.model().to_string(),
+                serial: serial.clone(),
+                generation: connection_generation,
+            })
             .is_err()
         {
             return;
@@ -129,15 +136,20 @@ fn device_loop(
         }
         ctx.request_repaint();
 
-        // Legends are best-effort and may hit the network; the cache makes
-        // reconnects instant.
+        // Layout loading may hit the network. Keep it off the HID loop so
+        // key/layer events continue flowing while Oryx is slow or unavailable.
         if let Ok(id) = LayoutId::from_serial(&serial) {
-            if let Ok(layout) = fetch_layout(&id, "voyager", false) {
-                if etx.send(DevEvent::LayoutLoaded(Box::new(layout))).is_err() {
-                    return;
+            let layout_tx = etx.clone();
+            let layout_ctx = ctx.clone();
+            std::thread::spawn(move || {
+                if let Ok(layout) = fetch_layout(&id, "voyager", false) {
+                    let _ = layout_tx.send(DevEvent::LayoutLoaded {
+                        generation: connection_generation,
+                        layout: Box::new(layout),
+                    });
+                    layout_ctx.request_repaint();
                 }
-                ctx.request_repaint();
-            }
+            });
         }
 
         // Per-connection RGB takeover state (moved here from the anim thread so
@@ -196,7 +208,7 @@ fn device_loop(
                 Ok(None) => {}
                 Err(_) => {
                     // Unplugged (or flashing started); go back to scanning.
-                    if etx.send(DevEvent::Disconnected).is_err() {
+                    if etx.send(DevEvent::Disconnected { generation }).is_err() {
                         return;
                     }
                     ctx.request_repaint();
