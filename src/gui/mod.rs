@@ -2133,7 +2133,7 @@ impl App {
     /// Primed with one SetRgbLedAll of the dominant color (fills the whole LED
     /// array instantly and auto-enables control - no black flash), then only
     /// the differing keys.
-    fn push_glow(&self) {
+    fn push_glow(&self) -> bool {
         let colors = self.glow_rgb(self.active_layer);
         let mut dominant = [0u8, 0, 0];
         let mut best = 0;
@@ -2144,17 +2144,33 @@ impl App {
                 dominant = *c;
             }
         }
-        let _ = self.cmd_tx.send(KbCmd::SetRgbLedAll {
-            r: dominant[0],
-            g: dominant[1],
-            b: dominant[2],
-        });
+        if self
+            .cmd_tx
+            .send(KbCmd::SetRgbLedAll {
+                r: dominant[0],
+                g: dominant[1],
+                b: dominant[2],
+            })
+            .is_err()
+        {
+            return false;
+        }
         for (i, c) in colors.iter().enumerate() {
-            if *c != dominant {
-                // LED chain follows Oryx visual order.
-                let _ = self.cmd_tx.send(KbCmd::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] });
+            if *c != dominant
+                && self
+                    .cmd_tx
+                    .send(KbCmd::SetRgbLed {
+                        led: i as u8,
+                        r: c[0],
+                        g: c[1],
+                        b: c[2],
+                    })
+                    .is_err()
+            {
+                return false;
             }
         }
+        true
     }
 
     fn drain_events(&mut self) {
@@ -2485,8 +2501,12 @@ impl App {
             .map(|a| a.effect != Effect::Off || !a.events.is_empty())
             .unwrap_or(false);
         if self.sync_glow && !anim_active && self.connected.is_some() && self.needs_push {
-            self.push_glow();
-            self.needs_push = false;
+            if self.push_glow() {
+                self.needs_push = false;
+            } else {
+                self.connected = None;
+                self.connection_generation = None;
+            }
         }
 
         // Restart the watcher after reconnect so the current frontmost app
