@@ -188,6 +188,7 @@ fn hold_wrap(hold: &str, tap: &str) -> Option<String> {
 
 struct App {
     egui_ctx: egui::Context,
+    _device_handle: worker::DeviceWorkerHandle,
     erx: Receiver<DevEvent>,
     cmd_tx: Sender<KbCmd>,
 
@@ -536,7 +537,8 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>, serial: Option<String>) -> App {
         setup_style(&cc.egui_ctx);
         setup_fonts(&cc.egui_ctx);
-        let (erx, cmd_tx) = worker::spawn_device_worker(serial, cc.egui_ctx.clone());
+        let (erx, cmd_tx, device_handle) =
+            worker::spawn_device_worker(serial, cc.egui_ctx.clone());
         let (cfg, config_load_error) = match config::load_checked() {
             Ok(cfg) => (cfg, None),
             Err(e) => (config::Config::default(), Some(format!("loading config: {e:#}"))),
@@ -568,6 +570,7 @@ impl App {
         let anim_handle = rgb_anim::spawn(anim.clone(), cmd_tx.clone(), cc.egui_ctx.clone());
         let mut app = App {
             egui_ctx: cc.egui_ctx.clone(),
+            _device_handle: device_handle,
             erx,
             cmd_tx,
             connected: None,
