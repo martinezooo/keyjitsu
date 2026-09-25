@@ -100,8 +100,8 @@ impl Keyboard {
         let mut buf = [0u8; REPORT_SIZE + 1];
         buf[1..].copy_from_slice(&cmd.encode());
         let n = self.dev.write(&buf).context("HID write failed")?;
-        if n < REPORT_SIZE {
-            bail!("short HID write ({n} bytes)");
+        if n != buf.len() {
+            bail!("short HID write ({n}/{} bytes)", buf.len());
         }
         Ok(())
     }
