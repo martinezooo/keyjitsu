@@ -1824,7 +1824,7 @@ impl App {
                 if ui.button("New profile from current…").clicked() {
                     self.prof_new_open = true;
                     self.profile_draft.clear();
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
                     let current = self
@@ -1837,7 +1837,7 @@ impl App {
                     self.profile_error = result
                         .err()
                         .map(|e| format!("could not clone profile: {e:#}"));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if active.is_some() && ui.button(format!("🗑 Delete '{active_label}'")).clicked()
                 {
@@ -1859,7 +1859,7 @@ impl App {
                             }
                         }
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         });
@@ -4563,7 +4563,7 @@ impl App {
                         if ui.button(SLOT_LABELS[sl]).clicked() {
                             self.slot_added[sl] = true;
                             open_picker = Some(sl);
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -6028,18 +6028,19 @@ impl App {
                                         .unwrap_or_else(|| format!("key {i}"));
                                     let c = counts.get(i).copied().unwrap_or(0);
                                     let pct = c as f64 / layer_total.max(1) as f64 * 100.0;
-                                    egui::show_tooltip_at_pointer(
-                                        ui.ctx(),
+                                    egui::Tooltip::always_open(
+                                        ui.ctx().clone(),
                                         ui.layer_id(),
                                         egui::Id::new("heat_tip"),
-                                        |ui| {
-                                            ui.label(RichText::new(label).strong());
-                                            ui.label(format!(
-                                                "{} presses · {pct:.1}%",
-                                                format_thousands(c)
-                                            ));
-                                        },
-                                    );
+                                        egui::PopupAnchor::Pointer,
+                                    )
+                                    .show(|ui| {
+                                        ui.label(RichText::new(label).strong());
+                                        ui.label(format!(
+                                            "{} presses · {pct:.1}%",
+                                            format_thousands(c)
+                                        ));
+                                    });
                                 }
                                 ui.add_space(8.0);
                                 // Legend: low → high gradient bar.
