@@ -200,6 +200,7 @@ struct App {
     firmware_state: Option<FirmwareState>,
     firmware_state_unknown: bool,
     heat: Option<HeatmapStore>,
+    heat_error: Option<String>,
 
     active_layer: u8,
     view_layer: u8,
@@ -579,6 +580,7 @@ impl App {
             firmware_state: None,
             firmware_state_unknown: false,
             heat: None,
+            heat_error: None,
             active_layer: 0,
             view_layer: 0,
             follow: true,
@@ -1095,8 +1097,21 @@ impl App {
         self.hydrate_custom_layers(&id.hash);
         self.hydrate_staged(&id.hash);
         self.drop_applied_from_staged();
-        self.heat = HeatmapStore::load(&id.hash, self.geometry().len()).ok();
+        self.hydrate_heatmap(&id.hash, self.geometry().len());
         self.push_anim_base();
+    }
+
+    fn hydrate_heatmap(&mut self, hash: &str, key_count: usize) {
+        match HeatmapStore::load(hash, key_count) {
+            Ok(heat) => {
+                self.heat = Some(heat);
+                self.heat_error = None;
+            }
+            Err(e) => {
+                self.heat = None;
+                self.heat_error = Some(format!("{e:#}"));
+            }
+        }
     }
 
     /// Load saved glow overrides for a layout into the working + saved maps.
@@ -2091,7 +2106,7 @@ impl App {
                 DevEvent::Connected { model, serial, generation } => {
                     self.connection_generation = Some(generation);
                     if let Ok(id) = LayoutId::from_serial(&serial) {
-                        self.heat = HeatmapStore::load(&id.hash, key_count).ok();
+                        self.hydrate_heatmap(&id.hash, key_count);
                         self.hydrate_glow(&id.hash);
                         self.hydrate_key_fx(&id.hash);
 
@@ -2158,8 +2173,13 @@ impl App {
                     self.connected = None;
                     self.connection_generation = None;
                     self.pressed.iter_mut().for_each(|p| *p = false);
-                    if let Some(h) = &mut self.heat {
-                        let _ = h.save();
+                    let heat_save_error = self
+                        .heat
+                        .as_mut()
+                        .and_then(|heat| heat.save().err())
+                        .map(|e| format!("saving heatmap: {e:#}"));
+                    if let Some(e) = heat_save_error {
+                        self.persist_error = Some(e);
                     }
                 }
                 DevEvent::Hid(Event::Layer(n)) => {
@@ -2206,9 +2226,14 @@ impl App {
                             self.peek_layer = self.active_layer;
                             self.peek_until = Some(Instant::now() + Duration::from_millis(1600));
                         }
-                        if let Some(h) = &mut self.heat {
-                            h.record(self.active_layer, idx, key_count);
-                            let _ = h.autosave();
+                        let heat_save_error = if let Some(heat) = &mut self.heat {
+                            heat.record(self.active_layer, idx, key_count);
+                            heat.autosave().err()
+                        } else {
+                            None
+                        };
+                        if let Some(e) = heat_save_error {
+                            self.persist_error = Some(format!("saving heatmap: {e:#}"));
                         }
                         // Pressing a key selects it for the config panel
                         // below - but not while the Assign picker is open for
@@ -4915,7 +4940,14 @@ impl App {
         let key_count = self.geometry().len();
         if self.heat.is_none() {
             ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.label("Connect the keyboard to collect statistics."));
+            ui.vertical_centered(|ui| {
+                if let Some(e) = &self.heat_error {
+                    ui.colored_label(pal::RED, "Heatmap data could not be loaded.");
+                    ui.label(RichText::new(e).size(11.0).color(pal::TEXT_DIM));
+                } else {
+                    ui.label("Connect the keyboard to collect statistics.");
+                }
+            });
             return;
         }
         let (counts, total) = {
@@ -4966,8 +4998,12 @@ impl App {
                             if ui.button(RichText::new("Really delete?").color(pal::RED)).clicked() {
                                 if let Some((_, serial)) = &self.connected {
                                     if let Ok(id) = LayoutId::from_serial(serial) {
-                                        let _ = HeatmapStore::reset(&id.hash);
-                                        self.heat = HeatmapStore::load(&id.hash, key_count).ok();
+                                        match HeatmapStore::reset(&id.hash) {
+                                            Ok(_) => self.hydrate_heatmap(&id.hash, key_count),
+                                            Err(e) => {
+                                                self.heat_error = Some(format!("resetting heatmap: {e:#}"));
+                                            }
+                                        }
                                     }
                                 }
                                 self.confirm_reset = false;
@@ -6595,7 +6631,9 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         if let Some(h) = &mut self.heat {
-            let _ = h.save();
+            if let Err(e) = h.save() {
+                eprintln!("keyjitsu: could not save heatmap on exit: {e:#}");
+            }
         }
         // Hand the LEDs back to the firmware on exit (in case an effect or glow
         // sync had taken them over).
