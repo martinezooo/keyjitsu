@@ -3862,6 +3862,7 @@ fn synth_key(code: &str) -> OryxKey {
                         code: Some(fam.to_string()),
                         layer: Some(layer),
                         description: None,
+                        ..Default::default()
                     });
                     return k;
                 }
@@ -3877,11 +3878,13 @@ fn synth_key(code: &str) -> OryxKey {
                     code: Some(tap.trim().to_string()),
                     layer: None,
                     description: None,
+                    ..Default::default()
                 });
                 k.hold = Some(KeyAction {
                     code: Some("MO".into()),
                     layer: Some(layer),
                     description: None,
+                    ..Default::default()
                 });
                 return k;
             }
@@ -3902,21 +3905,18 @@ fn synth_key(code: &str) -> OryxKey {
         if let Some(tap) = code.strip_prefix(wrapper).and_then(|r| r.strip_suffix(')')) {
             k.tap = Some(KeyAction {
                 code: Some(tap.to_string()),
-                layer: None,
-                description: None,
+                ..Default::default()
             });
             k.hold = Some(KeyAction {
                 code: Some(hold.to_string()),
-                layer: None,
-                description: None,
+                ..Default::default()
             });
             return k;
         }
     }
     k.tap = Some(KeyAction {
         code: Some(code.to_string()),
-        layer: None,
-        description: None,
+        ..Default::default()
     });
     k
 }

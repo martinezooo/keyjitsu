@@ -62,12 +62,28 @@ pub struct OryxKey {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct KeyModifiers {
+    pub left_alt: bool,
+    pub left_ctrl: bool,
+    pub left_gui: bool,
+    pub left_shift: bool,
+    pub right_alt: bool,
+    pub right_ctrl: bool,
+    pub right_gui: bool,
+    pub right_shift: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct KeyAction {
     /// QMK keycode (`KC_A`) or a layer-switch family (`TO`, `MO`, `LT`, …).
     pub code: Option<String>,
     /// Target layer for layer-switch codes.
     pub layer: Option<u8>,
     pub description: Option<String>,
+    /// Oryx stores precomposed shortcuts (for example Option+Tab) as a base
+    /// keycode plus modifier flags instead of a wrapped QMK code.
+    pub modifiers: Option<KeyModifiers>,
 }
 
 /// `hashId` / `revisionId` pair identifying a layout revision. The firmware's
@@ -313,12 +329,13 @@ mod tests {
             "layers": [{ "title": "Main", "position": 0, "keys": [
               {"tap": {"code": "KC_ESCAPE", "layer": null}, "hold": {"code": "KC_GRAVE"},
                "glowColor": "#C30CFF", "customLabel": null},
+              {"tap": {"code": "KC_TAB", "modifiers": {"leftAlt": true}}},
               {"tap": {"code": "TO", "layer": 2}}
             ]}]
           }
         }"##;
         let l: Layout = serde_json::from_str(json).unwrap();
-        assert_eq!(l.revision.layers[0].keys.len(), 2);
+        assert_eq!(l.revision.layers[0].keys.len(), 3);
         assert_eq!(
             l.revision.layers[0].keys[0]
                 .tap
@@ -329,8 +346,16 @@ mod tests {
             Some("KC_ESCAPE")
         );
         assert_eq!(
-            l.revision.layers[0].keys[1].tap.as_ref().unwrap().layer,
+            l.revision.layers[0].keys[2].tap.as_ref().unwrap().layer,
             Some(2)
+        );
+        assert_eq!(
+            l.revision.layers[0].keys[1]
+                .tap
+                .as_ref()
+                .and_then(|a| a.modifiers.as_ref())
+                .map(|m| m.left_alt),
+            Some(true)
         );
     }
 }

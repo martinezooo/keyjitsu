@@ -137,7 +137,24 @@ pub fn action_label(a: &KeyAction) -> String {
         let fam = code;
         return clip(&format!("{fam}{layer}"));
     }
-    clip(&keycode_label(code))
+
+    let mut label = String::new();
+    if let Some(mods) = &a.modifiers {
+        if mods.left_ctrl || mods.right_ctrl {
+            label.push('⌃');
+        }
+        if mods.left_shift || mods.right_shift {
+            label.push('⇧');
+        }
+        if mods.left_alt || mods.right_alt {
+            label.push('⌥');
+        }
+        if mods.left_gui || mods.right_gui {
+            label.push('⌘');
+        }
+    }
+    label.push_str(&keycode_label(code));
+    clip(&label)
 }
 
 /// Short human label for a QMK keycode.
@@ -279,8 +296,7 @@ mod tests {
     fn action(code: &str) -> KeyAction {
         KeyAction {
             code: Some(code.into()),
-            layer: None,
-            description: None,
+            ..Default::default()
         }
     }
 
@@ -298,9 +314,33 @@ mod tests {
         let a = KeyAction {
             code: Some("TO".into()),
             layer: Some(2),
-            description: None,
+            ..Default::default()
         };
         assert_eq!(action_label(&a), "TO2");
+    }
+
+    #[test]
+    fn oryx_modifier_flags_are_part_of_the_label() {
+        let a = KeyAction {
+            code: Some("KC_TAB".into()),
+            modifiers: Some(crate::oryx_api::KeyModifiers {
+                left_alt: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(action_label(&a), "⌥Tab");
+
+        let b = KeyAction {
+            code: Some("KC_4".into()),
+            modifiers: Some(crate::oryx_api::KeyModifiers {
+                left_gui: true,
+                left_shift: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(action_label(&b), "⇧⌘4");
     }
 
     #[test]
