@@ -1,13 +1,15 @@
 //! Client for the Oryx GraphQL API (layout definitions) with a disk cache.
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://oryx.zsa.io/graphql";
+const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
 
 const LAYOUT_QUERY: &str = r#"query Layout($hashId: String!, $geometry: String!, $revisionId: String!) {
   layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {
@@ -146,12 +148,29 @@ fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
     )))
 }
 
+fn read_layout_bytes(reader: impl Read, source: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_LAYOUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {source}"))?;
+    if bytes.len() as u64 > MAX_LAYOUT_BYTES {
+        bail!("{source} is larger than {MAX_LAYOUT_BYTES} bytes");
+    }
+    Ok(bytes)
+}
+
+fn read_layout_cache(path: &Path) -> Result<Vec<u8>> {
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    read_layout_bytes(file, &format!("layout cache {}", path.display()))
+}
+
 /// Read a layout from the on-disk cache only, never touching the network.
 /// Returns `None` if it isn't cached yet (or the cache can't be read). Used to
 /// show the last-seen layout when no keyboard is plugged in.
 pub fn cached_layout(id: &LayoutId, geometry: &str) -> Option<Layout> {
     let cache = cache_path(id, geometry).ok()?;
-    let bytes = fs::read(cache).ok()?;
+    let bytes = read_layout_cache(&cache).ok()?;
     parse_layout(&bytes).ok()
 }
 
@@ -176,7 +195,7 @@ pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
     hits.into_iter().find_map(|(_, path)| {
-        let bytes = fs::read(path).ok()?;
+        let bytes = read_layout_cache(&path).ok()?;
         let layout = parse_layout(&bytes).ok()?;
         if layout.geometry != geometry {
             return None;
@@ -192,7 +211,7 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
     let cache = cache_path(id, geometry)?;
     let cacheable = id.revision != "latest";
     if cacheable && !refresh {
-        if let Ok(bytes) = fs::read(&cache) {
+        if let Ok(bytes) = read_layout_cache(&cache) {
             if let Ok(layout) = parse_layout(&bytes) {
                 return Ok(layout);
             }
@@ -203,14 +222,15 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
         "query": LAYOUT_QUERY,
         "variables": { "hashId": id.hash, "geometry": geometry, "revisionId": id.revision },
     });
-    let resp: serde_json::Value = ureq::post(ENDPOINT)
+    let response = ureq::post(ENDPOINT)
         .timeout(Duration::from_secs(8))
         .set("Content-Type", "application/json")
         .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
         .send_json(body)
-        .context("Oryx API request failed (offline? cached layouts still work)")?
-        .into_json()
-        .context("Oryx API returned malformed JSON")?;
+        .context("Oryx API request failed (offline? cached layouts still work)")?;
+    let bytes = read_layout_bytes(response.into_reader(), "Oryx API response")?;
+    let resp: serde_json::Value =
+        serde_json::from_slice(&bytes).context("Oryx API returned malformed JSON")?;
 
     if let Some(errs) = resp.get("errors").and_then(|e| e.as_array()) {
         let msgs: Vec<String> = errs
@@ -271,6 +291,12 @@ mod tests {
             "https://configure.zsa.io/voyager/layouts/../../escape"
         )
         .is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_layout_payloads() {
+        let bytes = vec![b'x'; MAX_LAYOUT_BYTES as usize + 1];
+        assert!(read_layout_bytes(std::io::Cursor::new(bytes), "test layout").is_err());
     }
 
     #[test]
