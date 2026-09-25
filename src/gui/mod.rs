@@ -1475,19 +1475,19 @@ impl App {
     }
 
     fn snapshot_profile(&self, name: &str) -> Result<()> {
-        let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
-        std::fs::create_dir_all(&dir)?;
+        let path = profile_path(name)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         let cfg = config::load_checked()?;
         let profile = config::Profile::from_config(&cfg);
         let json = serde_json::to_vec_pretty(&profile)?;
-        let path = dir.join(format!("{}.json", safe_profile_name(name)));
         config::write_atomic(&path, &json)?;
         Ok(())
     }
 
     fn load_profile(&self, name: &str) -> Result<config::Profile> {
-        let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
-        let bytes = std::fs::read(dir.join(format!("{}.json", safe_profile_name(name))))?;
+        let bytes = std::fs::read(profile_path(name)?)?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -1566,11 +1566,16 @@ impl App {
                     let deleted = active_label.clone();
                     self.switch_profile(None);
                     if self.active_profile.is_none() {
-                        if let Some(dir) = profiles_dir() {
-                            if let Err(e) = std::fs::remove_file(dir.join(format!("{}.json", safe_profile_name(&deleted)))) {
-                                if e.kind() != std::io::ErrorKind::NotFound {
-                                    self.profile_error = Some(format!("could not delete {deleted}: {e}"));
+                        match profile_path(&deleted) {
+                            Ok(path) => {
+                                if let Err(e) = std::fs::remove_file(path) {
+                                    if e.kind() != std::io::ErrorKind::NotFound {
+                                        self.profile_error = Some(format!("could not delete {deleted}: {e}"));
+                                    }
                                 }
+                            }
+                            Err(e) => {
+                                self.profile_error = Some(format!("could not delete {deleted}: {e:#}"));
                             }
                         }
                     }
@@ -1584,8 +1589,13 @@ impl App {
         if self.prof_new_open {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.profile_draft).hint_text("name…").desired_width(96.0));
-                let ok = !self.profile_draft.trim().is_empty();
-                if ui.add_enabled(ok, egui::Button::new("✓")).clicked() {
+                let draft = self.profile_draft.trim();
+                let ok = draft != "default" && profile_file_name(draft).is_ok();
+                if ui
+                    .add_enabled(ok, egui::Button::new("✓"))
+                    .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'; 'default' is reserved.")
+                    .clicked()
+                {
                     let name = self.profile_draft.trim().to_string();
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
                     let result = self
@@ -3192,14 +3202,22 @@ fn synth_key(code: &str) -> OryxKey {
     k
 }
 
-/// A profile name that is safe as a file stem (no separators/dots tricks).
-fn safe_profile_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
-        .collect();
-    let trimmed = cleaned.trim().to_string();
-    if trimmed.is_empty() { "default".into() } else { trimmed }
+fn profile_file_name(name: &str) -> Result<String> {
+    let name = name.trim();
+    let valid = !name.is_empty()
+        && name.chars().count() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_');
+    if !valid {
+        return Err(anyhow!("invalid profile name"));
+    }
+    Ok(format!("{name}.json"))
+}
+
+fn profile_path(name: &str) -> Result<std::path::PathBuf> {
+    let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
+    Ok(dir.join(profile_file_name(name)?))
 }
 
 /// Sorted names of saved profiles.
@@ -6582,6 +6600,20 @@ impl Drop for App {
         // Hand the LEDs back to the firmware on exit (in case an effect or glow
         // sync had taken them over).
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
+    }
+}
+
+#[cfg(test)]
+mod profile_name_tests {
+    use super::profile_file_name;
+
+    #[test]
+    fn profile_names_do_not_collapse_to_the_same_file() {
+        assert_eq!(profile_file_name("work").unwrap(), "work.json");
+        assert_eq!(profile_file_name("work copy").unwrap(), "work copy.json");
+        assert!(profile_file_name("work/dev").is_err());
+        assert!(profile_file_name("work?dev").is_err());
+        assert!(profile_file_name("").is_err());
     }
 }
 
