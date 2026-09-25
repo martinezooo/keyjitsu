@@ -127,6 +127,14 @@ pub fn spawn_build(
     rx
 }
 
+fn valid_firmware_serial(serial: &str) -> bool {
+    serial.len() <= 30
+        && serial.is_ascii()
+        && serial
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'~'))
+}
+
 pub fn build(
     revision: &str,
     edits: &[KeyEdit],
@@ -194,8 +202,8 @@ pub fn build(
         // Oryx returns SERIAL_NUMBER inside a fixed 32-byte raw-HID report:
         // byte 0 is the event id and one byte is the stop marker, leaving at
         // most 30 visible serial bytes.
-        if serial.len() > 30 || serial.contains(['"','\n','\r']) {
-            bail!("invalid firmware serial (must be <= 30 ASCII-safe bytes)");
+        if !valid_firmware_serial(serial) {
+            bail!("invalid firmware serial (must be <= 30 safe ASCII bytes)");
         }
         let cfg = files.iter_mut().find(|(n, _)| n == "config.h")
             .ok_or_else(|| anyhow!("generated source has no config.h for firmware identity"))?;
@@ -558,7 +566,7 @@ mod tests {
     use super::{
         clear_build_artifact, prepare_keymap_dir, set_rule, validate_revision_id,
         validate_source_basename,
-    };
+    , valid_firmware_serial};
 
     #[test]
     fn stale_firmware_artifact_is_removed_before_compile() {
@@ -608,6 +616,15 @@ mod tests {
         assert!(validate_revision_id("rev/other").is_err());
         assert!(validate_revision_id("rev?query").is_err());
         assert!(validate_revision_id(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn firmware_serial_accepts_only_safe_ascii() {
+        assert!(valid_firmware_serial("layout/rev~kj0123456789"));
+        assert!(!valid_firmware_serial("layout/rev\"oops"));
+        assert!(!valid_firmware_serial("layout/rev\\oops"));
+        assert!(!valid_firmware_serial("layout/rév~kj0123456789"));
+        assert!(!valid_firmware_serial(&"x".repeat(31)));
     }
 
     #[test]
