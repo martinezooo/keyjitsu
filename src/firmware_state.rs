@@ -66,18 +66,18 @@ impl FirmwareState {
 
     /// Stable, compact identity for the complete authored firmware state.
     /// FNV-1a is used as an identity checksum, not for security.
-    pub fn state_id(&self) -> String {
-        let bytes = serde_json::to_vec(self).expect("FirmwareState is serializable");
+    pub fn state_id(&self) -> Result<String> {
+        let bytes = serde_json::to_vec(self).context("serializing firmware state identity")?;
         let mut hash = 0xcbf29ce484222325u64;
         for b in bytes {
             hash ^= b as u64;
             hash = hash.wrapping_mul(0x100000001b3);
         }
-        format!("{:010x}", hash & 0xffffffffff)
+        Ok(format!("{:010x}", hash & 0xffffffffff))
     }
 
     pub fn save(&self) -> Result<String> {
-        let id = self.state_id();
+        let id = self.state_id()?;
         let dir = cache_dir()?.join("firmware-states");
         let path = dir.join(format!("{id}.json"));
 
@@ -183,7 +183,7 @@ mod tests {
                 ],
             }],
         );
-        assert_eq!(a.state_id(), b.state_id());
+        assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
     }
 
     #[test]
@@ -209,6 +209,6 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(a.state_id(), b.state_id());
-        assert_eq!(a.state_id().len(), STATE_ID_HEX_LEN);
+        assert_eq!(a.state_id().unwrap().len(), STATE_ID_HEX_LEN);
     }
 }
