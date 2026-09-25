@@ -441,6 +441,42 @@ mod tests {
     }
 
     #[test]
+    fn profile_switch_round_trip_restores_preferences_without_device_truth() {
+        let mut default_cfg = Config::default();
+        default_cfg.last_layout = Some("layout/rev~kj0123456789".into());
+        default_cfg.qmk_firmware_dir = Some("/qmk".into());
+        default_cfg.staged_edits.push(StagedEdit {
+            layout: "layout".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
+        default_cfg.peek.enabled = true;
+        default_cfg.autolayer_enabled = false;
+
+        let default_profile = Profile::from_config(&default_cfg);
+        let mut work_cfg = default_cfg.clone();
+        work_cfg.peek.enabled = false;
+        work_cfg.autolayer_enabled = true;
+        let work_profile = Profile::from_config(&work_cfg);
+
+        let mut live = default_cfg.clone();
+        work_profile.apply_to(&mut live);
+        assert!(!live.peek.enabled);
+        assert!(live.autolayer_enabled);
+        assert_eq!(live.last_layout, default_cfg.last_layout);
+        assert_eq!(live.qmk_firmware_dir, default_cfg.qmk_firmware_dir);
+        assert_eq!(live.staged_edits.len(), 1);
+
+        default_profile.apply_to(&mut live);
+        assert!(live.peek.enabled);
+        assert!(!live.autolayer_enabled);
+        assert_eq!(live.last_layout, default_cfg.last_layout);
+        assert_eq!(live.qmk_firmware_dir, default_cfg.qmk_firmware_dir);
+        assert_eq!(live.staged_edits.len(), 1);
+    }
+
+    #[test]
     fn staged_roundtrip_and_old_config_compat() {
         // New fields round-trip (incl. the [Option<String>;4] dance slots).
         let mut c = Config::default();

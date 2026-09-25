@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use rgb_anim::{Anim, FxEvent};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+#[cfg(target_os = "macos")]
+use anyhow::Context;
 use eframe::egui::{self, Color32, ProgressBar, RichText};
 
 use std::time::Instant;
@@ -2205,6 +2207,13 @@ impl App {
                     self.connected = None;
                     self.connection_generation = None;
                     self.pressed.iter_mut().for_each(|p| *p = false);
+                    self.peek_until = None;
+                    self.combo_down.clear();
+                    self.combo_log.clear();
+                    self.last_press_at.clear();
+                    if let Ok(mut anim) = self.anim.lock() {
+                        anim.events.clear();
+                    }
                     let heat_save_error = self
                         .heat
                         .as_mut()
@@ -4114,7 +4123,9 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if self.build_busy {
-                        if ui.button("✕ Cancel").clicked() {
+                        if matches!(self.flash_state, Some(FlashState::Working { .. })) {
+                            ui.colored_label(pal::AMBER, "Writing firmware - do not unplug");
+                        } else if ui.button("✕ Cancel").clicked() {
                             self.build_cancel.store(true, Ordering::SeqCst);
                             self.flash_cancel.store(true, Ordering::SeqCst);
                             self.build_log.push_str("canceling…\n");
@@ -4135,8 +4146,11 @@ impl App {
         let pending = self.pending_firmware_count();
         if self.build_busy {
             ui.spinner();
-            if ui.button("✕ cancel").clicked() {
+            if matches!(self.flash_state, Some(FlashState::Working { .. })) {
+                ui.weak("writing firmware - do not unplug");
+            } else if ui.button("✕ cancel").clicked() {
                 self.build_cancel.store(true, Ordering::SeqCst);
+                self.flash_cancel.store(true, Ordering::SeqCst);
                 self.build_log.push_str("canceling…\n");
             }
             return;
@@ -6696,8 +6710,11 @@ impl App {
             }
             if self.build_busy {
                 ui.spinner();
-                if ui.button("✕ cancel").clicked() {
+                if matches!(self.flash_state, Some(FlashState::Working { .. })) {
+                    ui.weak("writing firmware - do not unplug");
+                } else if ui.button("✕ cancel").clicked() {
                     self.build_cancel.store(true, Ordering::SeqCst);
+                    self.flash_cancel.store(true, Ordering::SeqCst);
                 }
             }
         });
@@ -6758,8 +6775,14 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
             }
-            if busy && ui.button("✕ cancel").clicked() {
+            let cancelable = matches!(
+                self.flash_state,
+                Some(FlashState::Downloading | FlashState::WaitingForBootloader)
+            );
+            if cancelable && ui.button("✕ cancel").clicked() {
                 self.flash_cancel.store(true, Ordering::SeqCst);
+            } else if matches!(self.flash_state, Some(FlashState::Working { .. })) {
+                ui.colored_label(pal::AMBER, "writing firmware - do not unplug");
             }
         });
         ui.add_space(8.0);

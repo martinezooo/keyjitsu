@@ -206,6 +206,9 @@ fn device_loop(
 
         loop {
             if stop.load(Ordering::SeqCst) {
+                if kb.send(Command::RgbControl(false)).is_err() {
+                    eprintln!("keyjitsu: could not release RGB control during shutdown");
+                }
                 kb.disconnect();
                 return;
             }
@@ -328,6 +331,9 @@ pub fn spawn_flash(
             Ok(fw) => fw,
             Err(e) => return send(FlashState::Failed(format!("{e:#}"))),
         };
+        if canceled() {
+            return send(FlashState::Failed("canceled".into()));
+        }
         send(FlashState::WaitingForBootloader);
 
         let dev = match crate::cmd_flash::wait_for_bootloader(

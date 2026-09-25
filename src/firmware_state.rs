@@ -208,7 +208,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
         );
-        assert_eq!(a.state_id(), b.state_id());
+        assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
         assert_eq!(a.state_id().unwrap().len(), STATE_ID_HEX_LEN);
     }
 }

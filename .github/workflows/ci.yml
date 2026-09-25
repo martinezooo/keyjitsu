@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, 'audit/**']
   pull_request:
 
 permissions:
@@ -10,27 +10,37 @@ permissions:
 
 jobs:
   build-test:
-    name: Build, lint and test (macOS)
-    runs-on: macos-latest
+    name: Build, lint and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Install Linux HID dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - name: Format
-        run: cargo fmt --all -- --check 2>&1 | tee fmt.log
+        run: set -o pipefail; cargo fmt --all -- --check 2>&1 | tee fmt.log
       - name: Build
-        run: cargo build --locked 2>&1 | tee build.log
+        run: set -o pipefail; cargo build --locked 2>&1 | tee build.log
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
+        run: set -o pipefail; cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
       - name: Test
-        run: cargo test --locked 2>&1 | tee test.log
+        run: set -o pipefail; cargo test --locked 2>&1 | tee test.log
       - name: Upload CI diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: macos-ci-diagnostics
+          name: ci-diagnostics-${{ runner.os }}
           path: |
             fmt.log
             build.log
@@ -46,7 +56,7 @@ jobs:
       issues: write
       checks: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
