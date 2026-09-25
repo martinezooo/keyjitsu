@@ -50,7 +50,16 @@ fn action_stmts(code: &str) -> (String, String) {
     // moment the dance resolves - nothing is left held, so there is no
     // release-side statement.
     if code.contains('\n') {
-        let taps: String = code.split('\n').map(|c| format!("tap_code16({c}); ")).collect();
+        let mut taps = String::new();
+        for step in code.split('\n').map(str::trim).filter(|step| !step.is_empty()) {
+            let (press, release) = action_stmts(step);
+            taps.push_str(&press);
+            if !press.is_empty() && !release.is_empty() {
+                taps.push(' ');
+            }
+            taps.push_str(&release);
+            taps.push(' ');
+        }
         return (taps.trim_end().to_string(), String::new());
     }
     // Momentary-style: on at press, off at release.
@@ -765,6 +774,13 @@ tap_dance_action_t tap_dance_actions[] = {{
         assert_eq!(action_stmts("TT(3)"), ("layer_invert(3);".into(), String::new()));
         assert_eq!(action_stmts("DF(0)"), ("default_layer_set(1UL << 0);".into(), String::new()));
         assert_eq!(action_stmts("DF(3)"), ("default_layer_set(1UL << 3);".into(), String::new()));
+        assert_eq!(
+            action_stmts("KC_A\nTO(2)"),
+            (
+                "register_code16(KC_A); unregister_code16(KC_A); layer_move(2);".into(),
+                String::new(),
+            )
+        );
     }
 
     #[test]
