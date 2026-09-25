@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use crate::device::Keyboard;
 use crate::protocol::Command;
 
-fn layer_transition(current: Option<u8>, target: Option<u8>) -> (Option<u8>, Option<u8>) {
+pub(crate) fn layer_transition(current: Option<u8>, target: Option<u8>) -> (Option<u8>, Option<u8>) {
     if current == target {
         (None, None)
     } else {
