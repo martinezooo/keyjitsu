@@ -2241,9 +2241,11 @@ impl eframe::App for App {
     /// anim thread's own release is racy at exit; this makes it reliable.
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
-        self.guard = None; // Drop restores the built-in keyboard
         #[cfg(target_os = "macos")]
-        crate::macos_kb::force_restore_if_active();
+        {
+            self.guard = None;
+            crate::macos_kb::force_restore_if_active();
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -5344,6 +5346,7 @@ impl App {
                 };
                 tool_card(ui, "⚙", "Firmware build", "Remap keys and compile firmware 100% locally with QMK - no login, no cloud.", Some(fw_pill), self, |ui, app| app.ui_localbuild(ui));
 
+                #[cfg(target_os = "macos")]
                 let guard_pill = if self.guard.is_some() {
                     ("Active".to_string(), pal::GREEN)
                 } else if self.guard_enabled {
@@ -5351,6 +5354,8 @@ impl App {
                 } else {
                     ("Off".to_string(), pal::TEXT_DIM)
                 };
+                #[cfg(not(target_os = "macos"))]
+                let guard_pill = ("macOS only".to_string(), pal::TEXT_DIM);
                 tool_card(ui, "🔒", "Keyboard guard", "Disables the Mac's built-in keyboard while the ZSA board is connected.", Some(guard_pill), self, |ui, app| app.ui_guard(ui));
 
                 let app_pill = if autostart_enabled() {
