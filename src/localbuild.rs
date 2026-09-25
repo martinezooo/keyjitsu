@@ -572,16 +572,16 @@ mod tests {
 
     #[test]
     fn build_environment_requires_cli_compiler_and_checkout() {
-        let ready = BuildEnv {
-            qmk_cli: true,
-            arm_gcc: true,
-            firmware_dir: Some(PathBuf::from("/qmk")),
+        let env = |qmk_cli, arm_gcc, firmware_dir| BuildEnv {
+            qmk_cli,
+            arm_gcc,
+            firmware_dir,
         };
-        assert!(ready.is_ready());
 
-        assert!(!BuildEnv { qmk_cli: false, ..ready.clone() }.is_ready());
-        assert!(!BuildEnv { arm_gcc: false, ..ready.clone() }.is_ready());
-        assert!(!BuildEnv { firmware_dir: None, ..ready }.is_ready());
+        assert!(env(true, true, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(false, true, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(true, false, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(true, true, None).is_ready());
     }
 
     #[test]
