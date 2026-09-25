@@ -5927,23 +5927,39 @@ impl App {
             tool_card(ui, "⚙", "Firmware build", "Remap keys and compile firmware 100% locally with QMK - no login, no cloud.", Some(fw_pill), self, |ui, app| app.ui_localbuild(ui));
 
             #[cfg(target_os = "macos")]
-            let guard_pill = if self.guard.is_some() {
-                ("Active".to_string(), pal::GREEN)
-            } else if self.guard_enabled {
-                ("Waiting for keyboard".to_string(), pal::AMBER)
-            } else {
-                ("Off".to_string(), pal::TEXT_DIM)
-            };
-            #[cfg(not(target_os = "macos"))]
-            let guard_pill = ("macOS only".to_string(), pal::TEXT_DIM);
-            tool_card(ui, "🔒", "Keyboard guard", "Disables the Mac's built-in keyboard while the ZSA board is connected.", Some(guard_pill), self, |ui, app| app.ui_guard(ui));
+            {
+                let guard_pill = if self.guard.is_some() {
+                    ("Active".to_string(), pal::GREEN)
+                } else if self.guard_enabled {
+                    ("Waiting for keyboard".to_string(), pal::AMBER)
+                } else {
+                    ("Off".to_string(), pal::TEXT_DIM)
+                };
+                tool_card(
+                    ui,
+                    "🔒",
+                    "Keyboard guard",
+                    "Disables the Mac's built-in keyboard while the ZSA board is connected.",
+                    Some(guard_pill),
+                    self,
+                    |ui, app| app.ui_guard(ui),
+                );
+            }
 
+            #[cfg(target_os = "macos")]
             let app_pill = if crate::platform::autostart_enabled() {
                 ("Autostart on".to_string(), pal::GREEN)
             } else {
                 ("Manual start".to_string(), pal::TEXT_DIM)
             };
-            tool_card(ui, "🚀", "App", "Launch keyjitsu automatically when you log in.", Some(app_pill), self, |ui, app| app.ui_app_card(ui));
+            #[cfg(not(target_os = "macos"))]
+            let app_pill = ("Updates".to_string(), pal::TEXT_DIM);
+            let app_desc = if cfg!(target_os = "macos") {
+                "Startup and update settings."
+            } else {
+                "Update settings."
+            };
+            tool_card(ui, "🚀", "App", app_desc, Some(app_pill), self, |ui, app| app.ui_app_card(ui));
 
             tool_card(
                 ui,
