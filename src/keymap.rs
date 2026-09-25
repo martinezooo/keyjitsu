@@ -323,24 +323,14 @@ fn apply_dance_tapping_term(source: &str, n: usize) -> String {
     }
 }
 
-/// One generated macro: a custom keycode that, on press, executes every step
-/// in `steps` as a complete action (press+release where applicable), in order.
-/// Used for a key whose Tap (or Hold/Double-tap/Tap-hold) slot has more than
-/// one step but ISN'T going through the tap-dance machinery - i.e. a plain
-/// `LAYOUT` position, not a `TD()`. Unlike a dance, there is no tap/hold
-/// ambiguity to resolve, so this fires the instant the key is pressed.
+/// Multi-step action emitted as a generated custom keycode.
 #[derive(Debug, Clone)]
 pub struct MacroSpec {
     pub id: usize,
     pub steps: Vec<String>,
 }
 
-/// Generate `MACRO_KJ_{id}` custom keycodes plus a `process_record_user` case
-/// per macro that taps its steps in order. Creates the custom-keycode enum
-/// and `process_record_user` fresh each build (the Oryx source keyjitsu
-/// starts from never has either), extending an existing
-/// `process_record_user` if the source unexpectedly already has one rather
-/// than silently dropping it.
+/// Emit generated macro keycodes and their `process_record_user` cases.
 pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
     if macros.is_empty() {
         return Ok(source.to_string());
@@ -447,11 +437,7 @@ fn apply_one(source: &str, edit: &Edit) -> Result<String> {
     Ok(result)
 }
 
-/// Append a brand-new layer block `[position] = LAYOUT_*( … )` at the end of
-/// the `keymaps[]` array. Sized/named from layer 0; every key is
-/// `KC_TRANSPARENT` except the `(position → keycode)` entries in `keys`
-/// (positions are LAYOUT-macro indices). Enables authoring layers that don't
-/// exist in the Oryx source.
+/// Append a custom layer, transparent except for explicitly assigned keys.
 pub fn add_layer(source: &str, position: u8, keys: &[(usize, String)]) -> Result<String> {
     // Refuse to append a layer index that already exists - a second
     // `[position] = LAYOUT(...)` silently overrides the real one in C.
