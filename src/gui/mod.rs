@@ -3475,9 +3475,9 @@ pub enum UpdateCheck {
 
 const RELEASES_API: &str = "https://api.github.com/repos/martinezooo/keyjitsu/releases/latest";
 
-/// Ask GitHub for the newest release on a background thread. Only ever runs
-/// when the user clicks the button: the app makes no network calls on its own
-/// apart from the anonymous Oryx layout read.
+/// Ask GitHub for the newest release on a background thread. Runs once at
+/// startup when enabled, and on demand from Settings. It only reads release
+/// metadata; downloading or installing an update is never automatic.
 fn spawn_update_check() -> std::sync::mpsc::Receiver<UpdateCheck> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
