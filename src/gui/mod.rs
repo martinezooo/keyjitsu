@@ -152,6 +152,20 @@ enum FxLib {
     Apply,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FirmwareConfirmation {
+    Confirmed,
+    Mismatch,
+}
+
+fn confirm_firmware_state(expected: &str, reported: Option<&str>) -> FirmwareConfirmation {
+    if reported == Some(expected) {
+        FirmwareConfirmation::Confirmed
+    } else {
+        FirmwareConfirmation::Mismatch
+    }
+}
+
 /// The four Oryx-style action slots of a key, shown as editor rows.
 /// Index into `App::edit_slots`: 0 tap, 1 hold, 2 double-tap, 3 tap+hold.
 const SLOT_LABELS: [&str; 4] = ["Tap", "Hold", "Double-tap", "Double-tap + hold"];
@@ -2121,16 +2135,19 @@ impl App {
                         self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
 
                         if let Some(expected) = self.expected_firmware_state.take() {
-                            if state_marker == Some(expected.as_str()) {
-                                self.build_phase = "Firmware confirmed ✓".into();
-                                self.build_result = Some(Ok(
-                                    "Firmware flashed and confirmed by the keyboard.".into(),
-                                ));
-                            } else {
-                                self.build_phase = "Firmware not confirmed".into();
-                                self.build_result = Some(Err(
-                                    "The keyboard reconnected with a different firmware state. Pending changes were kept.".into(),
-                                ));
+                            match confirm_firmware_state(&expected, state_marker) {
+                                FirmwareConfirmation::Confirmed => {
+                                    self.build_phase = "Firmware confirmed ✓".into();
+                                    self.build_result = Some(Ok(
+                                        "Firmware flashed and confirmed by the keyboard.".into(),
+                                    ));
+                                }
+                                FirmwareConfirmation::Mismatch => {
+                                    self.build_phase = "Firmware not confirmed".into();
+                                    self.build_result = Some(Err(
+                                        "The keyboard reconnected with a different firmware state. Pending changes were kept.".into(),
+                                    ));
+                                }
                             }
                         }
 
@@ -6729,6 +6746,27 @@ impl Drop for App {
         // Hand the LEDs back to the firmware on exit (in case an effect or glow
         // sync had taken them over).
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
+    }
+}
+
+#[cfg(test)]
+mod firmware_confirmation_tests {
+    use super::{confirm_firmware_state, FirmwareConfirmation};
+
+    #[test]
+    fn only_the_expected_reported_state_confirms_a_flash() {
+        assert_eq!(
+            confirm_firmware_state("0123456789", Some("0123456789")),
+            FirmwareConfirmation::Confirmed
+        );
+        assert_eq!(
+            confirm_firmware_state("0123456789", Some("aaaaaaaaaa")),
+            FirmwareConfirmation::Mismatch
+        );
+        assert_eq!(
+            confirm_firmware_state("0123456789", None),
+            FirmwareConfirmation::Mismatch
+        );
     }
 }
 
