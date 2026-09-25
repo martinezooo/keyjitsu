@@ -201,10 +201,9 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
     let bytes = serde_json::to_vec(&raw)?;
     let layout = parse_layout(&bytes)?;
     if cacheable {
-        if let Some(parent) = cache.parent() {
-            let _ = fs::create_dir_all(parent);
+        if let Err(e) = crate::config::write_atomic(&cache, &bytes) {
+            eprintln!("keyjitsu: could not cache Oryx layout {}: {e:#}", id.hash);
         }
-        let _ = fs::write(&cache, &bytes);
     }
     Ok(layout)
 }
