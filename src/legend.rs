@@ -111,7 +111,11 @@ pub fn full_labels_for(key: &OryxKey) -> KeyLabels {
     if let Some(custom) = key.custom_label.as_deref().filter(|s| !s.is_empty()) {
         return KeyLabels {
             tap: custom.to_string(),
-            hold: key.hold.as_ref().map(action_label).filter(|s| !s.is_empty()),
+            hold: key
+                .hold
+                .as_ref()
+                .map(action_label)
+                .filter(|s| !s.is_empty()),
         };
     }
     if let Some(emoji) = key.emoji.as_deref().filter(|s| !s.is_empty()) {
@@ -122,7 +126,11 @@ pub fn full_labels_for(key: &OryxKey) -> KeyLabels {
     }
     KeyLabels {
         tap: key.tap.as_ref().map(action_label).unwrap_or_default(),
-        hold: key.hold.as_ref().map(action_label).filter(|s| !s.is_empty()),
+        hold: key
+            .hold
+            .as_ref()
+            .map(action_label)
+            .filter(|s| !s.is_empty()),
     }
 }
 
