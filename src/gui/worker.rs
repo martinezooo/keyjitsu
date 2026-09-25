@@ -163,39 +163,64 @@ fn device_loop(
             // read timeout. Discrete commands run in order; frames coalesce to
             // the newest (older frames dropped) so the queue can't back up.
             let mut latest_frame: Option<Arc<Vec<[u8; 3]>>> = None;
+            let mut write_failed = false;
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     KbCmd::SetFrame(f) => latest_frame = Some(f),
                     KbCmd::RgbRelease => {
-                        let _ = kb.send(Command::RgbControl(false));
+                        if kb.send(Command::RgbControl(false)).is_err() {
+                            write_failed = true;
+                            break;
+                        }
                         took_over = false;
                         last_frame.iter_mut().for_each(|c| *c = [0, 0, 0]);
-                        latest_frame = None; // a release supersedes a pending frame
+                        latest_frame = None;
                     }
                     other => {
                         if let Some(p) = other.to_protocol() {
-                            let _ = kb.send(p);
+                            if kb.send(p).is_err() {
+                                write_failed = true;
+                                break;
+                            }
                         }
                     }
                 }
             }
-            if let Some(frame) = latest_frame {
-                if frame.len() == n_leds {
-                    if !took_over {
-                        // Prime with one SetRgbLedAll of the dominant color so the
-                        // takeover doesn't flash black while diffs stream in.
-                        let approx = crate::gui::rgb_anim::dominant(&frame);
-                        let _ = kb.send(Command::SetRgbLedAll { r: approx[0], g: approx[1], b: approx[2] });
-                        last_frame = vec![approx; n_leds];
-                        took_over = true;
-                    }
-                    for (i, c) in frame.iter().enumerate() {
-                        if *c != last_frame[i] {
-                            let _ = kb.send(Command::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] });
+            if !write_failed {
+                if let Some(frame) = latest_frame {
+                    if frame.len() == n_leds {
+                        if !took_over {
+                            let approx = crate::gui::rgb_anim::dominant(&frame);
+                            if kb.send(Command::SetRgbLedAll { r: approx[0], g: approx[1], b: approx[2] }).is_err() {
+                                write_failed = true;
+                            } else {
+                                last_frame = vec![approx; n_leds];
+                                took_over = true;
+                            }
+                        }
+                        if !write_failed {
+                            for (i, c) in frame.iter().enumerate() {
+                                if *c != last_frame[i]
+                                    && kb.send(Command::SetRgbLed { led: i as u8, r: c[0], g: c[1], b: c[2] }).is_err()
+                                {
+                                    write_failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if !write_failed {
+                            last_frame.copy_from_slice(&frame);
                         }
                     }
-                    last_frame.copy_from_slice(&frame);
                 }
+            }
+            if write_failed {
+                if etx.send(DevEvent::Disconnected { generation }).is_err() {
+                    return;
+                }
+                ctx.request_repaint();
+                was_connected = false;
+                break;
             }
             match kb.read_event(READ_TIMEOUT) {
                 Ok(Some(ev)) => {
