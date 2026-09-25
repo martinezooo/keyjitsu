@@ -171,6 +171,17 @@ fn is_post_flash_generation(start: Option<u64>, current: u64) -> bool {
     start.is_none_or(|start| current > start)
 }
 
+fn flash_can_cancel(state: Option<&FlashState>) -> bool {
+    matches!(
+        state,
+        None | Some(FlashState::Downloading) | Some(FlashState::WaitingForBootloader)
+    )
+}
+
+fn flash_is_writing(state: Option<&FlashState>) -> bool {
+    matches!(state, Some(FlashState::Working { .. }))
+}
+
 /// The four Oryx-style action slots of a key, shown as editor rows.
 /// Index into `App::edit_slots`: 0 tap, 1 hold, 2 double-tap, 3 tap+hold.
 const SLOT_LABELS: [&str; 4] = ["Tap", "Hold", "Double-tap", "Double-tap + hold"];
@@ -4116,8 +4127,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if self.build_busy {
-                        let flash_is_writing =
-                            matches!(self.flash_state, Some(FlashState::Working { .. }));
+                        let flash_is_writing = flash_is_writing(self.flash_state.as_ref());
                         if flash_is_writing {
                             ui.add_enabled(false, egui::Button::new("Flashing…"));
                             ui.label(
@@ -4146,8 +4156,7 @@ impl App {
         let pending = self.pending_firmware_count();
         if self.build_busy {
             ui.spinner();
-            let flash_is_writing =
-                matches!(self.flash_state, Some(FlashState::Working { .. }));
+            let flash_is_writing = flash_is_writing(self.flash_state.as_ref());
             if flash_is_writing {
                 ui.label(RichText::new("flashing…").size(11.0).color(pal::TEXT_DIM));
             } else if ui.button("✕ cancel").clicked() {
@@ -6774,9 +6783,11 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
             }
-            let flash_is_writing =
-                matches!(self.flash_state, Some(FlashState::Working { .. }));
-            if busy && !flash_is_writing && ui.button("✕ cancel").clicked() {
+            let flash_is_writing = flash_is_writing(self.flash_state.as_ref());
+            if busy
+                && flash_can_cancel(self.flash_state.as_ref())
+                && ui.button("✕ cancel").clicked()
+            {
                 self.flash_cancel.store(true, Ordering::SeqCst);
             } else if flash_is_writing {
                 ui.label(
@@ -6858,6 +6869,26 @@ mod firmware_confirmation_tests {
         assert!(!is_post_flash_generation(Some(7), 6));
         assert!(is_post_flash_generation(Some(7), 8));
         assert!(is_post_flash_generation(None, 1));
+    }
+
+    #[test]
+    fn flash_cancel_is_only_available_before_device_writes_begin() {
+        use super::FlashState;
+
+        assert!(super::flash_can_cancel(None));
+        assert!(super::flash_can_cancel(Some(&FlashState::Downloading)));
+        assert!(super::flash_can_cancel(Some(&FlashState::WaitingForBootloader)));
+        assert!(!super::flash_can_cancel(Some(&FlashState::Working {
+            phase: "Writing",
+            fraction: 0.5,
+        })));
+        assert!(!super::flash_can_cancel(Some(&FlashState::Done)));
+        assert!(!super::flash_can_cancel(Some(&FlashState::Failed("failed".into()))));
+        assert!(super::flash_is_writing(Some(&FlashState::Working {
+            phase: "Writing",
+            fraction: 0.5,
+        })));
+        assert!(!super::flash_is_writing(Some(&FlashState::WaitingForBootloader)));
     }
 }
 
