@@ -1339,15 +1339,17 @@ impl App {
     /// where the app was killed after flashing but before it could clear them.
     fn drop_applied_from_staged(&mut self) {
         let Some(state) = self.firmware_state.clone() else { return };
-        self.key_edits
+
+        let mut pending_edits = self.key_edits.clone();
+        pending_edits
             .retain(|&(layer, key), code| staged_edit_is_pending(&state, layer, key, code));
-        self.key_dances
+        let mut pending_dances = self.key_dances.clone();
+        pending_dances
             .retain(|&(layer, key), slots| staged_dance_is_pending(&state, layer, key, slots));
 
         let layout_hash = state.layout_hash.clone();
         let custom_layers = state.custom_layers.clone();
-        let edits: Vec<_> = self
-            .key_edits
+        let edits: Vec<_> = pending_edits
             .iter()
             .map(|(&(layer, key), code)| StagedEdit {
                 layout: layout_hash.clone(),
@@ -1356,8 +1358,7 @@ impl App {
                 code: code.clone(),
             })
             .collect();
-        let dances: Vec<_> = self
-            .key_dances
+        let dances: Vec<_> = pending_dances
             .iter()
             .map(|(&(layer, key), slots)| StagedDance {
                 layout: layout_hash.clone(),
@@ -1366,7 +1367,7 @@ impl App {
                 slots: slots.clone(),
             })
             .collect();
-        self.persist_config("confirming applied firmware state", move |cfg| {
+        if self.persist_config("confirming applied firmware state", move |cfg| {
             reconcile_confirmed_layout_config(
                 cfg,
                 &layout_hash,
@@ -1374,7 +1375,10 @@ impl App {
                 edits,
                 dances,
             );
-        });
+        }) {
+            self.key_edits = pending_edits;
+            self.key_dances = pending_dances;
+        }
     }
 
     /// Load this layout's staged (not-yet-built) remaps and tap dances into the
