@@ -293,6 +293,9 @@ struct App {
     /// Non-None once the run finishes: Ok(msg) or Err(msg) for the result card.
     build_result: Option<Result<String, String>>,
     flash_cancel: Arc<AtomicBool>,
+    /// True after the user tried to close the app during a non-cancelable
+    /// firmware write; cleared automatically once the write is over.
+    flash_close_blocked: bool,
     /// Cached QMK toolchain status (recomputing spawns processes, so never
     /// do it per frame - refresh on a button or lazily).
     env: localbuild::BuildEnv,
@@ -700,6 +703,7 @@ impl App {
             last_build_bin: None,
             build_cancel: Arc::new(AtomicBool::new(false)),
             flash_cancel: Arc::new(AtomicBool::new(false)),
+            flash_close_blocked: false,
             env: localbuild::detect_env(),
             monitors_cache: fetch_monitors(),
             monitors_checked: Instant::now(),
@@ -2550,6 +2554,14 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.reconcile_background_jobs(ctx);
+
+        let writing_firmware = flash_is_writing(self.flash_state.as_ref());
+        if ctx.input(|i| i.viewport().close_requested()) && writing_firmware {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.flash_close_blocked = true;
+        } else if !writing_firmware {
+            self.flash_close_blocked = false;
+        }
         self.tick_perf();
         if let Some(rx) = &self.update_rx {
             if let Ok(r) = rx.try_recv() {
@@ -2584,6 +2596,20 @@ impl eframe::App for App {
         if self.monitors_checked.elapsed() > Duration::from_secs(2) {
             self.monitors_cache = fetch_monitors();
             self.monitors_checked = Instant::now();
+        }
+
+        if self.flash_close_blocked {
+            egui::Window::new("Firmware write in progress")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.colored_label(
+                        pal::AMBER,
+                        "Keyjitsu must stay open until the firmware write finishes.",
+                    );
+                    ui.label("Do not unplug the keyboard. The app can be closed after flashing completes.");
+                });
         }
 
         // Navigation lives in a left sidebar (not a top header): vertical space
@@ -6891,6 +6917,12 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        // Build/download/bootloader-wait phases are safe to cancel. A close
+        // request during the actual firmware write is intercepted in update(),
+        // so Drop must never be the mechanism that interrupts erase/write.
+        self.build_cancel.store(true, Ordering::SeqCst);
+        self.flash_cancel.store(true, Ordering::SeqCst);
+
         if let Some(h) = &mut self.heat {
             if let Err(e) = h.save() {
                 eprintln!("keyjitsu: could not save heatmap on exit: {e:#}");
@@ -6956,6 +6988,10 @@ mod firmware_confirmation_tests {
             fraction: 0.5,
         })));
         assert!(!super::flash_is_writing(Some(&FlashState::WaitingForBootloader)));
+        assert!(super::flash_is_writing(Some(&FlashState::Working {
+            phase: "Restarting keyboard",
+            fraction: 1.0,
+        })));
     }
 }
 
