@@ -375,6 +375,7 @@ struct App {
     keys_adding: bool,
     /// Draft name for "save current as profile" (Settings).
     profile_draft: String,
+    profile_error: Option<String>,
     /// Last autostart toggle error (shown in the App card).
     autostart_error: Option<String>,
     /// In-flight "check for updates" request (manual, from Settings).
@@ -610,6 +611,7 @@ impl App {
             custom_shortcuts: cfg.custom_shortcuts.clone(),
             keys_adding: false,
             profile_draft: String::new(),
+            profile_error: None,
             autostart_error: None,
             update_rx: None,
             update_state: None,
@@ -1306,36 +1308,48 @@ impl App {
         }
     }
 
-    /// Save the CURRENT config under `name` (profiles/<name>.json).
-    fn snapshot_profile(&self, name: &str) {
-        let name = safe_profile_name(name);
-        let name = name.as_str();
-        if let Some(dir) = profiles_dir() {
-            let _ = std::fs::create_dir_all(&dir);
-            if let Ok(json) = serde_json::to_vec_pretty(&config::load()) {
-                let _ = std::fs::write(dir.join(format!("{name}.json")), json);
-            }
-        }
+    fn snapshot_profile(&self, name: &str) -> Result<()> {
+        let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
+        std::fs::create_dir_all(&dir)?;
+        let profile = config::Profile::from_config(&config::load());
+        let json = serde_json::to_vec_pretty(&profile)?;
+        std::fs::write(dir.join(format!("{}.json", safe_profile_name(name))), json)?;
+        Ok(())
     }
 
-    /// Switch to `target` (None = default): snapshot the active profile first
-    /// so nothing is lost, then load the target's config.
+    fn load_profile(&self, name: &str) -> Result<config::Profile> {
+        let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
+        let bytes = std::fs::read(dir.join(format!("{}.json", safe_profile_name(name))))?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
     fn switch_profile(&mut self, target: Option<String>) {
         let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
-        self.snapshot_profile(&current);
-        let name = safe_profile_name(&target.clone().unwrap_or_else(|| "default".into()));
-        if let Some(dir) = profiles_dir() {
-            if let Ok(bytes) = std::fs::read(dir.join(format!("{name}.json"))) {
-                if let Ok(cfg) = serde_json::from_slice::<config::Config>(&bytes) {
-                    let _ = config::save(&cfg);
-                    self.apply_config(cfg);
-                }
-            }
+        if let Err(e) = self.snapshot_profile(&current) {
+            self.profile_error = Some(format!("could not save {current}: {e:#}"));
+            return;
         }
-        self.active_profile = target.clone();
+
+        let target_name = target.clone().unwrap_or_else(|| "default".into());
+        let profile = match self.load_profile(&target_name) {
+            Ok(profile) => profile,
+            Err(e) => {
+                self.profile_error = Some(format!("could not load {target_name}: {e:#}"));
+                return;
+            }
+        };
+
         let mut cfg = config::load();
-        cfg.active_profile = target;
-        let _ = config::save(&cfg);
+        profile.apply_to(&mut cfg);
+        cfg.active_profile = target.clone();
+        if let Err(e) = config::save(&cfg) {
+            self.profile_error = Some(format!("could not activate {target_name}: {e:#}"));
+            return;
+        }
+
+        self.active_profile = target;
+        self.profile_error = None;
+        self.apply_profile(&profile);
     }
 
     /// Sidebar profile switcher: default + saved profiles, with new/clone/
@@ -5378,36 +5392,24 @@ impl App {
         });
     }
 
-    /// Re-seed the running app from a freshly loaded config (profile switch).
-    fn apply_config(&mut self, cfg: config::Config) {
-        self.rules = cfg.autolayer_rules.clone();
-        self.peek = cfg.peek.clone();
-        self.show_cpu_header = cfg.show_cpu_header;
-        self.auto_update_check = !cfg.skip_update_check_on_start;
-        self.guard_enabled = cfg.guard_enabled;
-        self.autolayer_enabled = cfg.autolayer_enabled;
-        self.overlay_chord = if cfg.overlay_chord.is_empty() {
-            cfg.overlay_trigger.map(|t| vec![t]).unwrap_or_default()
+    fn apply_profile(&mut self, profile: &config::Profile) {
+        self.rules = profile.autolayer_rules.clone();
+        self.peek = profile.peek.clone();
+        self.autolayer_enabled = profile.autolayer_enabled;
+        self.overlay_chord = if profile.overlay_chord.is_empty() {
+            profile.overlay_trigger.map(|t| vec![t]).unwrap_or_default()
         } else {
-            cfg.overlay_chord.clone()
+            profile.overlay_chord.clone()
         };
-        self.hidden_shortcuts = cfg.hidden_shortcuts.clone();
-        self.custom_fx = cfg.custom_fx.clone();
-        self.custom_shortcuts = cfg.custom_shortcuts.clone();
+        self.hidden_shortcuts = profile.hidden_shortcuts.clone();
+        self.custom_fx = profile.custom_fx.clone();
+        self.custom_shortcuts = profile.custom_shortcuts.clone();
         if let Some(hash) = self.layout_hash.clone() {
             self.hydrate_glow(&hash);
             self.hydrate_key_fx(&hash);
-            // Reload this layout's custom layers from the new profile - else
-            // the previous profile's layers linger and a later edit would
-            // overwrite the target profile's layers.
-            self.hydrate_custom_layers(&hash);
-            self.hydrate_staged(&hash);
-        } else {
-            self.custom_layers.clear();
-            self.rebuild_synth_layers();
         }
         if let Ok(mut a) = self.anim.lock() {
-            let r = &cfg.rgb;
+            let r = &profile.rgb;
             a.effect = r.effect;
             a.color = r.color;
             a.speed = r.speed;
@@ -5415,12 +5417,11 @@ impl App {
             a.press_effect = r.press_effect;
             a.press_color = r.press_color;
             a.custom_name = r.custom_name.clone();
-            a.custom = cfg.custom_fx.iter().find(|c| c.name == r.custom_name).map(|c| c.steps.clone()).unwrap_or_default();
+            a.custom = profile.custom_fx.iter().find(|c| c.name == r.custom_name).map(|c| c.steps.clone()).unwrap_or_default();
             if a.effect == Effect::Custom && a.custom.is_empty() {
                 a.effect = Effect::Off;
             }
         }
-        // Restart the autolayer watcher so it picks up the new rules.
         self.autolayer = None;
         self.needs_push = true;
     }
