@@ -2873,6 +2873,20 @@ fn status_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         });
 }
 
+fn centered_page(ui: &mut egui::Ui, max_width: f32, body: impl FnOnce(&mut egui::Ui)) {
+    let full = ui.available_width();
+    let width = full.min(max_width);
+    let pad = ((full - width) / 2.0).max(12.0);
+    ui.add_space(14.0);
+    ui.horizontal(|ui| {
+        ui.add_space(pad);
+        ui.vertical(|ui| {
+            ui.set_width(width - 24.0);
+            body(ui);
+        });
+    });
+}
+
 /// A settings-dashboard card: icon + title + status pill on one line, muted
 /// description, then the body.
 fn tool_card(
@@ -5714,62 +5728,50 @@ impl App {
     }
 
     fn ui_tools(&mut self, ui: &mut egui::Ui) {
-        // Centered settings-dashboard column (max ~1000px on wide screens).
-        let full = ui.available_width();
-        let w = full.min(1000.0);
-        let x = ((full - w) / 2.0).max(12.0);
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(x);
-            ui.vertical(|ui| {
-                ui.set_width(w - 24.0);
-                page_header(ui, "Settings", "Firmware, guard, profiles and app housekeeping.");
+        centered_page(ui, 1000.0, |ui| {
+            page_header(ui, "Settings", "Firmware, guard, profiles and app housekeeping.");
 
-                let fw_pill = if self.env.is_ready() {
-                    ("Ready".to_string(), pal::GREEN)
-                } else {
-                    ("Setup required".to_string(), pal::AMBER)
-                };
-                tool_card(ui, "⚙", "Firmware build", "Remap keys and compile firmware 100% locally with QMK - no login, no cloud.", Some(fw_pill), self, |ui, app| app.ui_localbuild(ui));
+            let fw_pill = if self.env.is_ready() {
+                ("Ready".to_string(), pal::GREEN)
+            } else {
+                ("Setup required".to_string(), pal::AMBER)
+            };
+            tool_card(ui, "⚙", "Firmware build", "Remap keys and compile firmware 100% locally with QMK - no login, no cloud.", Some(fw_pill), self, |ui, app| app.ui_localbuild(ui));
 
-                #[cfg(target_os = "macos")]
-                let guard_pill = if self.guard.is_some() {
-                    ("Active".to_string(), pal::GREEN)
-                } else if self.guard_enabled {
-                    ("Waiting for keyboard".to_string(), pal::AMBER)
-                } else {
-                    ("Off".to_string(), pal::TEXT_DIM)
-                };
-                #[cfg(not(target_os = "macos"))]
-                let guard_pill = ("macOS only".to_string(), pal::TEXT_DIM);
-                tool_card(ui, "🔒", "Keyboard guard", "Disables the Mac's built-in keyboard while the ZSA board is connected.", Some(guard_pill), self, |ui, app| app.ui_guard(ui));
+            #[cfg(target_os = "macos")]
+            let guard_pill = if self.guard.is_some() {
+                ("Active".to_string(), pal::GREEN)
+            } else if self.guard_enabled {
+                ("Waiting for keyboard".to_string(), pal::AMBER)
+            } else {
+                ("Off".to_string(), pal::TEXT_DIM)
+            };
+            #[cfg(not(target_os = "macos"))]
+            let guard_pill = ("macOS only".to_string(), pal::TEXT_DIM);
+            tool_card(ui, "🔒", "Keyboard guard", "Disables the Mac's built-in keyboard while the ZSA board is connected.", Some(guard_pill), self, |ui, app| app.ui_guard(ui));
 
-                let app_pill = if crate::platform::autostart_enabled() {
-                    ("Autostart on".to_string(), pal::GREEN)
-                } else {
-                    ("Manual start".to_string(), pal::TEXT_DIM)
-                };
-                tool_card(ui, "🚀", "App", "Launch keyjitsu automatically when you log in.", Some(app_pill), self, |ui, app| app.ui_app_card(ui));
+            let app_pill = if crate::platform::autostart_enabled() {
+                ("Autostart on".to_string(), pal::GREEN)
+            } else {
+                ("Manual start".to_string(), pal::TEXT_DIM)
+            };
+            tool_card(ui, "🚀", "App", "Launch keyjitsu automatically when you log in.", Some(app_pill), self, |ui, app| app.ui_app_card(ui));
 
-                // Reference material, not keyboard state: lives here rather
-                // than in the main menu so it can't be mistaken for the keys
-                // on the board.
-                tool_card(
-                    ui,
-                    "📚",
-                    "Shortcut library",
-                    "A reference list of common shortcuts (macOS, editors, terminals, tools) to borrow from when planning a layer. Not what is on your keyboard: edit keys in Live.",
-                    Some(("Reference".to_string(), pal::TEXT_DIM)),
-                    self,
-                    |ui, app| {
-                        egui::CollapsingHeader::new("Browse the library")
-                            .id_salt("shortcut_library")
-                            .default_open(false)
-                            .show(ui, |ui| app.ui_shortcuts(ui));
-                    },
-                );
-                ui.add_space(10.0);
-            });
+            tool_card(
+                ui,
+                "📚",
+                "Shortcut library",
+                "A reference list of common shortcuts (macOS, editors, terminals, tools) to borrow from when planning a layer. Not what is on your keyboard: edit keys in Live.",
+                Some(("Reference".to_string(), pal::TEXT_DIM)),
+                self,
+                |ui, app| {
+                    egui::CollapsingHeader::new("Browse the library")
+                        .id_salt("shortcut_library")
+                        .default_open(false)
+                        .show(ui, |ui| app.ui_shortcuts(ui));
+                },
+            );
+            ui.add_space(10.0);
         });
     }
 
@@ -5780,42 +5782,36 @@ impl App {
             ui.label("Process CPU sampling is not available on this platform.");
             return;
         }
-        let full = ui.available_width();
-        let w = full.min(1000.0);
-        let x = ((full - w) / 2.0).max(12.0);
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(x);
-            ui.vertical(|ui| {
-                ui.set_width(w - 24.0);
-                let pill = {
-                    let c = self.perf_live;
-                    (format!("{c:.1}% CPU"), if c > 25.0 { pal::AMBER } else { pal::GREEN })
-                };
-                tool_card(ui, "📈", "Performance", "keyjitsu samples its own CPU and tags each sample with what it was doing.", Some(pill), self, |ui, app| app.ui_performance(ui));
-            });
+        centered_page(ui, 1000.0, |ui| {
+            let pill = {
+                let c = self.perf_live;
+                (
+                    format!("{c:.1}% CPU"),
+                    if c > 25.0 { pal::AMBER } else { pal::GREEN },
+                )
+            };
+            tool_card(ui, "📈", "Performance", "keyjitsu samples its own CPU and tags each sample with what it was doing.", Some(pill), self, |ui, app| app.ui_performance(ui));
         });
     }
 
     /// Autolayer as its own page.
     fn ui_auto_page(&mut self, ui: &mut egui::Ui) {
-        let full = ui.available_width();
-        let w = full.min(1000.0);
-        let x = ((full - w) / 2.0).max(12.0);
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            ui.add_space(x);
-            ui.vertical(|ui| {
-                ui.set_width(w - 24.0);
-                let pill = if !cfg!(target_os = "macos") {
-                    ("macOS only".to_string(), pal::TEXT_DIM)
-                } else if self.autolayer_enabled {
-                    (format!("On · {} rule{}", self.rules.len(), if self.rules.len() == 1 { "" } else { "s" }), pal::GREEN)
-                } else {
-                    ("Off".to_string(), pal::TEXT_DIM)
-                };
-                tool_card(ui, "⇆", "Autolayer", "Switches layers automatically based on the frontmost app.", Some(pill), self, |ui, app| app.ui_autolayer(ui));
-            });
+        centered_page(ui, 1000.0, |ui| {
+            let pill = if !cfg!(target_os = "macos") {
+                ("macOS only".to_string(), pal::TEXT_DIM)
+            } else if self.autolayer_enabled {
+                (
+                    format!(
+                        "On · {} rule{}",
+                        self.rules.len(),
+                        if self.rules.len() == 1 { "" } else { "s" }
+                    ),
+                    pal::GREEN,
+                )
+            } else {
+                ("Off".to_string(), pal::TEXT_DIM)
+            };
+            tool_card(ui, "⇆", "Autolayer", "Switches layers automatically based on the frontmost app.", Some(pill), self, |ui, app| app.ui_autolayer(ui));
         });
     }
 
