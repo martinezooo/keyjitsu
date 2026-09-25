@@ -23,7 +23,9 @@ use profiles::{
 use rgb_anim::{Anim, FxEvent};
 use update::{spawn_update_check, UpdateCheck};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+#[cfg(target_os = "macos")]
+use anyhow::Context as _;
 use eframe::egui::{self, Color32, ProgressBar, RichText};
 
 use std::time::Instant;
