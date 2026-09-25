@@ -429,20 +429,16 @@ mod tests {
 
     #[test]
     fn modifier_chords_have_one_canonical_qmk_form() {
-        let action: KeyAction = serde_json::from_str(
-            r#"{"code":"KC_TAB","modifiers":{"leftAlt":true}}"#,
-        )
-        .unwrap();
+        let action: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":{"leftAlt":true}}"#).unwrap();
         assert_eq!(action.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
         assert!(action.roundtrip_safe());
     }
 
     #[test]
     fn unknown_oryx_action_fields_are_preserved_and_not_editable() {
-        let action: KeyAction = serde_json::from_str(
-            r#"{"code":"KC_A","futureBehavior":{"kind":"new"}}"#,
-        )
-        .unwrap();
+        let action: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_A","futureBehavior":{"kind":"new"}}"#).unwrap();
         assert!(action.extra.contains_key("futureBehavior"));
         assert!(!action.roundtrip_safe());
 
