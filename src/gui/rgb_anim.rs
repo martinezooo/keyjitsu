@@ -233,11 +233,15 @@ impl Default for Anim {
 /// Stops the animation thread and releases the LEDs when dropped.
 pub struct AnimHandle {
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for AnimHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -248,8 +252,11 @@ pub fn spawn(
 ) -> AnimHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
-    std::thread::spawn(move || run(shared, cmd_tx, ctx, stop_t));
-    AnimHandle { stop }
+    let thread = std::thread::spawn(move || run(shared, cmd_tx, ctx, stop_t));
+    AnimHandle {
+        stop,
+        thread: Some(thread),
+    }
 }
 
 fn run(
