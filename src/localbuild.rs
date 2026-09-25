@@ -67,7 +67,7 @@ pub fn detect_env() -> BuildEnv {
     if let Some(dir) = cfg.qmk_firmware_dir {
         candidates.push(PathBuf::from(dir));
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
         candidates.push(home.join("qmk_firmware"));
         candidates.push(home.join("Documents/qmk_firmware"));
         candidates.push(home.join("src/qmk_firmware"));
