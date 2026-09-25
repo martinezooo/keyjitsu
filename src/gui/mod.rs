@@ -1478,6 +1478,30 @@ impl App {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
+    fn create_profile(&self, name: &str) -> Result<()> {
+        if list_profiles().iter().any(|saved| saved.eq_ignore_ascii_case(name.trim())) {
+            return Err(anyhow!("profile {name:?} already exists"));
+        }
+        self.snapshot_profile(name)
+    }
+
+    fn next_profile_copy_name(&self, source: &str) -> String {
+        let saved = list_profiles();
+        for n in 1..=999 {
+            let candidate = if n == 1 {
+                format!("{source} copy")
+            } else {
+                format!("{source} copy {n}")
+            };
+            if profile_file_name(&candidate).is_ok()
+                && !saved.iter().any(|name| name.eq_ignore_ascii_case(&candidate))
+            {
+                return candidate;
+            }
+        }
+        format!("profile copy {}", std::process::id())
+    }
+
     fn switch_profile(&mut self, target: Option<String>) {
         let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
         if let Err(e) = self.snapshot_profile(&current) {
@@ -1543,9 +1567,11 @@ impl App {
                     ui.close_menu();
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
-                    let clone = format!("{active_label} copy");
+                    let clone = self.next_profile_copy_name(&active_label);
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
-                    let result = self.snapshot_profile(&current).and_then(|_| self.snapshot_profile(&clone));
+                    let result = self
+                        .snapshot_profile(&current)
+                        .and_then(|_| self.create_profile(&clone));
                     self.profile_error = result.err().map(|e| format!("could not clone profile: {e:#}"));
                     ui.close_menu();
                 }
@@ -1577,7 +1603,9 @@ impl App {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.profile_draft).hint_text("name…").desired_width(96.0));
                 let draft = self.profile_draft.trim();
-                let ok = draft != "default" && profile_file_name(draft).is_ok();
+                let ok = !draft.eq_ignore_ascii_case("default")
+                    && profile_file_name(draft).is_ok()
+                    && !list_profiles().iter().any(|name| name.eq_ignore_ascii_case(draft));
                 if ui
                     .add_enabled(ok, egui::Button::new("✓"))
                     .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'; 'default' is reserved.")
@@ -1587,7 +1615,7 @@ impl App {
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
                     let result = self
                         .snapshot_profile(&current)
-                        .and_then(|_| self.snapshot_profile(&name))
+                        .and_then(|_| self.create_profile(&name))
                         .and_then(|_| {
                             let active = name.clone();
                             config::update(move |cfg| cfg.active_profile = Some(active))
@@ -3250,7 +3278,13 @@ fn profile_file_name(name: &str) -> Result<String> {
         && name
             .chars()
             .all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_');
-    if !valid {
+    let upper = name.to_ascii_uppercase();
+    let windows_reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit()
+            && upper.as_bytes()[3] != b'0');
+    if !valid || windows_reserved {
         return Err(anyhow!("invalid profile name"));
     }
     Ok(format!("{name}.json"))
@@ -6741,6 +6775,8 @@ mod profile_name_tests {
         assert!(profile_file_name("work/dev").is_err());
         assert!(profile_file_name("work?dev").is_err());
         assert!(profile_file_name("").is_err());
+        assert!(profile_file_name("CON").is_err());
+        assert!(profile_file_name("com1").is_err());
     }
 }
 
