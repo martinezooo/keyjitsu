@@ -591,6 +591,30 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+fn replace_staged_config(
+    cfg: &mut config::Config,
+    hash: &str,
+    edits: Vec<StagedEdit>,
+    dances: Vec<StagedDance>,
+) {
+    cfg.staged_edits.retain(|entry| entry.layout != hash);
+    cfg.staged_edits.extend(edits);
+    cfg.staged_dances.retain(|entry| entry.layout != hash);
+    cfg.staged_dances.extend(dances);
+}
+
+fn reconcile_confirmed_layout_config(
+    cfg: &mut config::Config,
+    hash: &str,
+    confirmed_layers: &[config::CustomLayer],
+    edits: Vec<StagedEdit>,
+    dances: Vec<StagedDance>,
+) {
+    replace_staged_config(cfg, hash, edits, dances);
+    cfg.custom_layer_sets
+        .retain(|set| !(set.layout == hash && set.layers == confirmed_layers));
+}
+
 struct LayoutScopedState {
     custom_layers: Vec<config::CustomLayer>,
     glow_overrides: Vec<GlowOverride>,
@@ -617,10 +641,7 @@ fn replace_layout_scoped_state(
     cfg.key_fx.retain(|entry| entry.layout != hash);
     cfg.key_fx.extend(state.key_fx);
 
-    cfg.staged_edits.retain(|entry| entry.layout != hash);
-    cfg.staged_edits.extend(state.staged_edits);
-    cfg.staged_dances.retain(|entry| entry.layout != hash);
-    cfg.staged_dances.extend(state.staged_dances);
+    replace_staged_config(cfg, hash, state.staged_edits, state.staged_dances);
 }
 
 impl App {
@@ -1322,13 +1343,37 @@ impl App {
             .retain(|&(layer, key), code| staged_edit_is_pending(&state, layer, key, code));
         self.key_dances
             .retain(|&(layer, key), slots| staged_dance_is_pending(&state, layer, key, slots));
-        self.save_staged();
 
         let layout_hash = state.layout_hash.clone();
         let custom_layers = state.custom_layers.clone();
-        self.persist_config("confirming applied custom layers", move |cfg| {
-            cfg.custom_layer_sets
-                .retain(|set| !(set.layout == layout_hash && set.layers == custom_layers));
+        let edits: Vec<_> = self
+            .key_edits
+            .iter()
+            .map(|(&(layer, key), code)| StagedEdit {
+                layout: layout_hash.clone(),
+                layer,
+                key: key as u16,
+                code: code.clone(),
+            })
+            .collect();
+        let dances: Vec<_> = self
+            .key_dances
+            .iter()
+            .map(|(&(layer, key), slots)| StagedDance {
+                layout: layout_hash.clone(),
+                layer,
+                key: key as u16,
+                slots: slots.clone(),
+            })
+            .collect();
+        self.persist_config("confirming applied firmware state", move |cfg| {
+            reconcile_confirmed_layout_config(
+                cfg,
+                &layout_hash,
+                &custom_layers,
+                edits,
+                dances,
+            );
         });
     }
 
@@ -1376,10 +1421,7 @@ impl App {
             })
             .collect();
         self.persist_config("saving pending key changes", move |cfg| {
-            cfg.staged_edits.retain(|e| e.layout != hash);
-            cfg.staged_dances.retain(|d| d.layout != hash);
-            cfg.staged_edits.extend(edits);
-            cfg.staged_dances.extend(dances);
+            replace_staged_config(cfg, &hash, edits, dances);
         });
     }
 
@@ -7036,8 +7078,9 @@ mod state_composition_tests {
     use std::collections::HashMap;
 
     use super::{
-        merge_firmware_maps, replace_layout_scoped_state, staged_dance_is_pending,
-        staged_edit_is_pending, synth_key, FxTrigger, LayoutScopedState, PressEffect,
+        merge_firmware_maps, reconcile_confirmed_layout_config, replace_layout_scoped_state,
+        staged_dance_is_pending, staged_edit_is_pending, synth_key, FxTrigger, LayoutScopedState,
+        PressEffect,
     };
     use crate::config::{self, GlowOverride, StagedDance, StagedEdit};
     use crate::firmware_state::{FirmwareDance, FirmwareEdit, FirmwareState};
@@ -7114,6 +7157,58 @@ mod state_composition_tests {
             Some(3)
         );
         assert!(cfg.staged_dances.iter().any(|entry| entry.layout == "other"));
+    }
+
+    #[test]
+    fn confirmed_firmware_reconciliation_is_one_config_mutation() {
+        let confirmed_layers = vec![config::CustomLayer {
+            layout: "target".into(),
+            name: "Applied".into(),
+            keys: vec![],
+        }];
+        let mut cfg = config::Config::default();
+        cfg.custom_layer_sets.push(config::CustomLayerSet {
+            layout: "target".into(),
+            layers: confirmed_layers.clone(),
+        });
+        cfg.staged_edits.push(StagedEdit {
+            layout: "target".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_OLD".into(),
+        });
+        cfg.staged_edits.push(StagedEdit {
+            layout: "other".into(),
+            layer: 0,
+            key: 2,
+            code: "KC_KEEP".into(),
+        });
+
+        reconcile_confirmed_layout_config(
+            &mut cfg,
+            "target",
+            &confirmed_layers,
+            vec![StagedEdit {
+                layout: "target".into(),
+                layer: 0,
+                key: 3,
+                code: "KC_NEW".into(),
+            }],
+            vec![],
+        );
+
+        assert!(!cfg.custom_layer_sets.iter().any(|set| set.layout == "target"));
+        assert_eq!(
+            cfg.staged_edits
+                .iter()
+                .find(|entry| entry.layout == "target")
+                .map(|entry| entry.code.as_str()),
+            Some("KC_NEW")
+        );
+        assert!(cfg
+            .staged_edits
+            .iter()
+            .any(|entry| entry.layout == "other" && entry.code == "KC_KEEP"));
     }
 
     #[test]
