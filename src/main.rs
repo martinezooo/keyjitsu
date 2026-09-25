@@ -697,11 +697,12 @@ mod cli_parse_tests {
 
     #[test]
     fn dance_parser_keeps_commas_inside_qmk_keycodes() {
-        let dance = parse_dance_arg("1,2=KC_A,MO(3),LCTL(KC_C),KC_ENT").unwrap();
+        let dance = parse_dance_arg("1,2=KC_A,MO(3),LCTL(KC_C),LT(2,KC_SPC)").unwrap();
         assert_eq!(dance.layer, 1);
         assert_eq!(dance.position, 2);
         assert_eq!(dance.hold.as_deref(), Some("MO(3)"));
         assert_eq!(dance.double_tap.as_deref(), Some("LCTL(KC_C)"));
+        assert_eq!(dance.tap_hold.as_deref(), Some("LT(2,KC_SPC)"));
         assert!(parse_dance_arg("1,2=A,B,C,D,E").is_err());
     }
 
