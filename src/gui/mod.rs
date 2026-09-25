@@ -6408,15 +6408,26 @@ impl App {
         // Ready - power-user actions. Everything here runs on this Mac; the
         // only network is an anonymous read of the generated QMK source.
         ui.add_space(4.0);
-        let edits = self.key_edits.len();
-        if edits > 0 {
-            ui.colored_label(pal::AMBER, format!("● {edits} staged key change{}", if edits == 1 { "" } else { "s" }));
+        let pending = self.pending_firmware_count();
+        if self.firmware_state_unknown {
+            ui.colored_label(
+                pal::AMBER,
+                "⚠ The connected firmware state is unknown. Building is blocked to avoid losing working keyboard changes.",
+            );
+        } else if pending > 0 {
+            ui.colored_label(
+                pal::AMBER,
+                format!(
+                    "● {pending} pending firmware change{}",
+                    if pending == 1 { "" } else { "s" }
+                ),
+            );
         } else {
-            ui.weak("Stage key remaps in Live (select a key → Assign key). Build compiles the current layout + your staged changes.");
+            ui.weak("No pending firmware changes. Build can still reproduce the confirmed device state.");
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let can = self.connected.is_some() && !self.build_busy;
+            let can = self.connected.is_some() && !self.build_busy && !self.firmware_state_unknown;
             if ui.add_enabled(can, egui::Button::new(RichText::new("⚙ Build firmware").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
                 self.start_local_build(false);
             }
