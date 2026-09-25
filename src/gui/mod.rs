@@ -2317,6 +2317,10 @@ impl App {
             while let Ok(s) = rx.try_recv() {
                 self.flash_state = Some(s);
             }
+            let flash_terminal = self
+                .flash_state
+                .as_ref()
+                .is_some_and(FlashState::is_terminal);
             // Drive the build modal's phase/progress from the flash stage.
             match &self.flash_state {
                 Some(FlashState::Downloading) => {
@@ -2361,6 +2365,12 @@ impl App {
                     self.build_result = Some(Err(e.clone()));
                 }
                 None => {}
+            }
+            if flash_terminal {
+                // A terminal result is handled exactly once. Keeping the
+                // receiver attached made Done run every frame and could
+                // overwrite a later reconnect confirmation or mismatch.
+                self.flash_rx = None;
             }
         }
         if let Some(rx) = &self.build_rx {
@@ -6775,10 +6785,10 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
             }
-            let cancelable = matches!(
-                self.flash_state,
-                Some(FlashState::Downloading | FlashState::WaitingForBootloader)
-            );
+            let cancelable = self
+                .flash_state
+                .as_ref()
+                .is_some_and(FlashState::is_cancelable);
             if cancelable && ui.button("✕ cancel").clicked() {
                 self.flash_cancel.store(true, Ordering::SeqCst);
             } else if matches!(self.flash_state, Some(FlashState::Working { .. })) {

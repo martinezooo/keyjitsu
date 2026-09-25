@@ -63,7 +63,9 @@ impl Drop for DeviceWorkerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: device worker panicked during shutdown");
+            }
         }
     }
 }
@@ -310,6 +312,16 @@ pub enum FlashState {
     Failed(String),
 }
 
+impl FlashState {
+    pub fn is_cancelable(&self) -> bool {
+        matches!(self, Self::Downloading | Self::WaitingForBootloader)
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Done | Self::Failed(_))
+    }
+}
+
 pub fn spawn_flash(
     target: Option<String>,
     latest: bool,
@@ -392,7 +404,9 @@ impl Drop for AutolayerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: autolayer worker panicked during shutdown");
+            }
         }
     }
 }
@@ -417,12 +431,16 @@ pub fn spawn_autolayer(
                         .map(|r| r.layer);
                     match (target, active_rule_layer) {
                         (Some(layer), current) if current != Some(layer) => {
-                            let _ = cmd_tx.send(KbCmd::SetLayer { on: true, layer });
+                            if cmd_tx.send(KbCmd::SetLayer { on: true, layer }).is_err() {
+                                return;
+                            }
                             active_rule_layer = Some(layer);
                             ctx.request_repaint();
                         }
                         (None, Some(prev)) => {
-                            let _ = cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev });
+                            if cmd_tx.send(KbCmd::SetLayer { on: false, layer: prev }).is_err() {
+                                return;
+                            }
                             active_rule_layer = None;
                             ctx.request_repaint();
                         }
@@ -445,5 +463,28 @@ pub fn spawn_autolayer(
     AutolayerHandle {
         stop,
         thread: Some(thread),
+    }
+}
+
+#[cfg(test)]
+mod flash_state_tests {
+    use super::FlashState;
+
+    #[test]
+    fn flash_can_only_be_cancelled_before_device_write_starts() {
+        assert!(FlashState::Downloading.is_cancelable());
+        assert!(FlashState::WaitingForBootloader.is_cancelable());
+        assert!(!FlashState::Working { phase: "Writing", fraction: 0.5 }.is_cancelable());
+        assert!(!FlashState::Done.is_cancelable());
+        assert!(!FlashState::Failed("failed".into()).is_cancelable());
+    }
+
+    #[test]
+    fn only_done_and_failed_are_terminal_flash_states() {
+        assert!(!FlashState::Downloading.is_terminal());
+        assert!(!FlashState::WaitingForBootloader.is_terminal());
+        assert!(!FlashState::Working { phase: "Writing", fraction: 0.5 }.is_terminal());
+        assert!(FlashState::Done.is_terminal());
+        assert!(FlashState::Failed("failed".into()).is_terminal());
     }
 }

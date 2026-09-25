@@ -240,7 +240,9 @@ impl Drop for AnimHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: RGB animation worker panicked during shutdown");
+            }
         }
     }
 }
