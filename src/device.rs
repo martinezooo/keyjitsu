@@ -79,7 +79,10 @@ impl Keyboard {
             );
         }
         let info = match serial_filter {
-            None => all.into_iter().next().unwrap(),
+            None => all
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("keyboard disappeared during enumeration"))?,
             Some(f) => all
                 .into_iter()
                 .find(|k| k.serial.as_deref().is_some_and(|s| s.contains(f)))
@@ -149,7 +152,7 @@ impl Keyboard {
             |_| {},
         )? {
             Event::ProtocolVersion(v) => Ok(v),
-            _ => unreachable!(),
+            other => bail!("unexpected protocol-version response: {other:?}"),
         }
     }
 
@@ -184,7 +187,7 @@ impl Keyboard {
             |_| {},
         )? {
             Event::FwVersion(s) => Ok(s),
-            _ => unreachable!(),
+            other => bail!("unexpected firmware-version response: {other:?}"),
         }
     }
 
