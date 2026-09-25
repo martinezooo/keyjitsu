@@ -16,14 +16,27 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check 2>&1 | tee fmt.log
       - name: Build
-        run: cargo build --locked
+        run: cargo build --locked 2>&1 | tee build.log
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked 2>&1 | tee test.log
+      - name: Upload CI diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ci-diagnostics
+          path: |
+            fmt.log
+            build.log
+            clippy.log
+            test.log
+          if-no-files-found: ignore
 
   audit:
     name: Dependency audit
