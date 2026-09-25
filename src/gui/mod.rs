@@ -729,7 +729,11 @@ impl App {
     /// Number of layers that come from the Oryx source (not counting the
     /// user's own custom layers).
     fn oryx_layer_count(&self) -> u8 {
-        self.layout.as_ref().map(|l| l.revision.layers.len() as u8).unwrap_or(0)
+        self.layout
+            .as_ref()
+            .and_then(|l| l.revision.layers.iter().map(|layer| layer.position).max())
+            .map(|max| max.saturating_add(1))
+            .unwrap_or(0)
     }
 
     fn layer_def(&self, n: u8) -> Option<&Layer> {
@@ -3941,8 +3945,10 @@ impl App {
                 };
                 parts.push(what);
             } else if let Some(code) = tap.code.as_deref() {
-                if code != "KC_TRANSPARENT" && code != "KC_NO" {
-                    parts.push(format!("Tap {}", legend::keycode_label(code)));
+                match code {
+                    "KC_NO" => parts.push("Disabled".to_string()),
+                    "KC_TRANSPARENT" | "KC_TRNS" => parts.push("Transparent".to_string()),
+                    _ => parts.push(format!("Tap {}", legend::keycode_label(code))),
                 }
             }
         }
