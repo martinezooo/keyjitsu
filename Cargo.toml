@@ -23,6 +23,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 ctrlc = { version = "3", features = ["termination"] }
 eframe = "0.31"
+tempfile = "3.27"
 
 zapp-core = { git = "https://github.com/zsa/zapp" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
