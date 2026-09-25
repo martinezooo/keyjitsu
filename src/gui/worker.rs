@@ -330,6 +330,7 @@ pub enum FlashState {
 pub fn spawn_flash(
     target: Option<String>,
     latest: bool,
+    current_serial: Option<String>,
     cancel: Arc<AtomicBool>,
     ctx: egui::Context,
 ) -> Receiver<FlashState> {
@@ -344,7 +345,11 @@ pub fn spawn_flash(
         if canceled() {
             return send(FlashState::Failed("canceled".into()));
         }
-        let fw = match crate::cmd_flash::acquire_firmware(target.as_deref(), latest) {
+        let fw = match crate::cmd_flash::acquire_firmware(
+            target.as_deref(),
+            latest,
+            current_serial.as_deref(),
+        ) {
             Ok(fw) => fw,
             Err(e) => return send(FlashState::Failed(format!("{e:#}"))),
         };
