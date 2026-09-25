@@ -263,6 +263,8 @@ struct App {
     build_flash_after: bool,
     build_state_id: Option<String>,
     expected_firmware_state: Option<String>,
+    expected_firmware_generation: Option<u64>,
+    flash_write_completed: bool,
     last_build_bin: Option<std::path::PathBuf>,
     last_build_state_id: Option<String>,
     build_cancel: Arc<AtomicBool>,
@@ -2134,22 +2136,7 @@ impl App {
                             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
                         self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
 
-                        if let Some(expected) = self.expected_firmware_state.take() {
-                            match confirm_firmware_state(&expected, state_marker) {
-                                FirmwareConfirmation::Confirmed => {
-                                    self.build_phase = "Firmware confirmed ✓".into();
-                                    self.build_result = Some(Ok(
-                                        "Firmware flashed and confirmed by the keyboard.".into(),
-                                    ));
-                                }
-                                FirmwareConfirmation::Mismatch => {
-                                    self.build_phase = "Firmware not confirmed".into();
-                                    self.build_result = Some(Err(
-                                        "The keyboard reconnected with a different firmware state. Pending changes were kept.".into(),
-                                    ));
-                                }
-                            }
-                        }
+                        self.confirm_expected_firmware(generation, state_marker);
 
                         self.layout = crate::oryx_api::cached_layout(&id, "voyager");
 
@@ -2315,10 +2302,17 @@ impl App {
                     self.build_busy = false;
                     self.build_progress = 1.0;
                     if self.expected_firmware_state.is_some() {
+                        self.flash_write_completed = true;
                         self.build_phase = "Flashed - waiting for reconnect…".into();
                         self.build_result = Some(Ok(
                             "Firmware was written. Waiting for the keyboard to confirm the new state.".into(),
                         ));
+                        if let (Some(generation), Some((_, serial))) =
+                            (self.connection_generation, self.connected.clone())
+                        {
+                            let reported = firmware_state::state_id_from_serial(&serial);
+                            self.confirm_expected_firmware(generation, reported);
+                        }
                     } else {
                         self.build_phase = "Flashed ✓".into();
                         self.build_result = Some(Ok("Firmware flashed - the keyboard will reconnect.".into()));
@@ -2328,6 +2322,8 @@ impl App {
                     self.build_busy = false;
                     self.build_state_id = None;
                     self.expected_firmware_state = None;
+                    self.expected_firmware_generation = None;
+                    self.flash_write_completed = false;
                     self.build_phase = "Flash failed".into();
                     self.build_result = Some(Err(e.clone()));
                 }
@@ -4766,7 +4762,10 @@ impl App {
         if self.flash_in_progress() {
             return;
         }
+        self.expected_firmware_generation =
+            expected_state.as_ref().and(self.connection_generation);
         self.expected_firmware_state = expected_state;
+        self.flash_write_completed = false;
         self.flash_state = None;
         self.flash_cancel = Arc::new(AtomicBool::new(false));
         self.flash_rx = Some(worker::spawn_flash(
@@ -4775,6 +4774,36 @@ impl App {
             self.flash_cancel.clone(),
             self.egui_ctx.clone(),
         ));
+    }
+
+    fn confirm_expected_firmware(&mut self, generation: u64, reported: Option<&str>) {
+        if !self.flash_write_completed {
+            return;
+        }
+        if self
+            .expected_firmware_generation
+            .is_some_and(|start| generation <= start)
+        {
+            return;
+        }
+        let Some(expected) = self.expected_firmware_state.take() else { return };
+        self.expected_firmware_generation = None;
+        self.flash_write_completed = false;
+
+        match confirm_firmware_state(&expected, reported) {
+            FirmwareConfirmation::Confirmed => {
+                self.build_phase = "Firmware confirmed ✓".into();
+                self.build_result = Some(Ok(
+                    "Firmware flashed and confirmed by the keyboard.".into(),
+                ));
+            }
+            FirmwareConfirmation::Mismatch => {
+                self.build_phase = "Firmware not confirmed".into();
+                self.build_result = Some(Err(
+                    "The keyboard reconnected with a different firmware state. Pending changes were kept.".into(),
+                ));
+            }
+        }
     }
 
     fn flash_last_build(&mut self) {
@@ -4816,6 +4845,8 @@ impl App {
 
         self.build_state_id = None;
         self.expected_firmware_state = None;
+        self.expected_firmware_generation = None;
+        self.flash_write_completed = false;
         self.last_build_bin = None;
         self.last_build_state_id = None;
         self.build_result = None;
