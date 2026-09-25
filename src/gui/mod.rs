@@ -5407,21 +5407,26 @@ impl App {
     }
 
     fn ui_app_card(&mut self, ui: &mut egui::Ui) {
-        let mut on = crate::platform::autostart_enabled();
-        if toggle_row(ui, "Start keyjitsu at login (GUI)", &mut on) {
-            self.autostart_error = crate::platform::set_autostart(on).err().map(|e| format!("{e:#}"));
+        #[cfg(target_os = "macos")]
+        {
+            let mut on = crate::platform::autostart_enabled();
+            if toggle_row(ui, "Start keyjitsu at login (GUI)", &mut on) {
+                self.autostart_error = crate::platform::set_autostart(on).err().map(|e| format!("{e:#}"));
+            }
+            if let Some(e) = &self.autostart_error {
+                ui.colored_label(pal::RED, format!("autostart failed: {e}"));
+            }
+            if let Some(p) = crate::platform::autostart_location() {
+                ui.label(RichText::new(format!("LaunchAgent: {}", p.display())).size(11.0).color(pal::TEXT_DIM));
+            }
+            ui.label(
+                RichText::new("Points at this binary - re-toggle after moving/rebuilding the app to refresh the path.")
+                    .size(11.0)
+                    .color(pal::TEXT_DIM),
+            );
         }
-        if let Some(e) = &self.autostart_error {
-            ui.colored_label(pal::RED, format!("autostart failed: {e}"));
-        }
-        if let Some(p) = crate::platform::autostart_location() {
-            ui.label(RichText::new(format!("LaunchAgent: {}", p.display())).size(11.0).color(pal::TEXT_DIM));
-        }
-        ui.label(
-            RichText::new("Points at this binary - re-toggle after moving/rebuilding the app to refresh the path.")
-                .size(11.0)
-                .color(pal::TEXT_DIM),
-        );
+        #[cfg(not(target_os = "macos"))]
+        ui.label(RichText::new("Start at login is not implemented on this platform yet.").size(11.0).color(pal::TEXT_DIM));
 
         ui.add_space(10.0);
         ui.separator();
@@ -5465,8 +5470,11 @@ impl App {
                             self.update_state = Some(UpdateCheck::Error(format!("could not open release page: {e:#}")));
                         }
                     }
-                    ui.label(RichText::new("then rebuild: ").size(11.5).color(pal::TEXT_DIM));
-                    ui.code("scripts/bundle.sh --install");
+                    #[cfg(target_os = "macos")]
+                    {
+                        ui.label(RichText::new("then rebuild: ").size(11.5).color(pal::TEXT_DIM));
+                        ui.code("scripts/bundle.sh --install");
+                    }
                 });
             }
             Some(UpdateCheck::Error(e)) => {
