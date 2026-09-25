@@ -171,6 +171,14 @@ fn is_post_flash_generation(start: Option<u64>, current: u64) -> bool {
     start.is_none_or(|start| current > start)
 }
 
+fn layout_event_is_current(current: Option<u64>, event: u64) -> bool {
+    current == Some(event)
+}
+
+fn disconnect_event_is_current(current: Option<u64>, event: u64) -> bool {
+    current.is_none_or(|generation| generation == event)
+}
+
 fn flash_can_cancel(state: Option<&FlashState>) -> bool {
     matches!(
         state,
@@ -2230,7 +2238,7 @@ impl App {
                     self.push_anim_base();
                 }
                 DevEvent::LayoutLoaded { generation, layout } => {
-                    if self.connection_generation != Some(generation) {
+                    if !layout_event_is_current(self.connection_generation, generation) {
                         continue;
                     }
                     self.layout = Some(*layout);
@@ -2245,7 +2253,7 @@ impl App {
                     self.push_anim_base();
                 }
                 DevEvent::Disconnected { generation } => {
-                    if self.connection_generation.is_some() && self.connection_generation != Some(generation) {
+                    if !disconnect_event_is_current(self.connection_generation, generation) {
                         continue;
                     }
                     self.connected = None;
@@ -7012,6 +7020,17 @@ mod firmware_confirmation_tests {
         assert!(!is_post_flash_generation(Some(7), 6));
         assert!(is_post_flash_generation(Some(7), 8));
         assert!(is_post_flash_generation(None, 1));
+    }
+
+    #[test]
+    fn stale_events_from_a_rapid_reconnect_cannot_replace_newer_state() {
+        assert!(layout_event_is_current(Some(8), 8));
+        assert!(!layout_event_is_current(Some(8), 7));
+        assert!(!layout_event_is_current(None, 7));
+
+        assert!(disconnect_event_is_current(Some(8), 8));
+        assert!(!disconnect_event_is_current(Some(8), 7));
+        assert!(disconnect_event_is_current(None, 7));
     }
 
     #[test]
