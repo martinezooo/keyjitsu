@@ -89,6 +89,12 @@ impl LayoutId {
         Ok(())
     }
 
+    pub fn new(hash: String, revision: String) -> Result<LayoutId> {
+        Self::validate_part("layout hash", &hash)?;
+        Self::validate_part("revision", &revision)?;
+        Ok(LayoutId { hash, revision })
+    }
+
     pub fn from_serial(serial: &str) -> Result<LayoutId> {
         match serial.split_once('/') {
             Some((h, r)) if !h.is_empty() && !r.is_empty() => {
@@ -96,12 +102,7 @@ impl LayoutId {
                 if revision.is_empty() {
                     bail!("keyboard serial {serial:?} has an empty revision before the Keyjitsu state marker");
                 }
-                Self::validate_part("layout hash", h)?;
-                Self::validate_part("revision", revision)?;
-                Ok(LayoutId {
-                    hash: h.to_string(),
-                    revision: revision.to_string(),
-                })
+                Self::new(h.to_string(), revision.to_string())
             },
             _ => bail!(
                 "keyboard serial {serial:?} does not look like an Oryx layout id \
@@ -122,12 +123,7 @@ impl LayoutId {
             .filter(|h| !h.is_empty())
             .ok_or_else(|| anyhow!("no layout hash after /layouts/ in {url:?}"))?;
         let revision = parts.get(i + 2).copied().unwrap_or("latest");
-        Self::validate_part("layout hash", hash)?;
-        Self::validate_part("revision", revision)?;
-        Ok(LayoutId {
-            hash: hash.to_string(),
-            revision: revision.to_string(),
-        })
+        Self::new(hash.to_string(), revision.to_string())
     }
 }
 
@@ -138,8 +134,16 @@ pub fn cache_dir() -> Result<PathBuf> {
 }
 
 fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
+    // Defend the persistence boundary even if a future caller constructs
+    // LayoutId directly instead of going through the parsers.
+    LayoutId::validate_part("layout hash", &id.hash)?;
+    LayoutId::validate_part("revision", &id.revision)?;
+    LayoutId::validate_part("geometry", geometry)?;
     // v2: layer `color` added to the query - old caches lack it.
-    Ok(cache_dir()?.join(format!("layout-{geometry}-{}-{}-v2.json", id.hash, id.revision)))
+    Ok(cache_dir()?.join(format!(
+        "layout-{geometry}-{}-{}-v2.json",
+        id.hash, id.revision
+    )))
 }
 
 /// Read a layout from the on-disk cache only, never touching the network.
