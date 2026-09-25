@@ -324,7 +324,7 @@ fn run(cli: Cli) -> Result<()> {
         }),
         Cmd::BuildLocal { rev, sets, dance, new_layer } => cmd_build_local(serial, rev, &sets, &dance, &new_layer),
         Cmd::Flash { target, latest, timeout } => {
-            cmd_flash::run(target.as_deref(), latest, timeout)
+            cmd_flash::run(serial, target.as_deref(), latest, timeout)
         }
         #[cfg(target_os = "macos")]
         Cmd::Guard => cmd_guard::run(serial),
