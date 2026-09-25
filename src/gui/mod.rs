@@ -4350,21 +4350,16 @@ impl App {
             }
         }
 
-        if self.firmware_state_unknown {
-            ui.colored_label(pal::AMBER, "device state unknown");
-        } else if self.connected.is_none() {
-            ui.weak("connect the keyboard to build");
-        } else if !self.env.is_ready() {
-            ui.weak("set up QMK →");
+        if !ready {
+            let reason = if self.firmware_state_unknown {
+                "Device state is unknown; rebuilding is blocked to protect working firmware changes."
+            } else if self.connected.is_none() {
+                "Connect the keyboard to build firmware."
+            } else {
+                "Set up QMK and the ARM toolchain in Settings before building."
+            };
+            ui.label(RichText::new(reason).size(10.5).color(pal::TEXT_DIM));
         }
-        ui.colored_label(
-            pal::AMBER,
-            RichText::new(format!(
-                "● {pending} pending firmware change{}",
-                if pending == 1 { "" } else { "s" }
-            ))
-            .strong(),
-        );
     }
 
     /// Human name of a layer ("VimLife"), falling back to "Layer n".
