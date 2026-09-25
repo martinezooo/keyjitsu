@@ -21,10 +21,10 @@ jobs:
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libxkbcommon-dev libwayland-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
       - name: Format
         run: cargo fmt --all -- --check 2>&1 | tee fmt.log
       - name: Build
@@ -54,6 +54,7 @@ jobs:
       checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit dependencies
+        run: cargo audit
