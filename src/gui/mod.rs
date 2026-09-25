@@ -1980,15 +1980,11 @@ impl App {
                     self.build_phase = "Flashed ✓".into();
                     self.build_progress = 1.0;
                     self.build_result = Some(Ok("Firmware flashed - the keyboard will reconnect.".into()));
-                    // Only OUR build-then-flash continuation clears the
-                    // staged edits it just applied - a flash from the
-                    // separate "any file/URL" modal must not silently wipe
-                    // edits that were never part of it.
+                    // A successful flash only means the bootloader accepted
+                    // the image. Keep staged edits until the keyboard reconnects
+                    // and reports the matching firmware-state identity.
                     if self.flash_is_build_continuation {
                         self.flash_is_build_continuation = false;
-                        self.key_edits.clear();
-                        self.key_dances.clear();
-                        self.save_staged();
                     }
                 }
                 Some(FlashState::Failed(e)) => {
