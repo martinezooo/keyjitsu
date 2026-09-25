@@ -74,7 +74,8 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
     }
 
     if let Some(prev) = active_rule_layer {
-        let _ = kb.send(Command::SetLayer { on: false, layer: prev });
+        kb.send(Command::SetLayer { on: false, layer: prev })
+            .context("releasing autolayer on exit (keyboard unplugged?)")?;
         println!("→ layer {prev} released (exit)");
     }
     kb.disconnect();
