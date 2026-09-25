@@ -7,8 +7,8 @@ cd "$(dirname "$0")/.."
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
 APP=target/release/Keyjitsu.app
 
-echo "▸ cargo build --release (v$VERSION)"
-cargo build --release
+echo "▸ cargo build --release --locked (v$VERSION)"
+cargo build --release --locked
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
