@@ -3107,20 +3107,24 @@ fn status_dot(ui: &mut egui::Ui, ok: bool) {
 impl App {
     /// Compact connection status as a colored pill.
     fn connection_pill(&self, ui: &mut egui::Ui) {
-        let (dot, text) = match &self.connected {
-            Some((model, serial)) => (
-                pal::GREEN,
-                match &self.layout {
+        let (dot, text, hover) = match &self.connected {
+            Some((model, _)) if self.firmware_state_unknown => (
+                pal::AMBER,
+                format!("{model} · state unknown"),
+                "The keyboard reports a Keyjitsu firmware state that is not available locally. Keyjitsu will not rebuild from an unverified base.".to_string(),
+            ),
+            Some((model, serial)) => {
+                let text = match &self.layout {
                     Some(l) => format!("{model} · {}", l.title),
                     None => format!("{model} · {serial}"),
-                },
+                };
+                (pal::GREEN, text.clone(), text)
+            }
+            None => (
+                pal::RED,
+                "No keyboard".to_string(),
+                "Plug in your Voyager and quit Keymapp (the HID channel is exclusive).".to_string(),
             ),
-            None => (pal::RED, "No keyboard".to_string()),
-        };
-        let hover = if self.connected.is_some() {
-            text.clone()
-        } else {
-            "Plug in your Voyager and quit Keymapp (the HID channel is exclusive).".to_string()
         };
         egui::Frame::new()
             .fill(pal::RAISED)
@@ -3828,7 +3832,7 @@ impl App {
         if edits == 0 {
             return;
         }
-        let ready = self.env.is_ready();
+        let ready = self.env.is_ready() && !self.firmware_state_unknown;
         if ui
             .add_enabled(ready, egui::Button::new(RichText::new("⚙ Build & flash").color(Color32::WHITE)).fill(pal::VIOLET))
             .clicked()
@@ -3843,7 +3847,9 @@ impl App {
             self.key_dances.clear();
             self.save_staged();
         }
-        if !ready {
+        if self.firmware_state_unknown {
+            ui.colored_label(pal::AMBER, "device state unknown");
+        } else if !ready {
             ui.weak("set up QMK →");
         }
         ui.colored_label(pal::AMBER, RichText::new(format!("● {edits} unsaved")).strong());
