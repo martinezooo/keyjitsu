@@ -447,6 +447,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        write_atomic(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
     fn corrupt_recovery_copies_never_overwrite_previous_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
