@@ -483,6 +483,22 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
 /// Run a command, streaming combined stdout+stderr to `log`, killable via
 /// `cancel`. Output is read on helper threads so the main loop can poll both
 /// process exit and the cancel flag.
+fn finish_log_readers(
+    readers: Vec<std::thread::JoinHandle<()>>,
+    line_rx: &Receiver<String>,
+    log: &dyn Fn(String),
+) -> Result<()> {
+    for reader in readers {
+        reader
+            .join()
+            .map_err(|_| anyhow!("qmk output reader thread panicked"))?;
+    }
+    while let Ok(line) = line_rx.try_recv() {
+        log(line);
+    }
+    Ok(())
+}
+
 fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -> Result<()> {
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -495,15 +511,16 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
         child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>),
         child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>),
     ];
+    let mut reader_threads = Vec::new();
     for reader in readers.into_iter().flatten() {
         let tx = line_tx.clone();
-        std::thread::spawn(move || {
+        reader_threads.push(std::thread::spawn(move || {
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
                 if tx.send(line).is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
     drop(line_tx);
 
@@ -520,14 +537,12 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
                 child.kill().context("terminating qmk compile")?;
                 child.wait().context("waiting for canceled qmk compile")?;
             }
+            finish_log_readers(reader_threads, &line_rx, log)?;
             bail!("canceled");
         }
         match child.try_wait().context("waiting for qmk")? {
             Some(status) => {
-                // Drain any remaining buffered lines.
-                while let Ok(line) = line_rx.try_recv() {
-                    log(line);
-                }
+                finish_log_readers(reader_threads, &line_rx, log)?;
                 if !status.success() {
                     bail!("qmk compile failed (exit {:?})", status.code());
                 }
