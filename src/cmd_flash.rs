@@ -19,6 +19,7 @@ use crate::oryx_api::LayoutId;
 
 const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_FIRMWARE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_LATEST_RESPONSE_BYTES: u64 = 64 * 1024;
 
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
@@ -155,16 +156,27 @@ fn fetch_latest_revision(layout_id: &str) -> Result<String> {
         latest: String,
     }
     let url = format!("https://oryx.zsa.io/firmware/latest/{layout_id}");
-    let latest: Latest = ureq::get(&url)
+    let response = ureq::get(&url)
         .timeout(ORYX_REQUEST_TIMEOUT)
         .call()
-        .with_context(|| format!("asking Oryx for the latest revision of {layout_id}"))?
-        .into_json()
-        .context("malformed response from Oryx")?;
-    Ok(latest.latest)
+        .with_context(|| format!("asking Oryx for the latest revision of {layout_id}"))?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_LATEST_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("reading latest-revision response")?;
+    if bytes.len() as u64 > MAX_LATEST_RESPONSE_BYTES {
+        bail!("latest-revision response is unexpectedly large");
+    }
+    let latest: Latest =
+        serde_json::from_slice(&bytes).context("malformed response from Oryx")?;
+    let validated = LayoutId::new(layout_id.to_string(), latest.latest)?;
+    Ok(validated.revision)
 }
 
 fn download_firmware(revision_id: &str, collate: bool) -> Result<Firmware> {
+    let revision_id = LayoutId::new("firmware".into(), revision_id.to_string())?.revision;
     let mut url = format!("https://oryx.zsa.io/firmware/{revision_id}");
     if collate {
         url.push_str("?collate=true");
@@ -204,5 +216,24 @@ pub fn firmware_summary(fw: &Firmware) -> String {
         Firmware::IntelHex { data } => {
             format!("Firmware: Intel HEX (HalfKay), {} KiB", data.len() / 1024)
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_revision_ids_cannot_change_the_oryx_url_path() {
+        assert!(LayoutId::new("layout".into(), "wODgzD".into()).is_ok());
+        assert!(LayoutId::new("layout".into(), "../../escape".into()).is_err());
+        assert!(LayoutId::new("layout".into(), "rev?collate=true".into()).is_err());
+    }
+
+    #[test]
+    fn percent_handles_empty_and_normal_progress() {
+        assert_eq!(pct(0, 0), 100);
+        assert_eq!(pct(50, 100), 50);
     }
 }
