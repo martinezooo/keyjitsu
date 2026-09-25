@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 
 use crate::geometry::Geometry;
-use crate::legend::{key_kind, labels_for, KeyKind};
+use crate::legend::{key_kind, keycap_labels_for, KeyKind};
 use crate::oryx_api::Layer;
 
 pub const SELECTED: Color32 = Color32::from_rgb(0x22, 0xD3, 0xEE); // UI "selected" cyan
@@ -105,6 +105,17 @@ pub struct KbResponse {
 /// Reduce a color's alpha by `alpha` (1.0 = unchanged), keeping its hue.
 fn fade(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha).round() as u8)
+}
+
+fn fitted_font(unit: f32, text: &str, base_scale: f32) -> FontId {
+    let n = text.chars().count();
+    let scale = match n {
+        0..=4 => base_scale,
+        5 => base_scale * 0.90,
+        6 => base_scale * 0.80,
+        _ => base_scale * 0.68,
+    };
+    FontId::proportional(unit * scale)
 }
 
 /// `glow[i]` = the color of key `i` (None → unlit). `selected` draws an accent
@@ -236,7 +247,7 @@ pub fn draw_keyboard(
                 )
             };
             if let Some(key) = legends.and_then(|l| l.keys.get(i)) {
-                let labels = labels_for(key);
+                let labels = keycap_labels_for(key);
                 if !labels.tap.is_empty() {
                     let c = center + rot(Vec2::new(0.0, -unit * 0.04), angle);
                     text_rot(
@@ -244,7 +255,7 @@ pub fn draw_keyboard(
                         c,
                         angle,
                         &labels.tap,
-                        FontId::proportional(unit * 0.31),
+                        fitted_font(unit, &labels.tap, 0.31),
                         tap_col,
                     );
                 }
@@ -255,7 +266,7 @@ pub fn draw_keyboard(
                         c,
                         angle,
                         hold,
-                        FontId::proportional(unit * 0.23),
+                        fitted_font(unit, hold, 0.23),
                         hold_col,
                     );
                 }
@@ -403,13 +414,13 @@ fn draw_legends(
     let Some(key) = legends.and_then(|l| l.keys.get(i)) else {
         return;
     };
-    let labels = labels_for(key);
+    let labels = keycap_labels_for(key);
     if !labels.tap.is_empty() {
         painter.text(
             cap.center() - Vec2::new(0.0, unit * 0.04),
             Align2::CENTER_CENTER,
             &labels.tap,
-            FontId::proportional(unit * 0.31),
+            fitted_font(unit, &labels.tap, 0.31),
             tap_color,
         );
     }
@@ -418,7 +429,7 @@ fn draw_legends(
             cap.center_bottom() - Vec2::new(0.0, unit * 0.16),
             Align2::CENTER_CENTER,
             hold,
-            FontId::proportional(unit * 0.23),
+            fitted_font(unit, hold, 0.23),
             hold_color,
         );
     }
