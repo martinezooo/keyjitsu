@@ -206,10 +206,24 @@ fn device_loop(
 
         loop {
             if stop.load(Ordering::SeqCst) {
-                // Shutdown must hand RGB control back to firmware before the
-                // worker exits. Relying on a queued RgbRelease from the GUI is
-                // racy because DeviceWorkerHandle::drop sets this stop flag.
-                if took_over {
+                // App::drop stops Autolayer and queues its layer release before
+                // DeviceWorkerHandle::drop sets this flag. Drain only safety
+                // releases here; never apply stale RGB/layer-on work while
+                // shutting down.
+                let mut rgb_released = false;
+                while let Ok(cmd) = cmd_rx.try_recv() {
+                    match cmd {
+                        KbCmd::SetLayer { on: false, layer } => {
+                            let _ = kb.send(Command::SetLayer { on: false, layer });
+                        }
+                        KbCmd::RgbRelease => {
+                            let _ = kb.send(Command::RgbControl(false));
+                            rgb_released = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if took_over && !rgb_released {
                     let _ = kb.send(Command::RgbControl(false));
                 }
                 kb.disconnect();
