@@ -180,11 +180,13 @@ impl Keyboard {
         let deadline = Instant::now() + Duration::from_millis(300);
         while Instant::now() < deadline {
             if let Some(ev) = self.read_event(Duration::from_millis(50))? {
-                if let Event::Layer(n) = ev {
-                    on_other(Event::Layer(n));
-                    return Ok(Some(n));
+                match ev {
+                    Event::Layer(n) => {
+                        on_other(Event::Layer(n));
+                        return Ok(Some(n));
+                    }
+                    other => on_other(other),
                 }
-                on_other(ev);
             }
         }
         Ok(None)
