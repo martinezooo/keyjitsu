@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use rgb_anim::{Anim, FxEvent};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use eframe::egui::{self, Color32, ProgressBar, RichText};
 
 use std::time::Instant;
@@ -47,10 +47,11 @@ pub fn run(serial: Option<String>) -> Result<()> {
         if crate::macos_kb::heal_stale_guard() {
             eprintln!("keyjitsu: restored the built-in keyboard from a previous session's guard");
         }
-        let _ = ctrlc::set_handler(|| {
+        ctrlc::set_handler(|| {
             crate::macos_kb::force_restore_if_active();
             std::process::exit(0);
-        });
+        })
+        .context("installing built-in keyboard safety handler")?;
         // Restore the built-in keyboard around the lock screen so the guard can
         // never lock you out (login window is always usable; re-disabled on
         // unlock). No-op while the guard is off.
@@ -5108,10 +5109,13 @@ impl App {
             });
             return;
         }
-        let (counts, total) = {
-            let heat = self.heat.as_ref().unwrap();
-            (heat.counts(self.heat_layer, key_count), heat.total_presses())
+        let Some(heat) = self.heat.as_ref() else {
+            return;
         };
+        let (counts, total) = (
+            heat.counts(self.heat_layer, key_count),
+            heat.total_presses(),
+        );
         let norm = normalize(&counts);
         let layer_total: u64 = counts.iter().sum();
         let mut ranked: Vec<(usize, u64)> =
