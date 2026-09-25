@@ -2205,6 +2205,8 @@ impl App {
                     self.connected = None;
                     self.connection_generation = None;
                     self.pressed.iter_mut().for_each(|p| *p = false);
+                    self.combo_down.clear();
+                    self.peek_until = None;
                     let heat_save_error = self
                         .heat
                         .as_mut()
@@ -4114,7 +4116,16 @@ impl App {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if self.build_busy {
-                        if ui.button("✕ Cancel").clicked() {
+                        let flash_is_writing =
+                            matches!(self.flash_state, Some(FlashState::Working { .. }));
+                        if flash_is_writing {
+                            ui.add_enabled(false, egui::Button::new("Flashing…"));
+                            ui.label(
+                                RichText::new("Do not unplug the keyboard while firmware is being written.")
+                                    .size(11.0)
+                                    .color(pal::TEXT_DIM),
+                            );
+                        } else if ui.button("✕ Cancel").clicked() {
                             self.build_cancel.store(true, Ordering::SeqCst);
                             self.flash_cancel.store(true, Ordering::SeqCst);
                             self.build_log.push_str("canceling…\n");
@@ -4135,8 +4146,13 @@ impl App {
         let pending = self.pending_firmware_count();
         if self.build_busy {
             ui.spinner();
-            if ui.button("✕ cancel").clicked() {
+            let flash_is_writing =
+                matches!(self.flash_state, Some(FlashState::Working { .. }));
+            if flash_is_writing {
+                ui.label(RichText::new("flashing…").size(11.0).color(pal::TEXT_DIM));
+            } else if ui.button("✕ cancel").clicked() {
                 self.build_cancel.store(true, Ordering::SeqCst);
+                self.flash_cancel.store(true, Ordering::SeqCst);
                 self.build_log.push_str("canceling…\n");
             }
             return;
