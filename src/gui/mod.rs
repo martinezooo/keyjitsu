@@ -5301,8 +5301,6 @@ impl App {
                     };
                     stat(ui, format_thousands(total), "total presses");
                     stat(ui, top_label.unwrap_or_else(|| "-".into()), "most used key");
-                    let mins = self.app_started.elapsed().as_secs() / 60;
-                    stat(ui, format!("{mins} min"), "this session");
                     // Scope (all layers / per layer) is picked in the sidebar.
                     stat(ui, match self.heat_layer {
                         None => "all layers".to_string(),
@@ -5941,7 +5939,7 @@ impl App {
                 ui,
                 "📚",
                 "Shortcut library",
-                "A reference list of common shortcuts (macOS, editors, terminals, tools) to borrow from when planning a layer. Not what is on your keyboard: edit keys in Live.",
+                "Common shortcuts to borrow when planning layers. Edit keys in Live.",
                 Some(("Reference".to_string(), pal::TEXT_DIM)),
                 self,
                 |ui, app| {
@@ -6519,16 +6517,24 @@ impl App {
         page_header(ui, "Peek", "A transparent, click-through minimap that flashes when a layer activates.");
 
         let mut c = self.peek.clone();
-        // Preview on top (full width), then options left / appearance+position
-        // right - the settings lists stay short and nothing gets cut.
+        // Preview stays full width. Use two columns only when there is enough
+        // room for both setting groups without squeezing their controls.
         self.peek_preview_card(ui, &mut c);
         ui.add_space(8.0);
-        ui.columns(2, |cols| {
-            self.peek_settings_card(&mut cols[0], &mut c);
-            self.peek_appearance_card(&mut cols[1], &mut c);
-            cols[1].add_space(8.0);
-            self.peek_position_card(&mut cols[1], &mut c);
-        });
+        if ui.available_width() >= 760.0 {
+            ui.columns(2, |cols| {
+                self.peek_settings_card(&mut cols[0], &mut c);
+                self.peek_appearance_card(&mut cols[1], &mut c);
+                cols[1].add_space(8.0);
+                self.peek_position_card(&mut cols[1], &mut c);
+            });
+        } else {
+            self.peek_settings_card(ui, &mut c);
+            ui.add_space(8.0);
+            self.peek_appearance_card(ui, &mut c);
+            ui.add_space(8.0);
+            self.peek_position_card(ui, &mut c);
+        }
 
         if c != self.peek {
             self.peek = c.clone();
@@ -6558,9 +6564,9 @@ impl App {
                 toggle_row(ui, "Black & white (high contrast)", &mut c.monochrome);
                 toggle_row(ui, "Show layer name", &mut c.show_layer_name);
                 toggle_row(ui, "Show key legends", &mut c.show_legends);
-                toggle_row(ui, "Combo: show recent presses (hold, double-tap…)", &mut c.show_combo);
+                toggle_row(ui, "Show recent key combos", &mut c.show_combo);
                 ui.add_enabled_ui(c.show_combo, |ui| {
-                    toggle_row(ui, "   ↳ measure: show timings (ms) on the chips", &mut c.show_combo_ms);
+                    toggle_row(ui, "Show combo timings (ms)", &mut c.show_combo_ms);
                 });
             });
         });
