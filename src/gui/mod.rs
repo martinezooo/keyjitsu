@@ -2887,6 +2887,19 @@ fn synth_key(code: &str) -> OryxKey {
             }
         }
     }
+    for (wrapper, hold) in [
+        ("LSFT_T(", "KC_LSFT"), ("RSFT_T(", "KC_RSFT"),
+        ("LCTL_T(", "KC_LCTL"), ("RCTL_T(", "KC_RCTL"),
+        ("LALT_T(", "KC_LALT"), ("RALT_T(", "KC_RALT"),
+        ("LGUI_T(", "KC_LGUI"), ("RGUI_T(", "KC_RGUI"),
+        ("HYPR_T(", "KC_HYPR"), ("MEH_T(", "KC_MEH"),
+    ] {
+        if let Some(tap) = code.strip_prefix(wrapper).and_then(|r| r.strip_suffix(')')) {
+            k.tap = Some(KeyAction { code: Some(tap.to_string()), layer: None, description: None });
+            k.hold = Some(KeyAction { code: Some(hold.to_string()), layer: None, description: None });
+            return k;
+        }
+    }
     k.tap = Some(KeyAction { code: Some(code.to_string()), layer: None, description: None });
     k
 }
@@ -3828,16 +3841,26 @@ impl App {
     /// assignment, so the inspector reflects reality when a key is selected.
     fn sync_editor_from_key(&mut self, layer: u8, i: usize) {
         self.slot_added = [false; 4];
-        self.edit_slots = [None, None, None, None];
-        let Some(key) = self.layer_def(layer).and_then(|l| l.keys.get(i)) else { return };
-        // An action becomes a working keycode: layer actions render as
-        // `CODE(n)` (MO(1), OSL(2)…), plain actions as their code.
+        if let Some(slots) = self.key_dances.get(&(layer, i)) {
+            self.edit_slots = slots.clone();
+            return;
+        }
+
+        let staged = self.key_edits.get(&(layer, i)).map(|code| synth_key(code));
+        let key = staged
+            .as_ref()
+            .or_else(|| self.layer_def(layer).and_then(|l| l.keys.get(i)));
+        let Some(key) = key else {
+            self.edit_slots = [None, None, None, None];
+            return;
+        };
+
         let conv = |a: &Option<crate::oryx_api::KeyAction>| -> Option<String> {
             let a = a.as_ref()?;
             match (a.code.as_deref(), a.layer) {
                 (Some(c), Some(n)) => Some(format!("{c}({n})")),
                 (None, Some(n)) => Some(format!("MO({n})")),
-                (Some(c), None) if c != "KC_TRANSPARENT" && c != "KC_NO" => Some(c.to_string()),
+                (Some(c), None) if c != "KC_TRANSPARENT" => Some(c.to_string()),
                 _ => None,
             }
         };
