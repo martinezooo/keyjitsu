@@ -1585,9 +1585,7 @@ impl App {
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
-                    let result = self
-                        .next_profile_copy_name(&active_label)
-                        .and_then(|clone| {
+                    let result = next_profile_copy_name(&active_label).and_then(|clone| {
                             snapshot_profile(&current)
                                 .and_then(|_| create_profile(&clone))
                         });
@@ -1634,8 +1632,7 @@ impl App {
                 {
                     let name = self.profile_draft.trim().to_string();
                     let current = self.active_profile.clone().unwrap_or_else(|| "default".into());
-                    let result = self
-                        .snapshot_profile(&current)
+                    let result = snapshot_profile(&current)
                         .and_then(|_| create_profile(&name))
                         .and_then(|_| {
                             let active = name.clone();
