@@ -282,8 +282,8 @@ fn apply_dance_tapping_term(source: &str, n: usize) -> String {
     }
 }
 
-/// One generated macro: a custom keycode that, on press, taps every step in
-/// `steps` fully (each a complete press+release via `tap_code16`), in order.
+/// One generated macro: a custom keycode that, on press, executes every step
+/// in `steps` as a complete action (press+release where applicable), in order.
 /// Used for a key whose Tap (or Hold/Double-tap/Tap-hold) slot has more than
 /// one step but ISN'T going through the tap-dance machinery - i.e. a plain
 /// `LAYOUT` position, not a `TD()`. Unlike a dance, there is no tap/hold
@@ -578,15 +578,17 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         // Position 1 points at our custom keycode.
         let layer0 = &out[out.find("[0]").unwrap()..out.find("[1]").unwrap()];
         assert!(layer0.contains("MACRO_KJ_0"));
-        // The enum anchors at SAFE_RANGE, and process_record_user taps both
-        // steps in order on press, then eats the keycode (returns false).
+        // The enum anchors at SAFE_RANGE, and process_record_user executes
+        // both complete actions in order on press, then eats the keycode.
         assert!(out.contains("enum keyjitsu_macro_keycodes"));
         assert!(out.contains("MACRO_KJ_0 = SAFE_RANGE"));
         assert!(out.contains("case MACRO_KJ_0:"));
         let case = &out[out.find("case MACRO_KJ_0:").unwrap()..];
-        let tap_c = case.find("tap_code16(LGUI(KC_C));").unwrap();
-        let tap_bspc = case.find("tap_code16(KC_BSPC);").unwrap();
-        assert!(tap_c < tap_bspc, "steps must fire in the order they were staged");
+        let first = case.find("register_code16(LGUI(KC_C));").unwrap();
+        let second = case.find("register_code16(KC_BSPC);").unwrap();
+        assert!(first < second, "steps must fire in the order they were staged");
+        assert!(case.contains("unregister_code16(LGUI(KC_C));"));
+        assert!(case.contains("unregister_code16(KC_BSPC);"));
         assert!(case.contains("return false;"), "the macro keycode itself must not also register");
         // Defined before first use (process_record_user references it).
         assert!(out.find("enum keyjitsu_macro_keycodes").unwrap() < out.find("process_record_user").unwrap());
@@ -641,8 +643,10 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         let d = DanceSpec { layer: 0, position: 1, tap: Some("KC_A\nKC_B".into()), ..Default::default() };
         let out = apply_dances(SAMPLE, std::slice::from_ref(&d)).unwrap();
         let fin = &out[out.find("dance_kj_0_finished").unwrap()..];
-        assert!(fin.contains("case SINGLE_TAP: tap_code16(KC_A); tap_code16(KC_B); break;"));
-        // No release-side statement for a multi-step tap: nothing was left held.
+        assert!(fin.contains(
+            "case SINGLE_TAP: register_code16(KC_A); unregister_code16(KC_A); register_code16(KC_B); unregister_code16(KC_B); break;"
+        ));
+        // No reset-side statement for a multi-step action: each step completed.
         let rst = &out[out.find("dance_kj_0_reset").unwrap()..];
         let rst_body = &rst[..rst.find('}').unwrap_or(rst.len())];
         assert!(!rst_body.contains("unregister_code16(KC_A)"));
