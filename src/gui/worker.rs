@@ -54,15 +54,51 @@ impl KbCmd {
     }
 }
 
-/// Owns the keyboard on a background thread. Reconnects forever.
+pub struct DeviceWorkerHandle {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for DeviceWorkerHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Owns the keyboard on a background thread and stops cleanly with the GUI.
 pub fn spawn_device_worker(
     serial: Option<String>,
     ctx: egui::Context,
-) -> (Receiver<DevEvent>, Sender<KbCmd>) {
+) -> (Receiver<DevEvent>, Sender<KbCmd>, DeviceWorkerHandle) {
     let (etx, erx) = channel::<DevEvent>();
     let (cmd_tx, cmd_rx) = channel::<KbCmd>();
-    std::thread::spawn(move || device_loop(serial, etx, cmd_rx, ctx));
-    (erx, cmd_tx)
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_t = stop.clone();
+    let thread = std::thread::spawn(move || device_loop(serial, etx, cmd_rx, ctx, stop_t));
+    (
+        erx,
+        cmd_tx,
+        DeviceWorkerHandle {
+            stop,
+            thread: Some(thread),
+        },
+    )
+}
+
+fn sleep_until_rescan(stop: &AtomicBool) -> bool {
+    let mut slept = Duration::ZERO;
+    while slept < RESCAN_INTERVAL {
+        if stop.load(Ordering::SeqCst) {
+            return true;
+        }
+        let step = (RESCAN_INTERVAL - slept).min(Duration::from_millis(50));
+        std::thread::sleep(step);
+        slept += step;
+    }
+    false
 }
 
 fn device_loop(
@@ -70,10 +106,14 @@ fn device_loop(
     etx: Sender<DevEvent>,
     cmd_rx: Receiver<KbCmd>,
     ctx: egui::Context,
+    stop: Arc<AtomicBool>,
 ) {
     let mut was_connected = true; // force an initial Disconnected if nothing is there
     let mut generation = 0u64;
     loop {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
         let kb = match Keyboard::open(serial.as_deref()) {
             Ok(kb) => kb,
             Err(_) => {
@@ -85,7 +125,9 @@ fn device_loop(
                     was_connected = false;
                 }
                 while cmd_rx.try_recv().is_ok() {} // drop stale commands
-                std::thread::sleep(RESCAN_INTERVAL);
+                if sleep_until_rescan(&stop) {
+                    return;
+                }
                 continue;
             }
         };
@@ -99,7 +141,9 @@ fn device_loop(
                 }
                 ctx.request_repaint();
                 was_connected = false;
-                std::thread::sleep(RESCAN_INTERVAL);
+                if sleep_until_rescan(&stop) {
+                    return;
+                }
                 continue;
             }
         };
@@ -114,7 +158,9 @@ fn device_loop(
                 }
                 ctx.request_repaint();
                 was_connected = false;
-                std::thread::sleep(RESCAN_INTERVAL);
+                if sleep_until_rescan(&stop) {
+                    return;
+                }
                 continue;
             }
         };
@@ -159,6 +205,10 @@ fn device_loop(
         let mut last_frame: Vec<[u8; 3]> = vec![[0, 0, 0]; n_leds];
 
         loop {
+            if stop.load(Ordering::SeqCst) {
+                kb.disconnect();
+                return;
+            }
             // Flush pending commands FIRST so LED frames aren't held behind the
             // read timeout. Discrete commands run in order; frames coalesce to
             // the newest (older frames dropped) so the queue can't back up.
