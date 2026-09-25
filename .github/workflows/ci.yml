@@ -10,10 +10,17 @@ permissions:
 
 jobs:
   build-test:
-    name: Build, lint and test (macOS)
-    runs-on: macos-latest
+    name: Build, lint and test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libxkbcommon-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
