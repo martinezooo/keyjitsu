@@ -213,11 +213,11 @@ impl LayoutSource {
         if let Some(hash) = &self.hash {
             return LayoutId::new(hash.clone(), self.rev.clone());
         }
-        let kb = Keyboard::open(serial)?;
-        kb.pair()?;
-        let fw = kb.fw_version()?;
-        kb.disconnect();
-        LayoutId::from_serial(&fw)
+        with_keyboard(serial, |kb| {
+            kb.pair()?;
+            let fw = kb.fw_version()?;
+            LayoutId::from_serial(&fw)
+        })
     }
 }
 
@@ -348,14 +348,25 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+fn with_keyboard<T>(
+    serial: Option<&str>,
+    f: impl FnOnce(&Keyboard) -> Result<T>,
+) -> Result<T> {
+    let kb = Keyboard::open(serial)?;
+    let result = f(&kb);
+    kb.disconnect();
+    result
+}
+
 /// Open + pair, run `f`, then leave a short grace so the last write lands.
 fn with_paired(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<()>) -> Result<()> {
-    let kb = Keyboard::open(serial)?;
-    kb.pair()?;
-    f(&kb)?;
-    // One-shot commands have no ack; give the OS a beat to flush the report.
-    std::thread::sleep(Duration::from_millis(50));
-    Ok(())
+    with_keyboard(serial, |kb| {
+        kb.pair()?;
+        let result = f(kb);
+        // One-shot commands have no ack; give the OS a beat to flush the report.
+        std::thread::sleep(Duration::from_millis(50));
+        result
+    })
 }
 
 fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], dance: &[String], new_layer: &[String]) -> Result<()> {
@@ -363,13 +374,11 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
 
     let revision = match rev {
         Some(r) => r,
-        None => {
-            let kb = Keyboard::open(serial)?;
+        None => with_keyboard(serial, |kb| {
             kb.pair()?;
             let fw = kb.fw_version()?;
-            kb.disconnect();
-            oryx_api::LayoutId::from_serial(&fw)?.revision
-        }
+            Ok(oryx_api::LayoutId::from_serial(&fw)?.revision)
+        })?,
     };
 
     let edits = sets
@@ -450,53 +459,53 @@ fn cmd_list() -> Result<()> {
 }
 
 fn cmd_status(serial: Option<&str>) -> Result<()> {
-    let kb = Keyboard::open(serial)?;
-    println!("Keyboard : {} (pid 0x{:04x})", kb.info.model(), kb.info.pid);
-    if let Some(s) = &kb.info.serial {
-        println!("Serial   : {s}");
-    }
-    let proto = kb.protocol_version()?;
-    print!("Protocol : v{proto}");
-    if proto != PROTOCOL_VERSION {
-        print!("  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)");
-    }
-    println!();
-    let layer = kb.pair()?;
-    println!("Firmware : {}", kb.fw_version()?);
-    match layer {
-        Some(n) => println!("Layer    : {n}"),
-        None => println!("Layer    : (not reported)"),
-    }
-    kb.disconnect();
-    Ok(())
+    with_keyboard(serial, |kb| {
+        println!("Keyboard : {} (pid 0x{:04x})", kb.info.model(), kb.info.pid);
+        if let Some(s) = &kb.info.serial {
+            println!("Serial   : {s}");
+        }
+        let proto = kb.protocol_version()?;
+        print!("Protocol : v{proto}");
+        if proto != PROTOCOL_VERSION {
+            print!("  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)");
+        }
+        println!();
+        let layer = kb.pair()?;
+        println!("Firmware : {}", kb.fw_version()?);
+        match layer {
+            Some(n) => println!("Layer    : {n}"),
+            None => println!("Layer    : (not reported)"),
+        }
+        Ok(())
+    })
 }
 
 fn cmd_watch(serial: Option<&str>, json: bool) -> Result<()> {
-    let kb = Keyboard::open(serial)?;
-    kb.pair()?;
-    if !json {
-        eprintln!(
-            "Watching {} - press keys on the keyboard. Ctrl+C to stop.",
-            kb.info.model()
-        );
-    }
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))?;
-
-    while running.load(Ordering::SeqCst) {
-        let Some(ev) = kb.read_event(Duration::from_millis(200))? else {
-            continue;
-        };
-        if json {
-            println!("{}", event_json(&ev));
-        } else {
-            print_event(&ev);
+    with_keyboard(serial, |kb| {
+        kb.pair()?;
+        if !json {
+            eprintln!(
+                "Watching {} - press keys on the keyboard. Ctrl+C to stop.",
+                kb.info.model()
+            );
         }
-    }
-    kb.disconnect();
-    Ok(())
+
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))?;
+
+        while running.load(Ordering::SeqCst) {
+            let Some(ev) = kb.read_event(Duration::from_millis(200))? else {
+                continue;
+            };
+            if json {
+                println!("{}", event_json(&ev));
+            } else {
+                print_event(&ev);
+            }
+        }
+        Ok(())
+    })
 }
 
 fn cmd_layout(
