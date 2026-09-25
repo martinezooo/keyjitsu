@@ -841,7 +841,7 @@ impl App {
         let Some(i) = self.custom_index(n) else { return };
         let cl = &mut self.custom_layers[i];
         cl.keys.retain(|k| k.key != key as u16);
-        if !code.is_empty() && code != "KC_NO" && code != "KC_TRANSPARENT" {
+        if !code.is_empty() && code != "KC_TRANSPARENT" && code != "KC_TRNS" {
             cl.keys.push(config::CustomKey { key: key as u16, code: code.to_string() });
         }
         self.save_custom_layers();
@@ -3937,11 +3937,7 @@ impl App {
         }
         self.key_dances.remove(&(layer, key));
         let (code, _) = self.compose_slots();
-        if code == "KC_NO" {
-            self.key_edits.remove(&(layer, key));
-        } else {
-            self.key_edits.insert((layer, key), code);
-        }
+        self.key_edits.insert((layer, key), code);
         self.save_staged();
     }
 
