@@ -6577,7 +6577,7 @@ impl App {
     fn peek_monitor_combo(&self, ui: &mut egui::Ui, monitor: &mut usize) {
         let mons = &self.monitors_cache;
         if mons.is_empty() {
-            ui.weak("current monitor (automatic)");
+            ui.weak("display fallback (multi-monitor unverified)");
             *monitor = 0;
             return;
         }
