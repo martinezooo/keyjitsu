@@ -6843,6 +6843,12 @@ impl Drop for App {
                 eprintln!("keyjitsu: could not save heatmap on exit: {e:#}");
             }
         }
+
+        // Stop the autolayer watcher while the device worker is still alive so
+        // its final SetLayer(false) can be delivered. DeviceWorkerHandle::drop
+        // then drains release-only commands before disconnecting.
+        self.autolayer.take();
+
         // Hand the LEDs back to the firmware on exit (in case an effect or glow
         // sync had taken them over).
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
