@@ -54,10 +54,17 @@ fn action_stmts(code: &str) -> (String, String) {
         return (taps.trim_end().to_string(), String::new());
     }
     // Momentary-style: on at press, off at release.
-    for pfx in ["MO(", "OSL("] {
-        if let Some(n) = code.strip_prefix(pfx).and_then(|r| r.strip_suffix(')')) {
-            return (format!("layer_on({});", n.trim()), format!("layer_off({});", n.trim()));
-        }
+    if let Some(n) = code.strip_prefix("MO(").and_then(|r| r.strip_suffix(')')) {
+        return (format!("layer_on({});", n.trim()), format!("layer_off({});", n.trim()));
+    }
+    // Preserve QMK one-shot semantics instead of treating OSL as a momentary
+    // layer. When one-shot keys are disabled, QMK itself falls back to MO.
+    if let Some(n) = code.strip_prefix("OSL(").and_then(|r| r.strip_suffix(')')) {
+        let n = n.trim();
+        return (
+            format!("if (is_oneshot_enabled()) {{ set_oneshot_layer({n}, ONESHOT_START); }} else {{ layer_on({n}); }}"),
+            format!("if (is_oneshot_enabled()) {{ clear_oneshot_layer_state(ONESHOT_PRESSED); }} else {{ layer_off({n}); }}"),
+        );
     }
     // A layer-tap held inside a dance = hold half = momentary that layer.
     if let Some(rest) = code.strip_prefix("LT(").and_then(|r| r.strip_suffix(')')) {
@@ -75,7 +82,8 @@ fn action_stmts(code: &str) -> (String, String) {
         }
     }
     if let Some(n) = code.strip_prefix("DF(").and_then(|r| r.strip_suffix(')')) {
-        return (format!("default_layer_set({});", n.trim()), String::new());
+        // default_layer_set() takes a layer-state bitmask, not a layer index.
+        return (format!("default_layer_set(1UL << {});", n.trim()), String::new());
     }
     (format!("register_code16({code});"), format!("unregister_code16({code});"))
 }
@@ -710,8 +718,16 @@ tap_dance_action_t tap_dance_actions[] = {{
         assert_eq!(action_stmts("KC_A"), ("register_code16(KC_A);".into(), "unregister_code16(KC_A);".into()));
         // Layer families that used to fall through to register_code16:
         assert_eq!(action_stmts("LT(2,KC_A)"), ("layer_on(2);".into(), "layer_off(2);".into()));
+        assert_eq!(
+            action_stmts("OSL(2)"),
+            (
+                "if (is_oneshot_enabled()) { set_oneshot_layer(2, ONESHOT_START); } else { layer_on(2); }".into(),
+                "if (is_oneshot_enabled()) { clear_oneshot_layer_state(ONESHOT_PRESSED); } else { layer_off(2); }".into(),
+            )
+        );
         assert_eq!(action_stmts("TT(3)"), ("layer_invert(3);".into(), String::new()));
-        assert_eq!(action_stmts("DF(1)"), ("default_layer_set(1);".into(), String::new()));
+        assert_eq!(action_stmts("DF(0)"), ("default_layer_set(1UL << 0);".into(), String::new()));
+        assert_eq!(action_stmts("DF(3)"), ("default_layer_set(1UL << 3);".into(), String::new()));
     }
 
     #[test]
