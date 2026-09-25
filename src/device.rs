@@ -162,39 +162,58 @@ impl Keyboard {
         }
     }
 
-    /// Pair with the keyboard (required before it streams events). Returns
-    /// the active layer if the firmware announced it right after pairing.
-    pub fn pair(&self) -> Result<Option<u8>> {
+    pub fn pair_with_events(
+        &self,
+        mut on_other: impl FnMut(Event),
+    ) -> Result<Option<u8>> {
         self.request(
             Command::PairingInit,
             Duration::from_secs(2),
             |e| matches!(e, Event::PairingSuccess | Event::PairingFailed),
-            |_| {},
+            &mut on_other,
         )
         .and_then(|ev| match ev {
             Event::PairingSuccess => Ok(()),
             _ => bail!("keyboard refused pairing"),
         })?;
-        // Firmware follows success with a layer announcement; grab it if quick.
+
         let deadline = Instant::now() + Duration::from_millis(300);
         while Instant::now() < deadline {
-            if let Some(Event::Layer(n)) = self.read_event(Duration::from_millis(50))? { return Ok(Some(n)) }
+            if let Some(ev) = self.read_event(Duration::from_millis(50))? {
+                if let Event::Layer(n) = ev {
+                    on_other(Event::Layer(n));
+                    return Ok(Some(n));
+                }
+                on_other(ev);
+            }
         }
         Ok(None)
+    }
+
+    /// Pair with the keyboard (required before it streams events).
+    pub fn pair(&self) -> Result<Option<u8>> {
+        self.pair_with_events(|_| {})
+    }
+
+    pub fn fw_version_with_events(
+        &self,
+        on_other: impl FnMut(Event),
+    ) -> Result<String> {
+        match self.request(
+            Command::GetFwVersion,
+            Duration::from_secs(2),
+            |e| matches!(e, Event::FwVersion(_)),
+            on_other,
+        )? {
+            Event::FwVersion(s) => Ok(s),
+            other => bail!("unexpected firmware-version response: {other:?}"),
+        }
     }
 
     /// Firmware "version" string (`SERIAL_NUMBER`), which for Oryx-built
     /// firmware embeds the layout id.
     pub fn fw_version(&self) -> Result<String> {
-        match self.request(
-            Command::GetFwVersion,
-            Duration::from_secs(2),
-            |e| matches!(e, Event::FwVersion(_)),
-            |_| {},
-        )? {
-            Event::FwVersion(s) => Ok(s),
-            other => bail!("unexpected firmware-version response: {other:?}"),
-        }
+        self.fw_version_with_events(|_| {})
     }
 
     /// Politely tell the firmware to stop streaming (clears paired state).
