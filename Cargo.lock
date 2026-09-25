@@ -1026,6 +1026,7 @@ dependencies = [
  "bitflags 2.13.0",
  "block2 0.6.2",
  "libc",
+ "nusb",
  "objc2 0.6.4",
 ]
 
