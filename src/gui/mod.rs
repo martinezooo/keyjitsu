@@ -6614,8 +6614,13 @@ impl App {
     /// (from the cached list).
     fn peek_monitor_combo(&self, ui: &mut egui::Ui, monitor: &mut usize) {
         let mons = &self.monitors_cache;
-        if mons.len() <= 1 {
-            ui.weak("only one monitor");
+        if mons.is_empty() {
+            ui.weak("current monitor (automatic)");
+            *monitor = 0;
+            return;
+        }
+        if mons.len() == 1 {
+            ui.weak(mons[0].label(0));
             *monitor = 0;
             return;
         }
@@ -6682,8 +6687,8 @@ impl App {
             return;
         }
 
-        // Ready - power-user actions. Everything here runs on this Mac; the
-        // only network is an anonymous read of the generated QMK source.
+        // Ready - power-user actions. Everything here runs locally; the only
+        // network is an anonymous read of the generated QMK source.
         ui.add_space(4.0);
         let pending = self.pending_firmware_count();
         if self.firmware_state_unknown {
