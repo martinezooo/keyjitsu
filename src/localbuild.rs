@@ -326,16 +326,23 @@ fn set_rule(rules: &str, key: &str, value: &str) -> String {
 /// All files inside the generated `*_source/` directory of Oryx's zip, as
 /// `(basename, bytes)`. Non-source extras (the prebuilt .bin, build.log,
 /// README) are skipped.
-fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
+fn validate_revision_id(revision: &str) -> Result<()> {
     // Keep the revision safe both as an URL segment and as part of a cache
     // filename. Oryx revision ids are short opaque identifiers; accepting
     // punctuation here only creates filesystem/URL ambiguity.
     if revision.is_empty()
         || revision.len() > 128
-        || !revision.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || !revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         bail!("invalid revision id {revision:?}");
     }
+    Ok(())
+}
+
+fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    validate_revision_id(revision)?;
     // Cache the zip so rebuilds are offline - but only once it's validated as a
     // real zip, so a truncated download / captive-portal HTML page can't poison
     // the cache and make every future build of this revision fail.
@@ -490,7 +497,18 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
 #[cfg(test)]
 mod tests {
-    use super::set_rule;
+    use super::{set_rule, validate_revision_id};
+
+    #[test]
+    fn generated_source_revision_is_safe_for_url_and_cache_paths() {
+        assert!(validate_revision_id("wODgzD").is_ok());
+        assert!(validate_revision_id("rev-1_test").is_ok());
+        assert!(validate_revision_id("").is_err());
+        assert!(validate_revision_id("../../escape").is_err());
+        assert!(validate_revision_id("rev/other").is_err());
+        assert!(validate_revision_id("rev?query").is_err());
+        assert!(validate_revision_id(&"a".repeat(129)).is_err());
+    }
 
     #[test]
     fn replaces_existing_rule_regardless_of_value() {
