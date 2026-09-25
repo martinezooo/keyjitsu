@@ -539,7 +539,10 @@ impl App {
         setup_style(&cc.egui_ctx);
         setup_fonts(&cc.egui_ctx);
         let (erx, cmd_tx) = worker::spawn_device_worker(serial, cc.egui_ctx.clone());
-        let cfg = config::load();
+        let (cfg, config_load_error) = match config::load_checked() {
+            Ok(cfg) => (cfg, None),
+            Err(e) => (config::Config::default(), Some(format!("loading config: {e:#}"))),
+        };
         let key_count = geometry::voyager().len();
         // RGB animation engine: a background thread drives the LEDs when an
         // effect is active (Off by default, so it just idles).
@@ -613,7 +616,7 @@ impl App {
             keys_adding: false,
             profile_draft: String::new(),
             profile_error: None,
-            persist_error: None,
+            persist_error: config_load_error,
             autostart_error: None,
             update_rx: None,
             update_state: None,
@@ -1151,13 +1154,12 @@ impl App {
         });
         self.save_staged();
 
-        let mut cfg = config::load();
-        let before = cfg.custom_layer_sets.len();
-        cfg.custom_layer_sets
-            .retain(|set| !(set.layout == state.layout_hash && set.layers == state.custom_layers));
-        if cfg.custom_layer_sets.len() != before {
-            let _ = config::save(&cfg);
-        }
+        let layout_hash = state.layout_hash.clone();
+        let custom_layers = state.custom_layers.clone();
+        self.persist_config("confirming applied custom layers", move |cfg| {
+            cfg.custom_layer_sets
+                .retain(|set| !(set.layout == layout_hash && set.layers == custom_layers));
+        });
     }
 
     /// Load this layout's staged (not-yet-built) remaps and tap dances into the
@@ -1440,7 +1442,8 @@ impl App {
     fn snapshot_profile(&self, name: &str) -> Result<()> {
         let dir = profiles_dir().ok_or_else(|| anyhow!("cannot determine profile directory"))?;
         std::fs::create_dir_all(&dir)?;
-        let profile = config::Profile::from_config(&config::load());
+        let cfg = config::load_checked()?;
+        let profile = config::Profile::from_config(&cfg);
         let json = serde_json::to_vec_pretty(&profile)?;
         let path = dir.join(format!("{}.json", safe_profile_name(name)));
         config::write_atomic(&path, &json)?;
@@ -1469,10 +1472,12 @@ impl App {
             }
         };
 
-        let mut cfg = config::load();
-        profile.apply_to(&mut cfg);
-        cfg.active_profile = target.clone();
-        if let Err(e) = config::save(&cfg) {
+        let profile_for_config = profile.clone();
+        let active_profile = target.clone();
+        if let Err(e) = config::update(move |cfg| {
+            profile_for_config.apply_to(cfg);
+            cfg.active_profile = active_profile;
+        }) {
             self.profile_error = Some(format!("could not activate {target_name}: {e:#}"));
             return;
         }
@@ -1552,9 +1557,8 @@ impl App {
                         .snapshot_profile(&current)
                         .and_then(|_| self.snapshot_profile(&name))
                         .and_then(|_| {
-                            let mut cfg = config::load();
-                            cfg.active_profile = Some(name.clone());
-                            config::save(&cfg)
+                            let active = name.clone();
+                            config::update(move |cfg| cfg.active_profile = Some(active))
                         });
                     match result {
                         Ok(()) => {
@@ -1671,9 +1675,9 @@ impl App {
                         .clicked()
                 {
                     self.hidden_shortcuts.clear();
-                    let mut cfg = config::load();
-                    cfg.hidden_shortcuts.clear();
-                    let _ = config::save(&cfg);
+                    self.persist_config("restoring hidden shortcuts", |cfg| {
+                        cfg.hidden_shortcuts.clear();
+                    });
                 }
             });
         });
@@ -1806,9 +1810,10 @@ impl App {
         }
         if let Some(id) = hide {
             self.hidden_shortcuts.push(id);
-            let mut cfg = config::load();
-            cfg.hidden_shortcuts = self.hidden_shortcuts.clone();
-            let _ = config::save(&cfg);
+            let hidden = self.hidden_shortcuts.clone();
+            self.persist_config("hiding shortcut", move |cfg| {
+                cfg.hidden_shortcuts = hidden;
+            });
         }
         ui.add_space(10.0);
     }
@@ -2049,11 +2054,12 @@ impl App {
                         self.hydrate_staged(&id.hash);
                         self.drop_applied_from_staged();
 
-                        let mut cfg = config::load();
-                        if cfg.last_layout.as_deref() != Some(serial.as_str()) {
-                            cfg.last_layout = Some(serial.clone());
-                            let _ = config::save(&cfg);
-                        }
+                        let last_layout = serial.clone();
+                        self.persist_config("remembering the connected layout", move |cfg| {
+                            if cfg.last_layout.as_deref() != Some(last_layout.as_str()) {
+                                cfg.last_layout = Some(last_layout);
+                            }
+                        });
                     } else {
                         self.layout = None;
                         self.firmware_state = None;
@@ -2162,10 +2168,11 @@ impl App {
                     if self.binding_overlay && !self.binding_draft.is_empty() {
                         self.binding_overlay = false;
                         self.overlay_chord = std::mem::take(&mut self.binding_draft);
-                        let mut cfg = config::load();
-                        cfg.overlay_chord = self.overlay_chord.clone();
-                        cfg.overlay_trigger = self.overlay_chord.first().copied();
-                        let _ = config::save(&cfg);
+                        let chord = self.overlay_chord.clone();
+                        self.persist_config("saving peek shortcut", move |cfg| {
+                            cfg.overlay_trigger = chord.first().copied();
+                            cfg.overlay_chord = chord;
+                        });
                     } else if self.overlay_chord.contains(&[row, col]) {
                         self.peek_until = Some(Instant::now());
                     }
@@ -5509,9 +5516,10 @@ impl App {
             .color(pal::TEXT_DIM),
         );
         if toggle_row(ui, "Check for updates when keyjitsu starts", &mut self.auto_update_check) {
-            let mut cfg = config::load();
-            cfg.skip_update_check_on_start = !self.auto_update_check;
-            let _ = config::save(&cfg);
+            let skip = !self.auto_update_check;
+            self.persist_config("saving update preference", move |cfg| {
+                cfg.skip_update_check_on_start = skip;
+            });
         }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -5565,9 +5573,10 @@ impl App {
         });
         ui.add_space(4.0);
         if toggle_row(ui, "Show CPU in the header (always visible)", &mut self.show_cpu_header) {
-            let mut cfg = config::load();
-            cfg.show_cpu_header = self.show_cpu_header;
-            let _ = config::save(&cfg);
+            let show = self.show_cpu_header;
+            self.persist_config("saving CPU display preference", move |cfg| {
+                cfg.show_cpu_header = show;
+            });
         }
         ui.add_space(6.0);
 
@@ -5740,9 +5749,10 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             if toggle_row(ui, "Disable built-in keyboard while connected", &mut self.guard_enabled) {
-                let mut cfg = config::load();
-                cfg.guard_enabled = self.guard_enabled;
-                let _ = config::save(&cfg);
+                let enabled = self.guard_enabled;
+                self.persist_config("saving keyboard guard preference", move |cfg| {
+                    cfg.guard_enabled = enabled;
+                });
             }
             if let Some(g) = &self.guard {
                 if self.guard_hidutil_ok {
@@ -5850,9 +5860,10 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             if toggle_row(ui, "Enable autolayer", &mut self.autolayer_enabled) {
-                let mut cfg = config::load();
-                cfg.autolayer_enabled = self.autolayer_enabled;
-                let _ = config::save(&cfg);
+                let enabled = self.autolayer_enabled;
+                self.persist_config("saving autolayer preference", move |cfg| {
+                    cfg.autolayer_enabled = enabled;
+                });
             }
             // Live feedback: what the frontmost app is and whether a rule hits.
             if self.autolayer_enabled {
@@ -5931,11 +5942,11 @@ impl App {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new(RichText::new("Save & apply").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
-                        let mut cfg = config::load();
-                        cfg.autolayer_rules = self.rules.clone();
-                        if config::save(&cfg).is_ok() {
+                        let rules = self.rules.clone();
+                        if self.persist_config("saving autolayer rules", move |cfg| {
+                            cfg.autolayer_rules = rules;
+                        }) {
                             self.rules_dirty = false;
-                            // Restart the watcher so it picks up the new rules.
                             self.autolayer = None;
                         }
                     }
@@ -5971,9 +5982,9 @@ impl App {
             } else {
                 self.peek_until = None;
             }
-            let mut cfg = config::load();
-            cfg.peek = c;
-            let _ = config::save(&cfg);
+            self.persist_config("saving peek settings", move |cfg| {
+                cfg.peek = c;
+            });
         }
 
     }
@@ -6082,10 +6093,10 @@ impl App {
                 }
                 if ui.button("✕ clear").clicked() {
                     self.overlay_chord.clear();
-                    let mut cfg = config::load();
-                    cfg.overlay_chord.clear();
-                    cfg.overlay_trigger = None;
-                    let _ = config::save(&cfg);
+                    self.persist_config("clearing peek shortcut", |cfg| {
+                        cfg.overlay_chord.clear();
+                        cfg.overlay_trigger = None;
+                    });
                 }
             } else {
                 ui.weak("no shortcut");
