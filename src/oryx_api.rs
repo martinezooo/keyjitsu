@@ -77,6 +77,18 @@ pub struct LayoutId {
 }
 
 impl LayoutId {
+    fn validate_part(kind: &str, value: &str) -> Result<()> {
+        if value.is_empty()
+            || value.len() > 128
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            bail!("invalid Oryx {kind} {value:?}");
+        }
+        Ok(())
+    }
+
     pub fn from_serial(serial: &str) -> Result<LayoutId> {
         match serial.split_once('/') {
             Some((h, r)) if !h.is_empty() && !r.is_empty() => {
@@ -84,6 +96,8 @@ impl LayoutId {
                 if revision.is_empty() {
                     bail!("keyboard serial {serial:?} has an empty revision before the Keyjitsu state marker");
                 }
+                Self::validate_part("layout hash", h)?;
+                Self::validate_part("revision", revision)?;
                 Ok(LayoutId {
                     hash: h.to_string(),
                     revision: revision.to_string(),
@@ -108,6 +122,8 @@ impl LayoutId {
             .filter(|h| !h.is_empty())
             .ok_or_else(|| anyhow!("no layout hash after /layouts/ in {url:?}"))?;
         let revision = parts.get(i + 2).copied().unwrap_or("latest");
+        Self::validate_part("layout hash", hash)?;
+        Self::validate_part("revision", revision)?;
         Ok(LayoutId {
             hash: hash.to_string(),
             revision: revision.to_string(),
@@ -225,6 +241,9 @@ mod tests {
         assert_eq!(keyed.hash, "xBrnx");
         assert_eq!(keyed.revision, "wODgzD");
         assert!(LayoutId::from_serial("garbage").is_err());
+        assert!(LayoutId::from_serial("layout/rev/../../escape").is_err());
+        assert!(LayoutId::from_serial("layout/..").is_err());
+        assert!(LayoutId::from_serial("layout/rev with spaces").is_err());
     }
 
     #[test]
@@ -235,6 +254,10 @@ mod tests {
         assert_eq!(id.revision, "latest");
         let id2 = LayoutId::from_url("https://configure.zsa.io/voyager/layouts/AbCdE").unwrap();
         assert_eq!(id2.revision, "latest");
+        assert!(LayoutId::from_url(
+            "https://configure.zsa.io/voyager/layouts/../../escape"
+        )
+        .is_err());
     }
 
     #[test]
