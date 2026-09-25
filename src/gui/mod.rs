@@ -6242,9 +6242,12 @@ impl App {
                 ui.colored_label(pal::AMBER, "Needs the Input Monitoring permission to test.");
                 ui.horizontal(|ui| {
                     if ui.button("Open Input Monitoring settings").clicked() {
-                        let _ = std::process::Command::new("open")
-                            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
-                            .spawn();
+                        if let Err(e) = crate::platform::open_url(
+                            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+                        ) {
+                            self.guard_error =
+                                Some(format!("could not open Input Monitoring settings: {e:#}"));
+                        }
                     }
                     if ui.button("Test again").clicked() {
                         self.start_guard_test();
