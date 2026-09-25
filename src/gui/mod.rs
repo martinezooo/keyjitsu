@@ -245,10 +245,8 @@ struct App {
     build_log: String,
     build_busy: bool,
     build_flash_after: bool,
-    /// True while the in-flight flash is a direct continuation of OUR just-
-    /// completed build (not the separate "flash any file/URL" modal), so
-    /// only THAT completion clears the staged edits it just applied.
-    flash_is_build_continuation: bool,
+    build_state_id: Option<String>,
+    expected_firmware_state: Option<String>,
     last_build_bin: Option<std::path::PathBuf>,
     build_cancel: Arc<AtomicBool>,
     /// Build/flash progress modal: open, current phase, 0..1 progress, and a
@@ -651,7 +649,8 @@ impl App {
             build_log: String::new(),
             build_busy: false,
             build_flash_after: true,
-            flash_is_build_continuation: false,
+            build_state_id: None,
+            expected_firmware_state: None,
             build_open: false,
             build_phase: String::new(),
             build_progress: 0.0,
@@ -2089,6 +2088,20 @@ impl App {
                             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
                         self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
 
+                        if let Some(expected) = self.expected_firmware_state.take() {
+                            if state_marker == Some(expected.as_str()) {
+                                self.build_phase = "Firmware confirmed ✓".into();
+                                self.build_result = Some(Ok(
+                                    "Firmware flashed and confirmed by the keyboard.".into(),
+                                ));
+                            } else {
+                                self.build_phase = "Firmware not confirmed".into();
+                                self.build_result = Some(Err(
+                                    "The keyboard reconnected with a different firmware state. Pending changes were kept.".into(),
+                                ));
+                            }
+                        }
+
                         self.layout = crate::oryx_api::cached_layout(&id, "voyager");
 
                         self.hydrate_custom_layers(&id.hash);
@@ -2241,18 +2254,21 @@ impl App {
                 }
                 Some(FlashState::Done) => {
                     self.build_busy = false;
-                    self.build_phase = "Flashed ✓".into();
                     self.build_progress = 1.0;
-                    self.build_result = Some(Ok("Firmware flashed - the keyboard will reconnect.".into()));
-                    // A successful flash only means the bootloader accepted
-                    // the image. Keep staged edits until the keyboard reconnects
-                    // and reports the matching firmware-state identity.
-                    if self.flash_is_build_continuation {
-                        self.flash_is_build_continuation = false;
+                    if self.expected_firmware_state.is_some() {
+                        self.build_phase = "Flashed - waiting for reconnect…".into();
+                        self.build_result = Some(Ok(
+                            "Firmware was written. Waiting for the keyboard to confirm the new state.".into(),
+                        ));
+                    } else {
+                        self.build_phase = "Flashed ✓".into();
+                        self.build_result = Some(Ok("Firmware flashed - the keyboard will reconnect.".into()));
                     }
                 }
                 Some(FlashState::Failed(e)) => {
                     self.build_busy = false;
+                    self.build_state_id = None;
+                    self.expected_firmware_state = None;
                     self.build_phase = "Flash failed".into();
                     self.build_result = Some(Err(e.clone()));
                 }
@@ -2274,12 +2290,12 @@ impl App {
                     BuildMsg::Built(bin) => {
                         self.last_build_bin = Some(bin.clone());
                         if self.build_flash_after {
+                            self.expected_firmware_state = self.build_state_id.clone();
                             self.build_phase = "Compiled - flashing…".into();
                             self.build_progress = 0.97;
                             self.build_log.push_str("✓ compiled - flashing…\n");
                             self.flash_state = None;
                             self.flash_cancel = Arc::new(AtomicBool::new(false));
-                            self.flash_is_build_continuation = true;
                             self.flash_rx = Some(worker::spawn_flash(
                                 Some(bin.to_string_lossy().into_owned()),
                                 false,
@@ -2288,6 +2304,7 @@ impl App {
                             ));
                         } else {
                             self.build_busy = false;
+                            self.build_state_id = None;
                             self.build_phase = "Done".into();
                             self.build_progress = 1.0;
                             self.build_result = Some(Ok(format!("Built {}", bin.display())));
@@ -2297,6 +2314,8 @@ impl App {
                     BuildMsg::Failed(e) => {
                         self.build_log.push_str(&format!("✗ {e}\n"));
                         self.build_busy = false;
+                        self.build_state_id = None;
+                        self.expected_firmware_state = None;
                         self.build_phase = "Failed".into();
                         self.build_result = Some(Err(e));
                     }
@@ -4673,6 +4692,7 @@ impl App {
                 return;
             }
         };
+        self.build_state_id = Some(state_id.clone());
         let firmware_serial = format!(
             "{}/{}{}{}",
             id.hash,
@@ -4727,6 +4747,8 @@ impl App {
             })
             .collect();
         self.build_log.clear();
+        self.last_build_bin = None;
+        self.expected_firmware_state = None;
         self.build_busy = true;
         self.build_flash_after = flash_after;
         self.build_open = true;
@@ -6466,7 +6488,6 @@ impl App {
             {
                 self.flash_state = None;
                 self.flash_cancel = Arc::new(AtomicBool::new(false));
-                self.flash_is_build_continuation = false;
                 self.flash_rx =
                     Some(worker::spawn_flash(None, true, self.flash_cancel.clone(), ui.ctx().clone()));
             }
@@ -6474,7 +6495,6 @@ impl App {
             if ui.add_enabled(can_input, egui::Button::new("flash from URL/file")).clicked() {
                 self.flash_state = None;
                 self.flash_cancel = Arc::new(AtomicBool::new(false));
-                self.flash_is_build_continuation = false;
                 self.flash_rx = Some(worker::spawn_flash(
                     Some(self.flash_input.trim().to_string()),
                     false,
