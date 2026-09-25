@@ -45,7 +45,7 @@ pub struct BuildEnv {
 
 impl BuildEnv {
     pub fn is_ready(&self) -> bool {
-        self.qmk_cli && self.firmware_dir.is_some()
+        self.qmk_cli && self.arm_gcc && self.firmware_dir.is_some()
     }
 }
 
@@ -138,6 +138,9 @@ pub fn build(
         .ok_or_else(|| anyhow!("no qmk_firmware checkout found - run `qmk setup` (see Tools)"))?;
     if !env.qmk_cli {
         bail!("the `qmk` CLI isn't installed - see Tools for setup");
+    }
+    if !env.arm_gcc {
+        bail!("the ARM GCC toolchain isn't installed - see Tools for setup");
     }
 
     log(format!("Fetching generated source for revision {revision}…"));
