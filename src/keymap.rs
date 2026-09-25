@@ -45,6 +45,26 @@ fn is_layer_switch(code: &str) -> bool {
 /// The (press, release) C statements for an action keycode inside a tap dance.
 /// Layer-switch families become real layer ops (a raw `register_code16(MO(1))`
 /// would NOT switch layers); everything else is a plain keycode.
+fn validate_dance_action(code: &str) -> Result<()> {
+    for step in code.split('\n').map(str::trim).filter(|step| !step.is_empty()) {
+        let nested_tap_hold = step.starts_with("TT(")
+            || step.starts_with("LT(")
+            || step.starts_with("MT(")
+            || [
+                "LCTL_T(", "RCTL_T(", "LSFT_T(", "RSFT_T(", "LALT_T(", "RALT_T(",
+                "LGUI_T(", "RGUI_T(", "HYPR_T(", "MEH_T(",
+            ]
+            .iter()
+            .any(|prefix| step.starts_with(prefix));
+        if nested_tap_hold {
+            bail!(
+                "{step} cannot be nested inside a generated tap dance; use the separate Tap/Hold slots or a plain key assignment"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn action_stmts(code: &str) -> (String, String) {
     // A multi-step macro (see MacroSpec): tap every step fully, in order, the
     // moment the dance resolves - nothing is left held, so there is no
@@ -73,6 +93,13 @@ fn action_stmts(code: &str) -> (String, String) {
         return (
             format!("if (is_oneshot_enabled()) {{ set_oneshot_layer({n}, ONESHOT_START); }} else {{ layer_on({n}); }}"),
             format!("if (is_oneshot_enabled()) {{ clear_oneshot_layer_state(ONESHOT_PRESSED); }} else {{ layer_off({n}); }}"),
+        );
+    }
+    if let Some(mods) = code.strip_prefix("OSM(").and_then(|r| r.strip_suffix(')')) {
+        let mods = mods.trim();
+        return (
+            format!("if (is_oneshot_enabled()) {{ set_oneshot_mods({mods}); }} else {{ register_mods({mods}); }}"),
+            format!("if (!is_oneshot_enabled()) {{ unregister_mods({mods}); }}"),
         );
     }
     // A layer-tap held inside a dance = hold half = momentary that layer.
@@ -104,6 +131,20 @@ fn action_stmts(code: &str) -> (String, String) {
 pub fn apply_dances(source: &str, dances: &[DanceSpec]) -> Result<String> {
     if dances.is_empty() {
         return Ok(source.to_string());
+    }
+    for (index, dance) in dances.iter().enumerate() {
+        for (slot, code) in [
+            ("tap", &dance.tap),
+            ("hold", &dance.hold),
+            ("double tap", &dance.double_tap),
+            ("tap-hold", &dance.tap_hold),
+        ] {
+            if let Some(code) = code {
+                validate_dance_action(code).map_err(|e| {
+                    anyhow!("tap dance {} {slot}: {e}", index + 1)
+                })?;
+            }
+        }
     }
     let mut out = source.to_string();
 
@@ -824,6 +865,20 @@ tap_dance_action_t tap_dance_actions[] = {{
     }
 
     #[test]
+    fn generated_dances_reject_nested_tap_hold_keycodes() {
+        for code in ["TT(2)", "LT(2,KC_A)", "LGUI_T(KC_SPC)", "MT(MOD_LSFT,KC_A)"] {
+            let dance = DanceSpec {
+                layer: 0,
+                position: 1,
+                tap: Some(code.into()),
+                ..Default::default()
+            };
+            let err = apply_dances(SAMPLE, &[dance]).unwrap_err().to_string();
+            assert!(err.contains("cannot be nested inside a generated tap dance"));
+        }
+    }
+
+    #[test]
     fn action_stmts_variants() {
         assert_eq!(action_stmts("MO(2)"), ("layer_on(2);".into(), "layer_off(2);".into()));
         assert_eq!(action_stmts("TO(1)"), ("layer_move(1);".into(), String::new()));
@@ -835,6 +890,13 @@ tap_dance_action_t tap_dance_actions[] = {{
             (
                 "if (is_oneshot_enabled()) { set_oneshot_layer(2, ONESHOT_START); } else { layer_on(2); }".into(),
                 "if (is_oneshot_enabled()) { clear_oneshot_layer_state(ONESHOT_PRESSED); } else { layer_off(2); }".into(),
+            )
+        );
+        assert_eq!(
+            action_stmts("OSM(MOD_LSFT)"),
+            (
+                "if (is_oneshot_enabled()) { set_oneshot_mods(MOD_LSFT); } else { register_mods(MOD_LSFT); }".into(),
+                "if (!is_oneshot_enabled()) { unregister_mods(MOD_LSFT); }".into(),
             )
         );
         assert_eq!(action_stmts("TT(3)"), ("layer_invert(3);".into(), String::new()));
