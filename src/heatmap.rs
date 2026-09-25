@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config;
@@ -23,6 +23,12 @@ pub struct HeatmapStore {
 
 impl HeatmapStore {
     fn path_for(layout_hash: &str) -> Result<PathBuf> {
+        if layout_hash.is_empty()
+            || layout_hash.len() > 128
+            || !layout_hash.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            bail!("invalid layout hash {layout_hash:?}");
+        }
         Ok(cache_dir()?.join(format!("heatmap-{layout_hash}.json")))
     }
 
@@ -138,6 +144,14 @@ mod tests {
         assert_eq!(s.counts(Some(0), 52)[3], 2);
         assert_eq!(s.counts(None, 52)[3], 3);
         assert_eq!(s.total_presses(), 3);
+    }
+
+    #[test]
+    fn rejects_unsafe_layout_hashes_before_building_paths() {
+        assert!(HeatmapStore::path_for("../../escape").is_err());
+        assert!(HeatmapStore::path_for("layout/other").is_err());
+        assert!(HeatmapStore::path_for("layout ok").is_err());
+        assert!(HeatmapStore::path_for("xBrnx").is_ok());
     }
 
     #[test]
