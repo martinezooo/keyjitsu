@@ -17,6 +17,8 @@ use zapp_core::flash::{self, FlashProgress};
 
 use crate::oryx_api::LayoutId;
 
+const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
 pub fn acquire_firmware(target: Option<&str>, latest: bool) -> Result<Firmware> {
@@ -153,6 +155,7 @@ fn fetch_latest_revision(layout_id: &str) -> Result<String> {
     }
     let url = format!("https://oryx.zsa.io/firmware/latest/{layout_id}");
     let latest: Latest = ureq::get(&url)
+        .timeout(ORYX_REQUEST_TIMEOUT)
         .call()
         .with_context(|| format!("asking Oryx for the latest revision of {layout_id}"))?
         .into_json()
@@ -166,7 +169,10 @@ fn download_firmware(revision_id: &str, collate: bool) -> Result<Firmware> {
         url.push_str("?collate=true");
     }
     println!("Downloading firmware…");
-    let resp = ureq::get(&url).call().context("firmware download failed")?;
+    let resp = ureq::get(&url)
+        .timeout(ORYX_REQUEST_TIMEOUT)
+        .call()
+        .context("firmware download failed")?;
     let mut bytes = Vec::new();
     resp.into_reader()
         .take(16 * 1024 * 1024)
