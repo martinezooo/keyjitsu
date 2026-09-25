@@ -751,7 +751,62 @@ impl App {
             self.synth_layers.get((n - oryx) as usize)
         }
     }
+
+    fn applied_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        let oryx = self.oryx_layer_count();
+        if layer >= oryx {
+            let state = self.firmware_state.as_ref()?;
+            let custom = state.custom_layers.get((layer - oryx) as usize)?;
+            return Some(
+                custom
+                    .keys
+                    .iter()
+                    .find(|entry| entry.key as usize == key)
+                    .map(|entry| synth_key(&entry.code))
+                    .unwrap_or_default(),
+            );
+        }
+
+        if let Some(state) = &self.firmware_state {
+            if let Some(dance) = state
+                .dances
+                .iter()
+                .find(|dance| dance.layer == layer && dance.key as usize == key)
+            {
+                return Some(synth_slots(&dance.slots));
+            }
+            if let Some(edit) = state
+                .edits
+                .iter()
+                .find(|edit| edit.layer == layer && edit.key as usize == key)
+            {
+                return Some(synth_key(&edit.code));
+            }
+        }
+        self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+    }
+
+    fn applied_layer(&self, layer: u8) -> Option<Layer> {
+        let oryx = self.oryx_layer_count();
+        if layer >= oryx {
+            let state = self.firmware_state.as_ref()?;
+            let custom = state.custom_layers.get((layer - oryx) as usize)?;
+            return Some(self.synth_custom_layer(layer, custom));
+        }
+
+        let mut out = self.layer_def(layer)?.clone();
+        for key in 0..out.keys.len() {
+            if let Some(applied) = self.applied_key(layer, key) {
+                out.keys[key] = applied;
+            }
+        }
+        Some(out)
+    }
+
     fn effective_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if layer >= self.oryx_layer_count() {
+            return self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned();
+        }
         if let Some(slots) = self.key_dances.get(&(layer, key)) {
             let mut out = synth_slots(slots);
             let label = slots
@@ -770,11 +825,14 @@ impl App {
             out.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
             return Some(out);
         }
-        self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+        self.applied_key(layer, key)
     }
 
     fn effective_layer(&self, layer: u8) -> Option<Layer> {
-        let mut out = self.layer_def(layer)?.clone();
+        if layer >= self.oryx_layer_count() {
+            return self.layer_def(layer).cloned();
+        }
+        let mut out = self.applied_layer(layer)?;
         for key in 0..out.keys.len() {
             if let Some(effective) = self.effective_key(layer, key) {
                 out.keys[key] = effective;
@@ -971,29 +1029,29 @@ impl App {
         self.save_custom_layers();
     }
 
-    /// Build display `Layer`s from `custom_layers`: a transparent board with
-    /// the user's assigned keycodes rendered as legends.
+    fn synth_custom_layer(&self, position: u8, custom: &config::CustomLayer) -> Layer {
+        let mut keys: Vec<OryxKey> = (0..self.geometry().len()).map(|_| OryxKey::default()).collect();
+        for entry in &custom.keys {
+            if let Some(slot) = keys.get_mut(entry.key as usize) {
+                *slot = synth_key(&entry.code);
+            }
+        }
+        Layer {
+            title: Some(custom.name.clone()),
+            position,
+            color: None,
+            keys,
+        }
+    }
+
+    /// Build display layers from the desired custom-layer state.
     fn rebuild_synth_layers(&mut self) {
         let oryx = self.oryx_layer_count();
-        let n_keys = self.geometry().len();
         self.synth_layers = self
             .custom_layers
             .iter()
             .enumerate()
-            .map(|(i, cl)| {
-                let mut keys: Vec<OryxKey> = (0..n_keys).map(|_| OryxKey::default()).collect();
-                for ck in &cl.keys {
-                    if let Some(slot) = keys.get_mut(ck.key as usize) {
-                        *slot = synth_key(&ck.code);
-                    }
-                }
-                Layer {
-                    title: Some(cl.name.clone()),
-                    position: oryx + i as u8,
-                    color: None,
-                    keys,
-                }
-            })
+            .map(|(i, custom)| self.synth_custom_layer(oryx + i as u8, custom))
             .collect();
     }
 
@@ -1029,9 +1087,6 @@ impl App {
             .and_then(FirmwareState::load)
             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
         self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
-        if let Some(state) = &self.firmware_state {
-            Self::apply_firmware_state(&mut layout, state);
-        }
         self.layout = Some(layout);
         self.hydrate_glow(&id.hash); // also sets self.layout_hash
         self.hydrate_key_fx(&id.hash);
@@ -1119,26 +1174,6 @@ impl App {
             .filter(|f| f.layout == hash)
             .map(|f| ((f.layer, f.key as usize), (f.trigger, f.effect, f.color, f.custom.clone())))
             .collect();
-    }
-
-    /// Apply the state reported by a Keyjitsu-built firmware to an Oryx layout.
-    /// The USB serial selects this state, so this reflects the connected device,
-    /// not whichever profile/config happens to be open locally.
-    fn apply_firmware_state(layout: &mut Layout, state: &FirmwareState) {
-        for e in &state.edits {
-            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == e.layer) {
-                if let Some(key) = layer.keys.get_mut(e.key as usize) {
-                    *key = synth_key(&e.code);
-                }
-            }
-        }
-        for d in &state.dances {
-            if let Some(layer) = layout.revision.layers.iter_mut().find(|l| l.position == d.layer) {
-                if let Some(key) = layer.keys.get_mut(d.key as usize) {
-                    *key = synth_slots(&d.slots);
-                }
-            }
-        }
     }
 
     /// If a reconnect proves that staged edits are already present in the
@@ -2043,12 +2078,7 @@ impl App {
                             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
                         self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
 
-                        self.layout = crate::oryx_api::cached_layout(&id, "voyager").map(|mut layout| {
-                            if let Some(state) = &self.firmware_state {
-                                Self::apply_firmware_state(&mut layout, state);
-                            }
-                            layout
-                        });
+                        self.layout = crate::oryx_api::cached_layout(&id, "voyager");
 
                         self.hydrate_custom_layers(&id.hash);
                         self.hydrate_staged(&id.hash);
@@ -2073,11 +2103,7 @@ impl App {
                     if self.connection_generation != Some(generation) {
                         continue;
                     }
-                    let mut layout = *layout;
-                    if let Some(state) = &self.firmware_state {
-                        Self::apply_firmware_state(&mut layout, state);
-                    }
-                    self.layout = Some(layout);
+                    self.layout = Some(*layout);
                     if self.firmware_state.is_some() {
                         self.rebuild_synth_layers();
                     } else if !self.firmware_state_unknown {
