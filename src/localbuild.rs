@@ -563,10 +563,26 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::{
         clear_build_artifact, prepare_keymap_dir, set_rule, valid_firmware_serial,
-        validate_revision_id, validate_source_basename,
+        validate_revision_id, validate_source_basename, BuildEnv,
     };
+
+    #[test]
+    fn build_environment_requires_cli_compiler_and_checkout() {
+        let ready = BuildEnv {
+            qmk_cli: true,
+            arm_gcc: true,
+            firmware_dir: Some(PathBuf::from("/qmk")),
+        };
+        assert!(ready.is_ready());
+
+        assert!(!BuildEnv { qmk_cli: false, ..ready.clone() }.is_ready());
+        assert!(!BuildEnv { arm_gcc: false, ..ready.clone() }.is_ready());
+        assert!(!BuildEnv { firmware_dir: None, ..ready }.is_ready());
+    }
 
     #[test]
     fn stale_firmware_artifact_is_removed_before_compile() {
