@@ -218,9 +218,11 @@ scripts/bundle.sh --install   # builds release, installs Keyjitsu.app to /Applic
 Plain `cargo build --release` also works (binary in `target/release/keyjitsu`),
 and `cargo test` runs the suite.
 
-macOS is the primary and only tested target. The guard, autolayer, and peek are
-macOS-only. The rest is portable Rust (hidapi with egui/ratatui) but unverified
-elsewhere.
+macOS is the primary and only tested target. The guard and autolayer are
+macOS-only. Peek is built on all desktop targets, but monitor enumeration and
+multi-monitor placement are only verified on macOS; elsewhere it falls back to
+the display information exposed by egui. The rest is portable Rust
+(hidapi with egui/ratatui) but unverified elsewhere.
 
 ## Privacy and network
 
