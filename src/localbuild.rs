@@ -326,6 +326,20 @@ fn set_rule(rules: &str, key: &str, value: &str) -> String {
 /// All files inside the generated `*_source/` directory of Oryx's zip, as
 /// `(basename, bytes)`. Non-source extras (the prebuilt .bin, build.log,
 /// README) are skipped.
+fn validate_source_basename(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        bail!("unsafe generated source filename {name:?}");
+    }
+    Ok(())
+}
+
 fn validate_revision_id(revision: &str) -> Result<()> {
     // Keep the revision safe both as an URL segment and as part of a cache
     // filename. Oryx revision ids are short opaque identifiers; accepting
@@ -420,6 +434,10 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         }
 
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+        validate_source_basename(&base)?;
+        if out.iter().any(|(existing, _)| existing == &base) {
+            bail!("generated source contains duplicate filename {base:?}");
+        }
         let mut bytes = Vec::new();
         f.take(MAX_SOURCE_FILE_BYTES + 1)
             .read_to_end(&mut bytes)
@@ -497,7 +515,19 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
 #[cfg(test)]
 mod tests {
-    use super::{set_rule, validate_revision_id};
+    use super::{set_rule, validate_revision_id, validate_source_basename};
+
+    #[test]
+    fn generated_source_basenames_cannot_escape_keymap_directory() {
+        assert!(validate_source_basename("keymap.c").is_ok());
+        assert!(validate_source_basename("rules.mk").is_ok());
+        assert!(validate_source_basename("config_extra.h").is_ok());
+        assert!(validate_source_basename("..\\evil.c").is_err());
+        assert!(validate_source_basename("../evil.c").is_err());
+        assert!(validate_source_basename("sub/evil.c").is_err());
+        assert!(validate_source_basename("sub\\evil.c").is_err());
+        assert!(validate_source_basename("..").is_err());
+    }
 
     #[test]
     fn generated_source_revision_is_safe_for_url_and_cache_paths() {
