@@ -320,6 +320,10 @@ impl FlashState {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Done | Self::Failed(_))
     }
+
+    pub fn is_writing(&self) -> bool {
+        matches!(self, Self::Working { .. })
+    }
 }
 
 pub fn spawn_flash(
@@ -474,7 +478,9 @@ mod flash_state_tests {
     fn flash_can_only_be_cancelled_before_device_write_starts() {
         assert!(FlashState::Downloading.is_cancelable());
         assert!(FlashState::WaitingForBootloader.is_cancelable());
-        assert!(!FlashState::Working { phase: "Writing", fraction: 0.5 }.is_cancelable());
+        let writing = FlashState::Working { phase: "Writing", fraction: 0.5 };
+        assert!(!writing.is_cancelable());
+        assert!(writing.is_writing());
         assert!(!FlashState::Done.is_cancelable());
         assert!(!FlashState::Failed("failed".into()).is_cancelable());
     }
@@ -482,7 +488,9 @@ mod flash_state_tests {
     #[test]
     fn only_done_and_failed_are_terminal_flash_states() {
         assert!(!FlashState::Downloading.is_terminal());
+        assert!(!FlashState::Downloading.is_writing());
         assert!(!FlashState::WaitingForBootloader.is_terminal());
+        assert!(!FlashState::WaitingForBootloader.is_writing());
         assert!(!FlashState::Working { phase: "Writing", fraction: 0.5 }.is_terminal());
         assert!(FlashState::Done.is_terminal());
         assert!(FlashState::Failed("failed".into()).is_terminal());

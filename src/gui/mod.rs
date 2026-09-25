@@ -2531,6 +2531,16 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Do not let a normal window-close interrupt erase/write. There is no
+        // safe mid-write cancellation in zapp, so keep the process alive until
+        // the flash worker reaches a terminal state.
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.flash_state.as_ref().is_some_and(FlashState::is_writing)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.build_open = true;
+        }
+
         self.drain_events();
         self.reconcile_background_jobs(ctx);
         self.tick_perf();
