@@ -786,7 +786,7 @@ impl App {
             flash_cancel: Arc::new(AtomicBool::new(false)),
             flash_close_blocked: false,
             env: localbuild::detect_env(),
-            monitors_cache: fetch_monitors(),
+            monitors_cache: fetch_monitors(&cc.egui_ctx),
             monitors_checked: Instant::now(),
             picker_open: false,
             picker_cat: 0,
@@ -2732,7 +2732,7 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(250));
         // Refresh the monitor list occasionally (cheap, but not per frame).
         if self.monitors_checked.elapsed() > Duration::from_secs(2) {
-            self.monitors_cache = fetch_monitors();
+            self.monitors_cache = fetch_monitors(ctx);
             self.monitors_checked = Instant::now();
         }
 
@@ -3005,7 +3005,7 @@ impl MonitorInfo {
     }
 }
 
-fn fetch_monitors() -> Vec<MonitorInfo> {
+fn fetch_monitors(ctx: &egui::Context) -> Vec<MonitorInfo> {
     #[cfg(target_os = "macos")]
     {
         crate::macos_display::monitors()
@@ -3015,7 +3015,25 @@ fn fetch_monitors() -> Vec<MonitorInfo> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Vec::new()
+        let rect = ctx.input(|i| i.viewport().outer_rect);
+        let size = ctx.input(|i| i.viewport().monitor_size);
+        match (rect, size) {
+            (Some(rect), _) => vec![MonitorInfo {
+                x: rect.min.x,
+                y: rect.min.y,
+                w: rect.width(),
+                h: rect.height(),
+                name: Some("Current monitor".into()),
+            }],
+            (None, Some(size)) => vec![MonitorInfo {
+                x: 0.0,
+                y: 0.0,
+                w: size.x,
+                h: size.y,
+                name: Some("Current monitor".into()),
+            }],
+            _ => Vec::new(),
+        }
     }
 }
 
