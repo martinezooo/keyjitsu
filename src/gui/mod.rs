@@ -4,6 +4,7 @@
 
 mod profiles;
 mod rgb_anim;
+mod update;
 mod widget;
 mod worker;
 
@@ -20,6 +21,7 @@ use profiles::{
     profile_path, snapshot_profile,
 };
 use rgb_anim::{Anim, FxEvent};
+use update::{spawn_update_check, UpdateCheck};
 
 use anyhow::{anyhow, Context, Result};
 use eframe::egui::{self, Color32, ProgressBar, RichText};
@@ -3369,65 +3371,6 @@ fn synth_key(code: &str) -> OryxKey {
     }
     k.tap = Some(KeyAction { code: Some(code.to_string()), layer: None, description: None });
     k
-}
-
-/// Result of a manual "check for updates" against GitHub Releases.
-#[derive(Debug, Clone)]
-pub enum UpdateCheck {
-    UpToDate,
-    Available { tag: String, url: String },
-    Error(String),
-}
-
-const RELEASES_API: &str = "https://api.github.com/repos/martinezooo/keyjitsu/releases/latest";
-
-/// Ask GitHub for the newest release on a background thread. Runs once at
-/// startup when enabled, and on demand from Settings. It only reads release
-/// metadata; downloading or installing an update is never automatic.
-fn spawn_update_check() -> std::sync::mpsc::Receiver<UpdateCheck> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = (|| -> Result<UpdateCheck, String> {
-            let resp: serde_json::Value = ureq::get(RELEASES_API)
-                .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
-                .set("Accept", "application/vnd.github+json")
-                .timeout(Duration::from_secs(8))
-                .call()
-                .map_err(|e| e.to_string())?
-                .into_json()
-                .map_err(|e| e.to_string())?;
-            let tag = resp
-                .get("tag_name")
-                .and_then(|t| t.as_str())
-                .ok_or("no tag_name in the response")?
-                .to_string();
-            let url = resp
-                .get("html_url")
-                .and_then(|u| u.as_str())
-                .unwrap_or("https://github.com/martinezooo/keyjitsu/releases")
-                .to_string();
-            Ok(if version_newer(&tag, env!("CARGO_PKG_VERSION")) {
-                UpdateCheck::Available { tag, url }
-            } else {
-                UpdateCheck::UpToDate
-            })
-        })();
-        let _ = tx.send(result.unwrap_or_else(UpdateCheck::Error));
-    });
-    rx
-}
-
-/// `true` if `latest` (e.g. "v0.9.2") is a newer semver than `current`.
-/// Unparseable parts compare as 0, so a weird tag never reports an update.
-fn version_newer(latest: &str, current: &str) -> bool {
-    fn parts(v: &str) -> [u64; 3] {
-        let mut out = [0u64; 3];
-        for (i, p) in v.trim().trim_start_matches('v').split('.').take(3).enumerate() {
-            out[i] = p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
-        }
-        out
-    }
-    parts(latest) > parts(current)
 }
 
 fn status_dot(ui: &mut egui::Ui, ok: bool) {
@@ -7073,33 +7016,6 @@ mod slot_tests {
         // Not expressible as MT/LT → None (caller warns + falls back to tap).
         assert_eq!(hold_wrap("KC_B", "KC_A"), None);
         assert_eq!(hold_wrap("OSL(1)", "KC_A"), None);
-    }
-}
-
-#[cfg(test)]
-mod update_check_tests {
-    /// Exercises the real request + parsing used by the button. Needs network,
-    /// so it is ignored by default: `cargo test update_check_live -- --ignored`.
-    #[test]
-    #[ignore]
-    fn update_check_live() {
-        let rx = super::spawn_update_check();
-        let r = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("checker replied");
-        match r {
-            super::UpdateCheck::Error(e) => panic!("update check failed: {e}"),
-            other => eprintln!("LIVE RESULT: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn version_compare() {
-        use super::version_newer;
-        assert!(version_newer("v0.9.2", "0.9.1"));
-        assert!(version_newer("1.0.0", "0.9.9"));
-        assert!(!version_newer("v0.9.1", "0.9.1"));
-        assert!(!version_newer("0.9.0", "0.9.1"));
-        assert!(!version_newer("garbage", "0.9.1")); // unparseable never reports an update
-        assert!(version_newer("v0.10.0-beta", "0.9.1")); // pre-release suffix ignored
     }
 }
 
