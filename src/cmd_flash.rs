@@ -18,6 +18,7 @@ use zapp_core::flash::{self, FlashProgress};
 use crate::oryx_api::LayoutId;
 
 const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_FIRMWARE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
@@ -175,9 +176,14 @@ fn download_firmware(revision_id: &str, collate: bool) -> Result<Firmware> {
         .context("firmware download failed")?;
     let mut bytes = Vec::new();
     resp.into_reader()
-        .take(16 * 1024 * 1024)
+        .take(MAX_FIRMWARE_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("reading firmware download")?;
+    if bytes.len() as u64 > MAX_FIRMWARE_BYTES {
+        bail!(
+            "firmware download is larger than {MAX_FIRMWARE_BYTES} bytes; refusing a truncated image"
+        );
+    }
     firmware::load_firmware_from_bytes(&bytes).context("downloaded file is not valid firmware")
 }
 
