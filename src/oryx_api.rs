@@ -159,22 +159,31 @@ pub fn cached_layout(id: &LayoutId, geometry: &str) -> Option<Layout> {
 /// real layout with no keyboard attached and no remembered serial yet (e.g.
 /// after upgrading). Cache-only, never networks.
 pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
+    LayoutId::validate_part("geometry", geometry).ok()?;
     let dir = cache_dir().ok()?;
     let prefix = format!("layout-{geometry}-");
-    let mut hits: Vec<(std::time::SystemTime, LayoutId)> = fs::read_dir(&dir)
+    let mut hits: Vec<(std::time::SystemTime, std::path::PathBuf)> = fs::read_dir(&dir)
         .ok()?
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            // layout-<geometry>-<hash>-<revision>-v2.json
-            let rest = name.strip_prefix(&prefix)?.strip_suffix("-v2.json")?;
-            let (hash, revision) = rest.rsplit_once('-')?;
+            if !name.starts_with(&prefix) || !name.ends_with("-v2.json") {
+                return None;
+            }
             let mtime = e.metadata().ok()?.modified().ok()?;
-            Some((mtime, LayoutId { hash: hash.to_string(), revision: revision.to_string() }))
+            Some((mtime, e.path()))
         })
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
-    hits.into_iter().find_map(|(_, id)| cached_layout(&id, geometry).map(|l| (id, l)))
+    hits.into_iter().find_map(|(_, path)| {
+        let bytes = fs::read(path).ok()?;
+        let layout = parse_layout(&bytes).ok()?;
+        if layout.geometry != geometry {
+            return None;
+        }
+        let id = LayoutId::new(layout.hash_id.clone(), layout.revision.hash_id.clone()).ok()?;
+        Some((id, layout))
+    })
 }
 
 /// Fetch a layout, using the on-disk cache unless `refresh` is set.
