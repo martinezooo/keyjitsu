@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::CustomLayer;
+use crate::config::{self, CustomLayer};
 use crate::oryx_api::cache_dir;
 
 pub const STATE_ID_HEX_LEN: usize = 10;
@@ -79,15 +79,10 @@ impl FirmwareState {
     pub fn save(&self) -> Result<String> {
         let id = self.state_id();
         let dir = cache_dir()?.join("firmware-states");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join(format!("{id}.json"));
         let bytes = serde_json::to_vec_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("installing {}", path.display()))?;
+        config::write_atomic(&path, &bytes)
+            .with_context(|| format!("persisting {}", path.display()))?;
         Ok(id)
     }
 
