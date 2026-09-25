@@ -1220,11 +1220,7 @@ impl App {
         if self.layout.is_some() {
             return;
         }
-        // Prefer the remembered DEVICE identity; fall back to any Oryx layout
-        // already cached (covers users who cached a layout before this feature
-        // existed). A Keyjitsu state marker belongs to the device identity, not
-        // to a user profile, so an offline Live view can still show the last
-        // firmware state we actually observed.
+        // Prefer the last device identity; fall back to any cached Voyager layout.
         let remembered = config::load().last_layout;
         let found = remembered
             .as_deref()
@@ -2433,12 +2429,7 @@ impl App {
                         if let Some(e) = heat_save_error {
                             self.persist_error = Some(format!("saving heatmap: {e:#}"));
                         }
-                        // Pressing a key selects it for the config panel
-                        // below - but not while the Assign picker is open for
-                        // a different key: an incidental physical press (or
-                        // typing that lands on the board instead of a search
-                        // field) would otherwise silently swap which key's
-                        // editor is underneath the modal.
+                        // Keep the Assign picker bound to the key it opened for.
                         if !self.picker_open && self.selected_key != Some(idx) {
                             self.selected_key = Some(idx);
                             self.edit_color = self.current_key_srgb(self.view_layer, idx);
@@ -2843,12 +2834,7 @@ impl eframe::App for App {
 
         // Bottom key-config panel (inspector), only on the Live tab.
         if self.tab == Tab::Live {
-            // Deterministic height per state (egui panels otherwise keep their
-            // first-frame size): compact hint bar when nothing is selected, a
-            // capped editor when a key is - the canvas above shrinks to match,
-            // so the whole editor is visible without scrolling.
-            // Height = what the content actually needs: one compact header
-            // row + the visible slot rows (+ a tap-dance note when present).
+            // Size the inspector from its visible slot rows, with a compact empty state.
             let cap = (ctx.screen_rect().height() * 0.44).clamp(170.0, 300.0);
             let h = if self.selected_key.is_some() {
                 let rows = 1 + (1..4)
@@ -2933,13 +2919,7 @@ impl eframe::App for App {
     }
 }
 
-/// Render a wrapped grid of keycode buttons; sets `pick` to the chosen code.
-/// For templated (layer) entries, `{n}` is replaced with `layer_arg`.
-/// One row in a shortcut-library listing: a clickable button that assigns
-/// the converted QMK code, or - when the entry isn't one key press (a
-/// sequence, combo, or tap/hold description) - a disabled button with a
-/// hover explaining why. Shared by the picker's dedicated library tab and
-/// its search results, so both list the same way.
+/// Render keycode choices and shortcut rows for the Assign picker.
 fn shortcut_pick_row(ui: &mut egui::Ui, keys: &str, desc: &str, pick: &mut Option<String>) {
     match crate::shortcuts::to_qmk_code(keys) {
         Some(code) => {
@@ -3799,11 +3779,7 @@ impl App {
             }
         });
         let glow = anim_frame.unwrap_or_else(|| self.glow_colors(view));
-        // Staged (not yet built) edits show as "staged: ..." in the editor
-        // panel below, but the real Oryx layer data drives the board's own
-        // legends - so a staged combo looked assigned but invisible on the
-        // keyboard itself. Preview it there too: same label text as the
-        // editor's chip (slot_chip_label), just overlaid on a cloned layer.
+        // Live previews the same effective state the editor and build use.
         let effective_layer = self.effective_layer(view);
         let layer = effective_layer.as_ref();
         let sel = self.selected_key;
