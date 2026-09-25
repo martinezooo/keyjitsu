@@ -3005,7 +3005,7 @@ impl MonitorInfo {
     }
 }
 
-fn fetch_monitors(ctx: &egui::Context) -> Vec<MonitorInfo> {
+fn fetch_monitors(_ctx: &egui::Context) -> Vec<MonitorInfo> {
     #[cfg(target_os = "macos")]
     {
         crate::macos_display::monitors()
@@ -3015,8 +3015,8 @@ fn fetch_monitors(ctx: &egui::Context) -> Vec<MonitorInfo> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let rect = ctx.input(|i| i.viewport().outer_rect);
-        let size = ctx.input(|i| i.viewport().monitor_size);
+        let rect = _ctx.input(|i| i.viewport().outer_rect);
+        let size = _ctx.input(|i| i.viewport().monitor_size);
         match (rect, size) {
             (Some(rect), _) => vec![MonitorInfo {
                 x: rect.min.x,
