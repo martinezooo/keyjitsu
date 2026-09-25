@@ -2453,8 +2453,10 @@ impl App {
             self.needs_push = false;
         }
 
-        // Autolayer watcher lifecycle.
-        if self.autolayer_enabled && self.autolayer.is_none() {
+        // Restart the watcher after reconnect so the current frontmost app
+        // is applied to the new HID session even if the app itself did not change.
+        let want_autolayer = self.autolayer_enabled && self.connected.is_some();
+        if want_autolayer && self.autolayer.is_none() {
             #[cfg(target_os = "macos")]
             {
                 self.autolayer = Some(worker::spawn_autolayer(
@@ -2463,7 +2465,7 @@ impl App {
                     ctx.clone(),
                 ));
             }
-        } else if !self.autolayer_enabled && self.autolayer.is_some() {
+        } else if !want_autolayer && self.autolayer.is_some() {
             self.autolayer = None;
         }
     }
