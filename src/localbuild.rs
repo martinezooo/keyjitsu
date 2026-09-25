@@ -162,12 +162,7 @@ pub fn build(
         .ok_or_else(|| anyhow!("no keymap.c in the generated source"))?;
     let rules_mk = take_file(&mut files, "rules.mk").unwrap_or_default();
 
-    // A multi-step slot ("KC_A\nKC_B", staged from more than one "then press
-    // another key") going into a PLAIN LAYOUT position - not a tap-dance,
-    // which taps its own multi-step slots directly in the generated case
-    // body - needs a custom keycode plus generated process_record_user to
-    // fire the taps: collect those here, substituting the position's
-    // keycode with the generated MACRO_KJ_{id} name.
+    // Plain multi-step slots become generated custom keycodes.
     let mut macros: Vec<keymap::MacroSpec> = Vec::new();
     let mut macro_for = |code: &str| -> String {
         if !code.contains('\n') {
@@ -219,11 +214,7 @@ pub fn build(
         patched = keymap::apply_macros(&patched, &macros)?;
     }
 
-    // Enable any QMK features the new keycodes rely on (Oryx often ships these
-    // off to save space), otherwise they'd compile but silently do nothing.
-    // Scan EVERY source of new keycodes - edits, tap-dance sub-actions, and
-    // new-layer keys - not just `edits` (a mouse/media key on a new layer or in
-    // a dance was previously built inert).
+    // Enable QMK features required by edits, dances and custom-layer keys.
     let all_codes: Vec<&str> = edits
         .iter()
         .map(|e| e.keycode.as_str())
