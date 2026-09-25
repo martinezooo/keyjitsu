@@ -129,6 +129,7 @@ pub fn draw_keyboard(
     glow: &[Option<Color32>],
     pressed: &[bool],
     selected: Option<usize>,
+    combo_keys: Option<&[bool]>,
     alpha: f32,
     mono: bool,
 ) -> KbResponse {
@@ -185,6 +186,10 @@ pub fn draw_keyboard(
             }
         }
         let is_pressed = pressed.get(i).copied().unwrap_or(false);
+        let is_combo = combo_keys
+            .and_then(|keys| keys.get(i))
+            .copied()
+            .unwrap_or(false);
         let color = glow.get(i).and_then(|c| *c);
 
         // Rotated path for the thumb keys (polygon + rotated text).
@@ -286,6 +291,25 @@ pub fn draw_keyboard(
                     );
                 }
             }
+            if is_combo {
+                let c = center
+                    + rot(
+                        Vec2::new(kw / 2.0 - unit * 0.18, -kh / 2.0 + unit * 0.16),
+                        angle,
+                    );
+                text_rot(
+                    &painter,
+                    c,
+                    angle,
+                    "◆",
+                    FontId::proportional(unit * 0.20),
+                    if mono {
+                        fade(Color32::WHITE, alpha)
+                    } else {
+                        fade(Color32::from_rgb(0xF5, 0x9E, 0x0B), alpha)
+                    },
+                );
+            }
             continue;
         }
 
@@ -319,6 +343,9 @@ pub fn draw_keyboard(
                 fade(ink, alpha * 0.7),
             );
             draw_icon(&painter, cap, unit, legends, i, fade(ink, alpha));
+            if is_combo {
+                draw_combo_marker(&painter, cap, unit, fade(ink, alpha));
+            }
             continue;
         }
 
@@ -395,6 +422,14 @@ pub fn draw_keyboard(
             fade(LEGEND_WEAK, alpha),
         );
         draw_icon(&painter, cap, unit, legends, i, fade(LEGEND, alpha * 0.8));
+        if is_combo {
+            draw_combo_marker(
+                &painter,
+                cap,
+                unit,
+                fade(Color32::from_rgb(0xF5, 0x9E, 0x0B), alpha),
+            );
+        }
     }
 
     let clicked = if response.clicked() { hovered } else { None };
@@ -434,6 +469,19 @@ fn draw_legends(
         );
     }
 }
+
+fn draw_combo_marker(painter: &Painter, cap: Rect, unit: f32, tint: Color32) {
+    painter.text(
+        cap.right_top() + Vec2::new(-unit * 0.16, unit * 0.15),
+        Align2::CENTER_CENTER,
+        "◆",
+        FontId::proportional(unit * 0.20),
+        tint,
+    );
+}
+
+/// Combo membership is a relation between physical key positions, so it gets
+/// its own small marker instead of replacing the key's actual assignment.
 
 /// Category badge in the key's top-left corner. Layer keys get a readable
 /// "L<n>" (which layer they reach); media/mouse/lighting get their glyph.
