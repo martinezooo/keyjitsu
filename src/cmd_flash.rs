@@ -6,20 +6,35 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use zapp_core::device::{self, WatchStatus};
+use nusb::MaybeFuture;
+use zapp_core::device;
 use zapp_core::firmware::{self, Firmware};
 use zapp_core::flash::{self, FlashProgress};
 
+use crate::device::Keyboard;
 use crate::oryx_api::LayoutId;
+
+const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_FIRMWARE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_LATEST_RESPONSE_BYTES: u64 = 64 * 1024;
 
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
-pub fn acquire_firmware(target: Option<&str>, latest: bool) -> Result<Firmware> {
+pub fn acquire_firmware(
+    target: Option<&str>,
+    latest: bool,
+    current_serial: Option<&str>,
+) -> Result<Firmware> {
     match (latest, target) {
-        (true, _) => download_latest_for_connected(),
+        (true, _) => {
+            let serial = current_serial
+                .context("--latest needs the connected keyboard's firmware identity")?;
+            download_latest_for_serial(serial)
+        }
         (false, Some(t)) if t.starts_with("http://") || t.starts_with("https://") => {
             download_from_url(t)
         }
@@ -32,41 +47,89 @@ pub fn acquire_firmware(target: Option<&str>, latest: bool) -> Result<Firmware> 
     }
 }
 
-pub fn run(target: Option<&str>, latest: bool, timeout_secs: u64) -> Result<()> {
-    let fw = acquire_firmware(target, latest)?;
+pub fn wait_for_bootloader(
+    timeout: Duration,
+    cancel: Option<&AtomicBool>,
+    on_found: impl Fn(&'static str),
+) -> Result<device::BootloaderDevice> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            bail!("canceled");
+        }
+
+        for info in nusb::list_devices().wait().context("listing USB devices")? {
+            let vid = info.vendor_id();
+            let pid = info.product_id();
+            let Some(kind) = device::ids::identify_bootloader(vid, pid) else {
+                continue;
+            };
+
+            std::thread::sleep(Duration::from_millis(500));
+            if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+                bail!("canceled");
+            }
+
+            let usb = info.open().wait().context("opening bootloader device")?;
+            let name = device::ids::friendly_name(vid, pid);
+            on_found(name);
+            return Ok(device::BootloaderDevice {
+                device: usb,
+                vid,
+                pid,
+                kind,
+                keyboard: device::ids::keyboard_for_bootloader(vid, pid),
+            });
+        }
+
+        if Instant::now() >= deadline {
+            bail!(
+                "no bootloader appeared within {}s - was the reset button pressed?",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+pub fn run(
+    serial_filter: Option<&str>,
+    target: Option<&str>,
+    latest: bool,
+    timeout_secs: u64,
+) -> Result<()> {
+    let current_serial = if latest {
+        Some(read_connected_firmware_serial(serial_filter)?)
+    } else {
+        None
+    };
+    let fw = acquire_firmware(target, latest, current_serial.as_deref())?;
     println!("{}", firmware_summary(&fw));
 
     println!();
     println!("Put the keyboard into bootloader mode now - press its RESET button");
     println!("(Voyager: the tiny button on the left half, see https://www.zsa.io/flash).");
     println!("Waiting up to {timeout_secs}s for the bootloader…");
-    std::io::stdout().flush().ok();
+    std::io::stdout()
+        .flush()
+        .context("flushing bootloader prompt")?;
 
-    // zapp-core's own timeout only fires when *some* USB event arrives, so a
-    // keyboard that never enters the bootloader would hang it forever. Run the
-    // watcher on a thread and enforce the deadline ourselves; on timeout the
-    // process exits and the abandoned watcher thread goes with it.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let res = device::wait_for_bootloader(None, |s| {
-            if let WatchStatus::Found { name, .. } = s {
-                println!("Bootloader detected: {name}");
-            }
-        });
-        let _ = tx.send(res);
-    });
-    let dev = match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
-        Ok(res) => res.context("bootloader detection failed")?,
-        Err(_) => bail!(
-            "no bootloader appeared within {timeout_secs}s - was the reset button pressed?"
-        ),
-    };
+    let dev = wait_for_bootloader(Duration::from_secs(timeout_secs), None, |name| {
+        println!("Bootloader detected: {name}");
+    })
+    .context("bootloader detection failed")?;
 
     flash::flash_device(&dev, &fw, &|p| match p {
-        FlashProgress::Erasing { bytes_erased, total_bytes } => {
+        FlashProgress::Erasing {
+            bytes_erased,
+            total_bytes,
+        } => {
             eprint!("\rErasing… {:>3}%", pct(bytes_erased, total_bytes));
         }
-        FlashProgress::Writing { bytes_written, total_bytes } => {
+        FlashProgress::Writing {
+            bytes_written,
+            total_bytes,
+        } => {
             eprint!("\rWriting… {:>3}%", pct(bytes_written, total_bytes));
         }
         FlashProgress::Resetting => eprint!("\rRestarting keyboard…      "),
@@ -86,12 +149,20 @@ fn pct(done: usize, total: usize) -> usize {
     }
 }
 
-/// `keyjitsu flash --latest`: read the layout id off the connected keyboard,
-/// ask Oryx for its newest revision, download and flash it.
-fn download_latest_for_connected() -> Result<Firmware> {
-    let kb = device::find_keyboard()
-        .context("no ZSA keyboard on USB (plug it in, in normal mode, not bootloader)")?;
-    let id = LayoutId::from_serial(&kb.serial)?;
+fn read_connected_firmware_serial(serial_filter: Option<&str>) -> Result<String> {
+    let kb = Keyboard::open(serial_filter).context("no ZSA keyboard available in normal mode")?;
+    let result = (|| {
+        kb.pair()?;
+        kb.fw_version()
+    })();
+    kb.disconnect();
+    result
+}
+
+/// `keyjitsu flash --latest`: use the firmware identity captured before the
+/// keyboard enters the bootloader, then fetch the newest revision from Oryx.
+fn download_latest_for_serial(serial: &str) -> Result<Firmware> {
+    let id = LayoutId::from_serial(serial)?;
     let newest = fetch_latest_revision(&id.hash)?;
     if newest == id.revision {
         println!(
@@ -123,26 +194,45 @@ fn fetch_latest_revision(layout_id: &str) -> Result<String> {
         latest: String,
     }
     let url = format!("https://oryx.zsa.io/firmware/latest/{layout_id}");
-    let latest: Latest = ureq::get(&url)
+    let response = ureq::get(&url)
+        .timeout(ORYX_REQUEST_TIMEOUT)
         .call()
-        .with_context(|| format!("asking Oryx for the latest revision of {layout_id}"))?
-        .into_json()
-        .context("malformed response from Oryx")?;
-    Ok(latest.latest)
+        .with_context(|| format!("asking Oryx for the latest revision of {layout_id}"))?;
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_LATEST_RESPONSE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("reading latest-revision response")?;
+    if bytes.len() as u64 > MAX_LATEST_RESPONSE_BYTES {
+        bail!("latest-revision response is unexpectedly large");
+    }
+    let latest: Latest = serde_json::from_slice(&bytes).context("malformed response from Oryx")?;
+    let validated = LayoutId::new(layout_id.to_string(), latest.latest)?;
+    Ok(validated.revision)
 }
 
 fn download_firmware(revision_id: &str, collate: bool) -> Result<Firmware> {
+    let revision_id = LayoutId::new("firmware".into(), revision_id.to_string())?.revision;
     let mut url = format!("https://oryx.zsa.io/firmware/{revision_id}");
     if collate {
         url.push_str("?collate=true");
     }
     println!("Downloading firmware…");
-    let resp = ureq::get(&url).call().context("firmware download failed")?;
+    let resp = ureq::get(&url)
+        .timeout(ORYX_REQUEST_TIMEOUT)
+        .call()
+        .context("firmware download failed")?;
     let mut bytes = Vec::new();
     resp.into_reader()
-        .take(16 * 1024 * 1024)
+        .take(MAX_FIRMWARE_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("reading firmware download")?;
+    if bytes.len() as u64 > MAX_FIRMWARE_BYTES {
+        bail!(
+            "firmware download is larger than {MAX_FIRMWARE_BYTES} bytes; refusing a truncated image"
+        );
+    }
     firmware::load_firmware_from_bytes(&bytes).context("downloaded file is not valid firmware")
 }
 
@@ -163,5 +253,29 @@ pub fn firmware_summary(fw: &Firmware) -> String {
         Firmware::IntelHex { data } => {
             format!("Firmware: Intel HEX (HalfKay), {} KiB", data.len() / 1024)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_requires_a_captured_connected_identity() {
+        let err = acquire_firmware(None, true, None).unwrap_err().to_string();
+        assert!(err.contains("connected keyboard"));
+    }
+
+    #[test]
+    fn download_revision_ids_cannot_change_the_oryx_url_path() {
+        assert!(LayoutId::new("layout".into(), "wODgzD".into()).is_ok());
+        assert!(LayoutId::new("layout".into(), "../../escape".into()).is_err());
+        assert!(LayoutId::new("layout".into(), "rev?collate=true".into()).is_err());
+    }
+
+    #[test]
+    fn percent_handles_empty_and_normal_progress() {
+        assert_eq!(pct(0, 0), 100);
+        assert_eq!(pct(50, 100), 50);
     }
 }

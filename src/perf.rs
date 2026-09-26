@@ -7,6 +7,8 @@
 
 use std::time::Instant;
 
+pub const CPU_SUPPORTED: bool = cfg!(unix);
+
 /// Samples the process CPU% between calls.
 pub struct CpuSampler {
     last_cpu: f64,
@@ -15,7 +17,10 @@ pub struct CpuSampler {
 
 impl CpuSampler {
     pub fn new() -> Self {
-        CpuSampler { last_cpu: cpu_seconds(), last_wall: Instant::now() }
+        CpuSampler {
+            last_cpu: cpu_seconds(),
+            last_wall: Instant::now(),
+        }
     }
 
     /// CPU used since the last call, as a percentage of one core.
@@ -80,7 +85,12 @@ impl PerfState {
             p.push("peek");
         }
         if p.is_empty() {
-            if self.connected { "idle" } else { "disconnected" }.to_string()
+            if self.connected {
+                "idle"
+            } else {
+                "disconnected"
+            }
+            .to_string()
         } else {
             p.join("+")
         }
@@ -137,7 +147,13 @@ pub fn summarize(samples: &[(String, f32)], secs: u64) -> Summary {
         })
         .collect();
 
-    Summary { avg, max, n, secs, modes }
+    Summary {
+        avg,
+        max,
+        n,
+        secs,
+        modes,
+    }
 }
 
 #[cfg(test)]
@@ -166,7 +182,10 @@ mod tests {
 
     #[test]
     fn state_label() {
-        let mut st = PerfState { connected: true, ..Default::default() };
+        let mut st = PerfState {
+            connected: true,
+            ..Default::default()
+        };
         assert_eq!(st.label(), "idle");
         st.anim = true;
         st.peek = true;

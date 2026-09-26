@@ -8,7 +8,7 @@ use eframe::egui::{
 };
 
 use crate::geometry::Geometry;
-use crate::legend::{key_kind, labels_for, KeyKind};
+use crate::legend::{key_kind, keycap_labels_for, KeyKind};
 use crate::oryx_api::Layer;
 
 pub const SELECTED: Color32 = Color32::from_rgb(0x22, 0xD3, 0xEE); // UI "selected" cyan
@@ -45,7 +45,11 @@ pub fn heat_color(t: f64) -> Color32 {
 }
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    let l = |x: u8, y: u8| {
+        (x as f32 + (y as f32 - x as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
@@ -103,6 +107,17 @@ fn fade(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha).round() as u8)
 }
 
+fn fitted_font(unit: f32, text: &str, base_scale: f32) -> FontId {
+    let n = text.chars().count();
+    let scale = match n {
+        0..=4 => base_scale,
+        5 => base_scale * 0.90,
+        6 => base_scale * 0.80,
+        _ => base_scale * 0.68,
+    };
+    FontId::proportional(unit * scale)
+}
+
 /// `glow[i]` = the color of key `i` (None → unlit). `selected` draws an accent
 /// ring. `alpha` (0..1) fades the whole drawing so it can be made see-through.
 /// The board is fitted to the available width and centered.
@@ -114,6 +129,7 @@ pub fn draw_keyboard(
     glow: &[Option<Color32>],
     pressed: &[bool],
     selected: Option<usize>,
+    combo_keys: Option<&[bool]>,
     alpha: f32,
     mono: bool,
 ) -> KbResponse {
@@ -131,11 +147,16 @@ pub fn draw_keyboard(
     // Extra bottom room: the tall, rotated thumb keys swing past the last row.
     let board_h = (rows + 0.55) * unit;
 
-    let (area, response) =
-        ui.allocate_exact_size(Vec2::new(ui.available_width(), board_h + gap), Sense::click());
+    let (area, response) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), board_h + gap),
+        Sense::click(),
+    );
     let painter = ui.painter_at(area);
     // Center horizontally so nothing clips at the window edges.
-    let origin = Pos2::new((area.center().x - board_w / 2.0).max(area.left() + margin), area.top() + gap * 0.5);
+    let origin = Pos2::new(
+        (area.center().x - board_w / 2.0).max(area.left() + margin),
+        area.top() + gap * 0.5,
+    );
 
     let pointer = response.hover_pos();
     let mut hovered = None;
@@ -165,6 +186,10 @@ pub fn draw_keyboard(
             }
         }
         let is_pressed = pressed.get(i).copied().unwrap_or(false);
+        let is_combo = combo_keys
+            .and_then(|keys| keys.get(i))
+            .copied()
+            .unwrap_or(false);
         let color = glow.get(i).and_then(|c| *c);
 
         // Rotated path for the thumb keys (polygon + rotated text).
@@ -185,7 +210,10 @@ pub fn draw_keyboard(
                         let a = (base_a * boost).min(52.0);
                         painter.add(eframe::egui::Shape::convex_polygon(
                             key_poly(center, kw, kh, r, angle, gap * grow_mul),
-                            fade(Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8), alpha),
+                            fade(
+                                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8),
+                                alpha,
+                            ),
                             Stroke::NONE,
                         ));
                     }
@@ -211,24 +239,76 @@ pub fn draw_keyboard(
             }
             // Legends + icon, rotated with the cap.
             let (tap_col, hold_col, icon_col) = if mono {
-                (fade(Color32::WHITE, alpha), fade(Color32::WHITE, alpha * 0.7), fade(Color32::WHITE, alpha))
+                (
+                    fade(Color32::WHITE, alpha),
+                    fade(Color32::WHITE, alpha * 0.7),
+                    fade(Color32::WHITE, alpha),
+                )
             } else {
-                (fade(LEGEND, alpha), fade(LEGEND_WEAK, alpha), fade(LEGEND, alpha * 0.8))
+                (
+                    fade(LEGEND, alpha),
+                    fade(LEGEND_WEAK, alpha),
+                    fade(LEGEND, alpha * 0.8),
+                )
             };
             if let Some(key) = legends.and_then(|l| l.keys.get(i)) {
-                let labels = labels_for(key);
+                let labels = keycap_labels_for(key);
                 if !labels.tap.is_empty() {
                     let c = center + rot(Vec2::new(0.0, -unit * 0.04), angle);
-                    text_rot(&painter, c, angle, &labels.tap, FontId::proportional(unit * 0.31), tap_col);
+                    text_rot(
+                        &painter,
+                        c,
+                        angle,
+                        &labels.tap,
+                        fitted_font(unit, &labels.tap, 0.31),
+                        tap_col,
+                    );
                 }
                 if let Some(hold) = &labels.hold {
                     let c = center + rot(Vec2::new(0.0, kh / 2.0 - unit * 0.16), angle);
-                    text_rot(&painter, c, angle, hold, FontId::proportional(unit * 0.23), hold_col);
+                    text_rot(
+                        &painter,
+                        c,
+                        angle,
+                        hold,
+                        fitted_font(unit, hold, 0.23),
+                        hold_col,
+                    );
                 }
                 if let Some(icon) = icon_text(key) {
-                    let c = center + rot(Vec2::new(-kw / 2.0 + unit * 0.21, -kh / 2.0 + unit * 0.18), angle);
-                    text_rot(&painter, c, angle, &icon, FontId::proportional(unit * 0.26), icon_col);
+                    let c = center
+                        + rot(
+                            Vec2::new(-kw / 2.0 + unit * 0.21, -kh / 2.0 + unit * 0.18),
+                            angle,
+                        );
+                    text_rot(
+                        &painter,
+                        c,
+                        angle,
+                        &icon,
+                        FontId::proportional(unit * 0.26),
+                        icon_col,
+                    );
                 }
+            }
+            if is_combo {
+                let c = center
+                    + rot(
+                        Vec2::new(kw / 2.0 - unit * 0.18, -kh / 2.0 + unit * 0.16),
+                        angle,
+                    );
+                text_rot(
+                    &painter,
+                    c,
+                    angle,
+                    "◆",
+                    FontId::proportional(unit * 0.20),
+                    if mono {
+                        fade(Color32::WHITE, alpha)
+                    } else {
+                        fade(Color32::from_rgb(0xF5, 0x9E, 0x0B), alpha)
+                    },
+                );
             }
             continue;
         }
@@ -246,10 +326,26 @@ pub fn draw_keyboard(
                 StrokeKind::Inside,
             );
             if selected == Some(i) {
-                painter.rect_stroke(cap.expand(3.0), CornerRadius::same(key_round + 2), Stroke::new(2.4, fade(SELECTED, alpha)), StrokeKind::Outside);
+                painter.rect_stroke(
+                    cap.expand(3.0),
+                    CornerRadius::same(key_round + 2),
+                    Stroke::new(2.4, fade(SELECTED, alpha)),
+                    StrokeKind::Outside,
+                );
             }
-            draw_legends(&painter, cap, unit, legends, i, fade(ink, alpha), fade(ink, alpha * 0.7));
+            draw_legends(
+                &painter,
+                cap,
+                unit,
+                legends,
+                i,
+                fade(ink, alpha),
+                fade(ink, alpha * 0.7),
+            );
             draw_icon(&painter, cap, unit, legends, i, fade(ink, alpha));
+            if is_combo {
+                draw_combo_marker(&painter, cap, unit, fade(ink, alpha));
+            }
             continue;
         }
 
@@ -265,7 +361,10 @@ pub fn draw_keyboard(
                 painter.rect_filled(
                     cap.expand(grow),
                     CornerRadius::same(key_round + (grow * 0.5) as u8),
-                    fade(Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8), alpha),
+                    fade(
+                        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8),
+                        alpha,
+                    ),
                 );
             }
         }
@@ -276,22 +375,61 @@ pub fn draw_keyboard(
             Some(c) => mix(CAP, c, 0.14),
             None => CAP,
         };
-        let top = if is_pressed { mix(tint, Color32::WHITE, 0.22) } else { mix(tint, CAP_TOP, 0.55) };
+        let top = if is_pressed {
+            mix(tint, Color32::WHITE, 0.22)
+        } else {
+            mix(tint, CAP_TOP, 0.55)
+        };
         painter.rect_filled(cap, radius, fade(tint, alpha));
-        painter.rect_filled(Rect::from_min_max(cap.min, cap.center_bottom()), radius, fade(top, alpha));
+        painter.rect_filled(
+            Rect::from_min_max(cap.min, cap.center_bottom()),
+            radius,
+            fade(top, alpha),
+        );
 
         // Thin edge in the exact key color - the faithful, calm color reference.
         let edge = color.unwrap_or(UNLIT_EDGE);
-        painter.rect_stroke(cap, radius, Stroke::new(1.4, fade(edge, alpha)), StrokeKind::Inside);
+        painter.rect_stroke(
+            cap,
+            radius,
+            Stroke::new(1.4, fade(edge, alpha)),
+            StrokeKind::Inside,
+        );
 
         // Selected is a UI state, distinct from the layout colors → cyan.
         if selected == Some(i) {
-            painter.rect_stroke(cap.expand(1.5), radius, Stroke::new(1.5, fade(SELECTED.gamma_multiply(0.4), alpha)), StrokeKind::Outside);
-            painter.rect_stroke(cap.expand(3.0), CornerRadius::same(key_round + 2), Stroke::new(2.4, fade(SELECTED, alpha)), StrokeKind::Outside);
+            painter.rect_stroke(
+                cap.expand(1.5),
+                radius,
+                Stroke::new(1.5, fade(SELECTED.gamma_multiply(0.4), alpha)),
+                StrokeKind::Outside,
+            );
+            painter.rect_stroke(
+                cap.expand(3.0),
+                CornerRadius::same(key_round + 2),
+                Stroke::new(2.4, fade(SELECTED, alpha)),
+                StrokeKind::Outside,
+            );
         }
 
-        draw_legends(&painter, cap, unit, legends, i, fade(LEGEND, alpha), fade(LEGEND_WEAK, alpha));
+        draw_legends(
+            &painter,
+            cap,
+            unit,
+            legends,
+            i,
+            fade(LEGEND, alpha),
+            fade(LEGEND_WEAK, alpha),
+        );
         draw_icon(&painter, cap, unit, legends, i, fade(LEGEND, alpha * 0.8));
+        if is_combo {
+            draw_combo_marker(
+                &painter,
+                cap,
+                unit,
+                fade(Color32::from_rgb(0xF5, 0x9E, 0x0B), alpha),
+            );
+        }
     }
 
     let clicked = if response.clicked() { hovered } else { None };
@@ -308,14 +446,16 @@ fn draw_legends(
     tap_color: Color32,
     hold_color: Color32,
 ) {
-    let Some(key) = legends.and_then(|l| l.keys.get(i)) else { return };
-    let labels = labels_for(key);
+    let Some(key) = legends.and_then(|l| l.keys.get(i)) else {
+        return;
+    };
+    let labels = keycap_labels_for(key);
     if !labels.tap.is_empty() {
         painter.text(
             cap.center() - Vec2::new(0.0, unit * 0.04),
             Align2::CENTER_CENTER,
             &labels.tap,
-            FontId::proportional(unit * 0.31),
+            fitted_font(unit, &labels.tap, 0.31),
             tap_color,
         );
     }
@@ -324,11 +464,24 @@ fn draw_legends(
             cap.center_bottom() - Vec2::new(0.0, unit * 0.16),
             Align2::CENTER_CENTER,
             hold,
-            FontId::proportional(unit * 0.23),
+            fitted_font(unit, hold, 0.23),
             hold_color,
         );
     }
 }
+
+fn draw_combo_marker(painter: &Painter, cap: Rect, unit: f32, tint: Color32) {
+    painter.text(
+        cap.right_top() + Vec2::new(-unit * 0.16, unit * 0.15),
+        Align2::CENTER_CENTER,
+        "◆",
+        FontId::proportional(unit * 0.20),
+        tint,
+    );
+}
+
+// Combo membership is a relation between physical key positions, so it gets
+// its own small marker instead of replacing the key's actual assignment.
 
 /// Category badge in the key's top-left corner. Layer keys get a readable
 /// "L<n>" (which layer they reach); media/mouse/lighting get their glyph.
@@ -339,8 +492,17 @@ fn icon_text(key: &crate::oryx_api::OryxKey) -> Option<String> {
     }
 }
 
-fn draw_icon(painter: &Painter, cap: Rect, unit: f32, legends: Option<&Layer>, i: usize, tint: Color32) {
-    let Some(key) = legends.and_then(|l| l.keys.get(i)) else { return };
+fn draw_icon(
+    painter: &Painter,
+    cap: Rect,
+    unit: f32,
+    legends: Option<&Layer>,
+    i: usize,
+    tint: Color32,
+) {
+    let Some(key) = legends.and_then(|l| l.keys.get(i)) else {
+        return;
+    };
     if let Some(icon) = icon_text(key) {
         painter.text(
             cap.left_top() + Vec2::new(unit * 0.21, unit * 0.18),

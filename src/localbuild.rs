@@ -20,6 +20,10 @@ use crate::oryx_api::cache_dir;
 /// Refuse to cache an Oryx source download bigger than this (it's a small
 /// keymap zip; anything larger is a truncated/garbage response).
 const MAX_SOURCE_ZIP_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_SOURCE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SOURCE_EXTRACTED_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SOURCE_FILES: usize = 256;
+const SOURCE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often to poll the `qmk compile` child while streaming its output.
 const COMPILE_POLL: Duration = Duration::from_millis(120);
 
@@ -45,7 +49,7 @@ pub struct BuildEnv {
 
 impl BuildEnv {
     pub fn is_ready(&self) -> bool {
-        self.qmk_cli && self.firmware_dir.is_some()
+        self.qmk_cli && self.arm_gcc && self.firmware_dir.is_some()
     }
 }
 
@@ -67,7 +71,7 @@ pub fn detect_env() -> BuildEnv {
     if let Some(dir) = cfg.qmk_firmware_dir {
         candidates.push(PathBuf::from(dir));
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
         candidates.push(home.join("qmk_firmware"));
         candidates.push(home.join("Documents/qmk_firmware"));
         candidates.push(home.join("src/qmk_firmware"));
@@ -110,7 +114,15 @@ pub fn spawn_build(
             let _ = tx.send(BuildMsg::Log(s));
             ctx.request_repaint();
         };
-        match build(&revision, &edits, &dances, &new_layers, firmware_serial.as_deref(), &cancel, &log) {
+        match build(
+            &revision,
+            &edits,
+            &dances,
+            &new_layers,
+            firmware_serial.as_deref(),
+            &cancel,
+            &log,
+        ) {
             Ok(bin) => {
                 let _ = tx.send(BuildMsg::Built(bin));
             }
@@ -121,6 +133,14 @@ pub fn spawn_build(
         ctx.request_repaint();
     });
     rx
+}
+
+fn valid_firmware_serial(serial: &str) -> bool {
+    serial.len() <= 30
+        && serial.is_ascii()
+        && serial
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'~'))
 }
 
 pub fn build(
@@ -139,20 +159,20 @@ pub fn build(
     if !env.qmk_cli {
         bail!("the `qmk` CLI isn't installed - see Tools for setup");
     }
+    if !env.arm_gcc {
+        bail!("the ARM GCC toolchain isn't installed - see Tools for setup");
+    }
 
-    log(format!("Fetching generated source for revision {revision}…"));
+    log(format!(
+        "Fetching generated source for revision {revision}…"
+    ));
     let mut files = fetch_source_files(revision)?;
 
     let keymap_c = take_file(&mut files, "keymap.c")
         .ok_or_else(|| anyhow!("no keymap.c in the generated source"))?;
     let rules_mk = take_file(&mut files, "rules.mk").unwrap_or_default();
 
-    // A multi-step slot ("KC_A\nKC_B", staged from more than one "then press
-    // another key") going into a PLAIN LAYOUT position - not a tap-dance,
-    // which taps its own multi-step slots directly in the generated case
-    // body - needs a custom keycode plus generated process_record_user to
-    // fire the taps: collect those here, substituting the position's
-    // keycode with the generated MACRO_KJ_{id} name.
+    // Plain multi-step slots become generated custom keycodes.
     let mut macros: Vec<keymap::MacroSpec> = Vec::new();
     let mut macro_for = |code: &str| -> String {
         if !code.contains('\n') {
@@ -164,7 +184,10 @@ pub fn build(
         format!("MACRO_KJ_{id}")
     };
 
-    log(format!("Applying {} key change(s) to keymap.c…", edits.len()));
+    log(format!(
+        "Applying {} key change(s) to keymap.c…",
+        edits.len()
+    ));
     let km_edits: Vec<keymap::Edit> = edits
         .iter()
         .map(|e| keymap::Edit {
@@ -175,8 +198,16 @@ pub fn build(
         .collect();
     let mut patched = keymap::apply_edits(&keymap_c, &km_edits)?;
     for nl in new_layers {
-        log(format!("Adding layer [{}] ({} keys)…", nl.position, nl.keys.len()));
-        let keys: Vec<(usize, String)> = nl.keys.iter().map(|(pos, code)| (*pos, macro_for(code))).collect();
+        log(format!(
+            "Adding layer [{}] ({} keys)…",
+            nl.position,
+            nl.keys.len()
+        ));
+        let keys: Vec<(usize, String)> = nl
+            .keys
+            .iter()
+            .map(|(pos, code)| (*pos, macro_for(code)))
+            .collect();
         patched = keymap::add_layer(&patched, nl.position, &keys)?;
     }
     if !dances.is_empty() {
@@ -187,13 +218,17 @@ pub fn build(
         // Oryx returns SERIAL_NUMBER inside a fixed 32-byte raw-HID report:
         // byte 0 is the event id and one byte is the stop marker, leaving at
         // most 30 visible serial bytes.
-        if serial.len() > 30 || serial.contains(['"','\n','\r']) {
-            bail!("invalid firmware serial (must be <= 30 ASCII-safe bytes)");
+        if !valid_firmware_serial(serial) {
+            bail!("invalid firmware serial (must be <= 30 safe ASCII bytes)");
         }
-        let cfg = files.iter_mut().find(|(n, _)| n == "config.h")
+        let cfg = files
+            .iter_mut()
+            .find(|(n, _)| n == "config.h")
             .ok_or_else(|| anyhow!("generated source has no config.h for firmware identity"))?;
         let mut text = String::from_utf8_lossy(&cfg.1).into_owned();
-        text.push_str("\n// Keyjitsu: identify the exact authored state running on the keyboard.\n");
+        text.push_str(
+            "\n// Keyjitsu: identify the exact authored state running on the keyboard.\n",
+        );
         text.push_str("#undef SERIAL_NUMBER\n");
         text.push_str(&format!("#define SERIAL_NUMBER \"{}\"\n", serial));
         cfg.1 = text.into_bytes();
@@ -204,18 +239,20 @@ pub fn build(
         patched = keymap::apply_macros(&patched, &macros)?;
     }
 
-    // Enable any QMK features the new keycodes rely on (Oryx often ships these
-    // off to save space), otherwise they'd compile but silently do nothing.
-    // Scan EVERY source of new keycodes - edits, tap-dance sub-actions, and
-    // new-layer keys - not just `edits` (a mouse/media key on a new layer or in
-    // a dance was previously built inert).
+    // Enable QMK features required by edits, dances and custom-layer keys.
     let all_codes: Vec<&str> = edits
         .iter()
         .map(|e| e.keycode.as_str())
         .chain(dances.iter().flat_map(|d| {
-            [&d.tap, &d.hold, &d.double_tap, &d.tap_hold].into_iter().filter_map(|s| s.as_deref())
+            [&d.tap, &d.hold, &d.double_tap, &d.tap_hold]
+                .into_iter()
+                .filter_map(|s| s.as_deref())
         }))
-        .chain(new_layers.iter().flat_map(|l| l.keys.iter().map(|(_, c)| c.as_str())))
+        .chain(
+            new_layers
+                .iter()
+                .flat_map(|l| l.keys.iter().map(|(_, c)| c.as_str())),
+        )
         .collect();
     let mut rules = rules_mk;
     if all_codes.iter().any(|c| crate::keycodes::needs_mousekey(c)) {
@@ -244,11 +281,9 @@ pub fn build(
     }
 
     // Drop the layout into a dedicated keymap so we never touch `default`.
-    // Write every generated file (keymap.c pulls in i18n.h, config.h, …), then
-    // overwrite keymap.c / rules.mk with our edited versions.
-    let km_dir = firmware.join("keyboards/zsa/voyager/keymaps/keyjitsu");
-    std::fs::create_dir_all(&km_dir)
-        .with_context(|| format!("creating {}", km_dir.display()))?;
+    // Start clean so files from an older generated source cannot leak into a
+    // later build when Oryx stops emitting one of them.
+    let km_dir = prepare_keymap_dir(&firmware)?;
     for (name, bytes) in &files {
         std::fs::write(km_dir.join(name), bytes)
             .with_context(|| format!("writing {}", km_dir.join(name).display()))?;
@@ -257,27 +292,63 @@ pub fn build(
         .with_context(|| format!("writing {}", km_dir.join("keymap.c").display()))?;
     std::fs::write(km_dir.join("rules.mk"), rules)
         .with_context(|| format!("writing {}", km_dir.join("rules.mk").display()))?;
-    log(format!("Wrote {} source file(s) to {}", files.len() + 2, km_dir.display()));
+    log(format!(
+        "Wrote {} source file(s) to {}",
+        files.len() + 2,
+        km_dir.display()
+    ));
 
     if cancel.load(Ordering::SeqCst) {
         bail!("canceled");
     }
+
+    // qmk writes this fixed output name into the firmware root. Remove any
+    // previous build first so a successful command that fails to emit a fresh
+    // artifact can never make an old firmware image look like the new result.
+    let bin = firmware.join("zsa_voyager_keyjitsu.bin");
+    clear_build_artifact(&bin)?;
+
     log("Compiling with qmk (this can take a minute)…".into());
     run_streamed(
-        Command::new("qmk")
-            .current_dir(&firmware)
-            .args(["compile", "-kb", "zsa/voyager", "-km", "keyjitsu"]),
+        Command::new("qmk").current_dir(&firmware).args([
+            "compile",
+            "-kb",
+            "zsa/voyager",
+            "-km",
+            "keyjitsu",
+        ]),
         cancel,
         log,
     )?;
 
-    // qmk writes `zsa_voyager_keyjitsu.bin` into the firmware root.
-    let bin = firmware.join("zsa_voyager_keyjitsu.bin");
     if !bin.is_file() {
         bail!("compile finished but {} was not produced", bin.display());
     }
     log(format!("Built {}", bin.display()));
     Ok(bin)
+}
+
+fn clear_build_artifact(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            Err(e).with_context(|| format!("removing stale build artifact {}", path.display()))
+        }
+    }
+}
+
+fn prepare_keymap_dir(firmware: &Path) -> Result<PathBuf> {
+    let km_dir = firmware.join("keyboards/zsa/voyager/keymaps/keyjitsu");
+    match std::fs::remove_dir_all(&km_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("clearing {}", km_dir.display()));
+        }
+    }
+    std::fs::create_dir_all(&km_dir).with_context(|| format!("creating {}", km_dir.display()))?;
+    Ok(km_dir)
 }
 
 /// Pull a source file out of the list by basename, as UTF-8.
@@ -314,16 +385,40 @@ fn set_rule(rules: &str, key: &str, value: &str) -> String {
     s
 }
 
-
-
 /// All files inside the generated `*_source/` directory of Oryx's zip, as
 /// `(basename, bytes)`. Non-source extras (the prebuilt .bin, build.log,
 /// README) are skipped.
-fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    // Keep the revision from escaping the cache dir / URL path.
-    if revision.is_empty() || revision.contains(['/', '\\', '.']) {
+fn validate_source_basename(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 128
+        || name == "."
+        || name == ".."
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        bail!("unsafe generated source filename {name:?}");
+    }
+    Ok(())
+}
+
+fn validate_revision_id(revision: &str) -> Result<()> {
+    // Keep the revision safe both as an URL segment and as part of a cache
+    // filename. Oryx revision ids are short opaque identifiers; accepting
+    // punctuation here only creates filesystem/URL ambiguity.
+    if revision.is_empty()
+        || revision.len() > 128
+        || !revision
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         bail!("invalid revision id {revision:?}");
     }
+    Ok(())
+}
+
+fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
+    validate_revision_id(revision)?;
     // Cache the zip so rebuilds are offline - but only once it's validated as a
     // real zip, so a truncated download / captive-portal HTML page can't poison
     // the cache and make every future build of this revision fail.
@@ -334,6 +429,7 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         let url = format!("https://oryx.zsa.io/source/{revision}");
         let mut b = Vec::new();
         ureq::get(&url)
+            .timeout(SOURCE_REQUEST_TIMEOUT)
             .call()
             .with_context(|| format!("downloading generated source from {url}"))?
             .into_reader()
@@ -344,12 +440,12 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
             bail!("generated source from {url} is larger than {MAX_SOURCE_ZIP_BYTES} bytes - refusing to cache a truncated download");
         }
         // Validate BEFORE caching.
-        zip::ZipArchive::new(std::io::Cursor::new(&b[..]))
-            .with_context(|| format!("downloaded source from {url} is not a valid zip (not caching)"))?;
-        if let Some(parent) = cache.parent() {
-            std::fs::create_dir_all(parent).ok();
+        zip::ZipArchive::new(std::io::Cursor::new(&b[..])).with_context(|| {
+            format!("downloaded source from {url} is not a valid zip (not caching)")
+        })?;
+        if let Err(e) = crate::config::write_atomic(&cache, &b) {
+            eprintln!("keyjitsu: could not cache generated source {revision}: {e:#}");
         }
-        std::fs::write(&cache, &b).ok();
         b
     };
 
@@ -358,27 +454,62 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         Err(e) => {
             // A cached file that won't open is stale/corrupt - drop it so the
             // next build re-downloads instead of failing forever.
-            let _ = std::fs::remove_file(&cache);
-            return Err(anyhow!("cached source is not a valid zip ({e}). Removed it, retry the build"));
+            if let Err(remove) = std::fs::remove_file(&cache) {
+                if remove.kind() != std::io::ErrorKind::NotFound {
+                    return Err(anyhow!(
+                        "cached source is invalid ({e}) and could not be removed: {remove}"
+                    ));
+                }
+            }
+            return Err(anyhow!(
+                "cached source is not a valid zip ({e}). Removed it, retry the build"
+            ));
         }
     };
     let mut out = Vec::new();
+    let mut extracted_bytes = 0u64;
     for i in 0..zip.len() {
-        let mut f = zip.by_index(i).context("reading source zip")?;
+        let f = zip.by_index(i).context("reading source zip")?;
         if !f.is_file() {
             continue;
         }
         let name = f.name().to_string();
         // Only the compilable source, not build.log / README / the prebuilt bin.
         let is_source = name.contains("_source/")
-            && (name.ends_with(".c") || name.ends_with(".h") || name.ends_with(".mk")
+            && (name.ends_with(".c")
+                || name.ends_with(".h")
+                || name.ends_with(".mk")
                 || name.ends_with(".json"));
         if !is_source {
             continue;
         }
+        if out.len() >= MAX_SOURCE_FILES {
+            bail!("generated source contains more than {MAX_SOURCE_FILES} source files");
+        }
+        if f.size() > MAX_SOURCE_FILE_BYTES {
+            bail!("generated source file {name:?} is larger than {MAX_SOURCE_FILE_BYTES} bytes");
+        }
+        extracted_bytes = extracted_bytes
+            .checked_add(f.size())
+            .context("generated source size overflow")?;
+        if extracted_bytes > MAX_SOURCE_EXTRACTED_BYTES {
+            bail!("generated source expands beyond {MAX_SOURCE_EXTRACTED_BYTES} bytes");
+        }
+
         let base = name.rsplit('/').next().unwrap_or(&name).to_string();
+        validate_source_basename(&base)?;
+        if out.iter().any(|(existing, _)| existing == &base) {
+            bail!("generated source contains duplicate filename {base:?}");
+        }
         let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
+        f.take(MAX_SOURCE_FILE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading generated source file {name:?}"))?;
+        if bytes.len() as u64 > MAX_SOURCE_FILE_BYTES {
+            bail!(
+                "generated source file {name:?} exceeded {MAX_SOURCE_FILE_BYTES} bytes while reading"
+            );
+        }
         out.push((base, bytes));
     }
     if out.is_empty() {
@@ -390,6 +521,22 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
 /// Run a command, streaming combined stdout+stderr to `log`, killable via
 /// `cancel`. Output is read on helper threads so the main loop can poll both
 /// process exit and the cancel flag.
+fn finish_log_readers(
+    readers: Vec<std::thread::JoinHandle<()>>,
+    line_rx: &Receiver<String>,
+    log: &dyn Fn(String),
+) -> Result<()> {
+    for reader in readers {
+        reader
+            .join()
+            .map_err(|_| anyhow!("qmk output reader thread panicked"))?;
+    }
+    while let Ok(line) = line_rx.try_recv() {
+        log(line);
+    }
+    Ok(())
+}
+
 fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -> Result<()> {
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -399,18 +546,25 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
     let (line_tx, line_rx) = channel::<String>();
     let readers: [Option<Box<dyn Read + Send>>; 2] = [
-        child.stdout.take().map(|o| Box::new(o) as Box<dyn Read + Send>),
-        child.stderr.take().map(|e| Box::new(e) as Box<dyn Read + Send>),
+        child
+            .stdout
+            .take()
+            .map(|o| Box::new(o) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|e| Box::new(e) as Box<dyn Read + Send>),
     ];
+    let mut reader_threads = Vec::new();
     for reader in readers.into_iter().flatten() {
         let tx = line_tx.clone();
-        std::thread::spawn(move || {
+        reader_threads.push(std::thread::spawn(move || {
             for line in BufReader::new(reader).lines().map_while(Result::ok) {
                 if tx.send(line).is_err() {
                     break;
                 }
             }
-        });
+        }));
     }
     drop(line_tx);
 
@@ -419,16 +573,20 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
             log(line);
         }
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
+            if child
+                .try_wait()
+                .context("checking qmk compile before cancellation")?
+                .is_none()
+            {
+                child.kill().context("terminating qmk compile")?;
+                child.wait().context("waiting for canceled qmk compile")?;
+            }
+            finish_log_readers(reader_threads, &line_rx, log)?;
             bail!("canceled");
         }
         match child.try_wait().context("waiting for qmk")? {
             Some(status) => {
-                // Drain any remaining buffered lines.
-                while let Ok(line) = line_rx.try_recv() {
-                    log(line);
-                }
+                finish_log_readers(reader_threads, &line_rx, log)?;
                 if !status.success() {
                     bail!("qmk compile failed (exit {:?})", status.code());
                 }
@@ -441,7 +599,83 @@ fn run_streamed(cmd: &mut Command, cancel: &Arc<AtomicBool>, log: &dyn Fn(String
 
 #[cfg(test)]
 mod tests {
-    use super::set_rule;
+    use std::path::PathBuf;
+
+    use super::{
+        clear_build_artifact, prepare_keymap_dir, set_rule, valid_firmware_serial,
+        validate_revision_id, validate_source_basename, BuildEnv,
+    };
+
+    #[test]
+    fn build_environment_requires_cli_compiler_and_checkout() {
+        let env = |qmk_cli, arm_gcc, firmware_dir| BuildEnv {
+            qmk_cli,
+            arm_gcc,
+            firmware_dir,
+        };
+
+        assert!(env(true, true, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(false, true, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(true, false, Some(PathBuf::from("/qmk"))).is_ready());
+        assert!(!env(true, true, None).is_ready());
+    }
+
+    #[test]
+    fn stale_firmware_artifact_is_removed_before_compile() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("zsa_voyager_keyjitsu.bin");
+        std::fs::write(&bin, b"old firmware").unwrap();
+
+        clear_build_artifact(&bin).unwrap();
+        assert!(!bin.exists());
+        clear_build_artifact(&bin).unwrap();
+    }
+
+    #[test]
+    fn generated_keymap_directory_starts_clean() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = dir.path().join("keyboards/zsa/voyager/keymaps/keyjitsu");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("stale.c"), b"old").unwrap();
+
+        let fresh = prepare_keymap_dir(dir.path()).unwrap();
+
+        assert_eq!(fresh, old);
+        assert!(fresh.is_dir());
+        assert!(!fresh.join("stale.c").exists());
+    }
+
+    #[test]
+    fn generated_source_basenames_cannot_escape_keymap_directory() {
+        assert!(validate_source_basename("keymap.c").is_ok());
+        assert!(validate_source_basename("rules.mk").is_ok());
+        assert!(validate_source_basename("config_extra.h").is_ok());
+        assert!(validate_source_basename("..\\evil.c").is_err());
+        assert!(validate_source_basename("../evil.c").is_err());
+        assert!(validate_source_basename("sub/evil.c").is_err());
+        assert!(validate_source_basename("sub\\evil.c").is_err());
+        assert!(validate_source_basename("..").is_err());
+    }
+
+    #[test]
+    fn generated_source_revision_is_safe_for_url_and_cache_paths() {
+        assert!(validate_revision_id("wODgzD").is_ok());
+        assert!(validate_revision_id("rev-1_test").is_ok());
+        assert!(validate_revision_id("").is_err());
+        assert!(validate_revision_id("../../escape").is_err());
+        assert!(validate_revision_id("rev/other").is_err());
+        assert!(validate_revision_id("rev?query").is_err());
+        assert!(validate_revision_id(&"a".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn firmware_serial_accepts_only_safe_ascii() {
+        assert!(valid_firmware_serial("layout/rev~kj0123456789"));
+        assert!(!valid_firmware_serial("layout/rev\"oops"));
+        assert!(!valid_firmware_serial("layout/rev\\oops"));
+        assert!(!valid_firmware_serial("layout/rév~kj0123456789"));
+        assert!(!valid_firmware_serial(&"x".repeat(31)));
+    }
 
     #[test]
     fn replaces_existing_rule_regardless_of_value() {

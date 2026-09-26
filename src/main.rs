@@ -9,27 +9,28 @@ mod cmd_overlay;
 mod config;
 mod device;
 mod firmware_state;
+mod geometry;
 mod gui;
+mod heatmap;
 mod keycodes;
 mod keymap;
+mod legend;
 mod localbuild;
-mod perf;
-mod shortcuts;
 #[cfg(target_os = "macos")]
 mod macos_display;
 #[cfg(target_os = "macos")]
-mod macos_kb;
-#[cfg(target_os = "macos")]
 mod macos_guard_test;
+#[cfg(target_os = "macos")]
+mod macos_kb;
 #[cfg(target_os = "macos")]
 mod macos_lockwatch;
 #[cfg(target_os = "macos")]
 mod macos_overlay;
-mod geometry;
-mod heatmap;
-mod legend;
 mod oryx_api;
+mod perf;
+mod platform;
 mod protocol;
+mod shortcuts;
 mod ui;
 
 use std::io::Write as _;
@@ -210,13 +211,13 @@ impl LayoutSource {
             return LayoutId::from_url(url);
         }
         if let Some(hash) = &self.hash {
-            return Ok(LayoutId { hash: hash.clone(), revision: self.rev.clone() });
+            return LayoutId::new(hash.clone(), self.rev.clone());
         }
-        let kb = Keyboard::open(serial)?;
-        kb.pair()?;
-        let fw = kb.fw_version()?;
-        kb.disconnect();
-        LayoutId::from_serial(&fw)
+        with_keyboard(serial, |kb| {
+            kb.pair()?;
+            let fw = kb.fw_version()?;
+            LayoutId::from_serial(&fw)
+        })
     }
 }
 
@@ -295,9 +296,12 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Status => cmd_status(serial),
         Cmd::Watch { json } => cmd_watch(serial, json),
         Cmd::Live => cmd_live::run(serial),
-        Cmd::Layout { source, layer, refresh, json } => {
-            cmd_layout(serial, &source, layer, refresh, json)
-        }
+        Cmd::Layout {
+            source,
+            layer,
+            refresh,
+            json,
+        } => cmd_layout(serial, &source, layer, refresh, json),
         Cmd::Heatmap { action } => match action {
             HeatmapAction::Show { source, layer } => cmd_heatmap_show(serial, &source, layer),
             HeatmapAction::Reset { source, yes } => cmd_heatmap_reset(serial, &source, yes),
@@ -321,19 +325,40 @@ fn run(cli: Cli) -> Result<()> {
             }),
             StatusLedAction::Release => kb.send(Command::StatusLedControl(false)),
         }),
-        Cmd::BuildLocal { rev, sets, dance, new_layer } => cmd_build_local(serial, rev, &sets, &dance, &new_layer),
-        Cmd::Flash { target, latest, timeout } => {
-            cmd_flash::run(target.as_deref(), latest, timeout)
-        }
+        Cmd::BuildLocal {
+            rev,
+            sets,
+            dance,
+            new_layer,
+        } => cmd_build_local(serial, rev, &sets, &dance, &new_layer),
+        Cmd::Flash {
+            target,
+            latest,
+            timeout,
+        } => cmd_flash::run(serial, target.as_deref(), latest, timeout),
         #[cfg(target_os = "macos")]
         Cmd::Guard => cmd_guard::run(serial),
         #[cfg(target_os = "macos")]
-        Cmd::Overlay { key, pick, toggle, show_on_layers, opacity, scale, position } => {
-            cmd_overlay::run(
-                serial,
-                cmd_overlay::Opts { key, pick, toggle, show_on_layers, opacity, scale, position },
-            )
-        }
+        Cmd::Overlay {
+            key,
+            pick,
+            toggle,
+            show_on_layers,
+            opacity,
+            scale,
+            position,
+        } => cmd_overlay::run(
+            serial,
+            cmd_overlay::Opts {
+                key,
+                pick,
+                toggle,
+                show_on_layers,
+                opacity,
+                scale,
+                position,
+            },
+        ),
         #[cfg(target_os = "macos")]
         Cmd::Autolayer { rules, poll_ms } => cmd_autolayer::run(serial, &rules, poll_ms),
         Cmd::Brightness { direction, steps } => with_paired(serial, |kb| {
@@ -347,35 +372,104 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Open + pair, run `f`, then leave a short grace so the last write lands.
-fn with_paired(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<()>) -> Result<()> {
+fn with_keyboard<T>(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<T>) -> Result<T> {
     let kb = Keyboard::open(serial)?;
-    kb.pair()?;
-    f(&kb)?;
-    // One-shot commands have no ack; give the OS a beat to flush the report.
-    std::thread::sleep(Duration::from_millis(50));
-    Ok(())
+    let result = f(&kb);
+    kb.disconnect();
+    result
 }
 
-fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], dance: &[String], new_layer: &[String]) -> Result<()> {
+/// Open + pair, run `f`, then leave a short grace so the last write lands.
+fn with_paired(serial: Option<&str>, f: impl FnOnce(&Keyboard) -> Result<()>) -> Result<()> {
+    with_keyboard(serial, |kb| {
+        kb.pair()?;
+        let result = f(kb);
+        // One-shot commands have no ack; give the OS a beat to flush the report.
+        std::thread::sleep(Duration::from_millis(50));
+        result
+    })
+}
+
+fn parse_dance_arg(s: &str) -> Result<keymap::DanceSpec> {
+    use anyhow::Context as _;
+
+    let (lhs, spec) = s
+        .split_once('=')
+        .context("expected LAYER,POSITION=TAP,HOLD,DOUBLE,TAPHOLD")?;
+    let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=…")?;
+    let slots = keymap::split_top_level(spec);
+    if slots.len() > 4 {
+        anyhow::bail!("tap dance has more than four action slots");
+    }
+    let slot = |i: usize| {
+        slots
+            .get(i)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && *value != "-")
+            .map(str::to_string)
+    };
+    Ok(keymap::DanceSpec {
+        layer: layer.trim().parse().context("bad layer")?,
+        position: position.trim().parse().context("bad position")?,
+        tap: slot(0),
+        hold: slot(1),
+        double_tap: slot(2),
+        tap_hold: slot(3),
+    })
+}
+
+fn parse_new_layer_arg(s: &str) -> Result<localbuild::NewLayer> {
+    use anyhow::Context as _;
+
+    let (idx, rest) = s.split_once(':').unwrap_or((s, ""));
+    let keys = keymap::split_top_level(rest)
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let (pos, code) = part.split_once('=').context("expected POS=CODE")?;
+            let code = code.trim();
+            if code.is_empty() {
+                anyhow::bail!("empty keycode");
+            }
+            Ok((
+                pos.trim().parse::<usize>().context("bad position")?,
+                code.to_string(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(localbuild::NewLayer {
+        position: idx.trim().parse().context("bad layer index")?,
+        keys,
+    })
+}
+
+fn cmd_build_local(
+    serial: Option<&str>,
+    rev: Option<String>,
+    sets: &[String],
+    dance: &[String],
+    new_layer: &[String],
+) -> Result<()> {
     use anyhow::Context as _;
 
     let revision = match rev {
         Some(r) => r,
-        None => {
-            let kb = Keyboard::open(serial)?;
+        None => with_keyboard(serial, |kb| {
             kb.pair()?;
             let fw = kb.fw_version()?;
-            kb.disconnect();
-            oryx_api::LayoutId::from_serial(&fw)?.revision
-        }
+            Ok(oryx_api::LayoutId::from_serial(&fw)?.revision)
+        })?,
     };
 
     let edits = sets
         .iter()
         .map(|s| {
-            let (lhs, keycode) = s.split_once('=').context("expected LAYER,POSITION=KEYCODE")?;
-            let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=KEYCODE")?;
+            let (lhs, keycode) = s
+                .split_once('=')
+                .context("expected LAYER,POSITION=KEYCODE")?;
+            let (layer, position) = lhs
+                .split_once(',')
+                .context("expected LAYER,POSITION=KEYCODE")?;
             Ok::<_, anyhow::Error>(localbuild::KeyEdit {
                 layer: layer.trim().parse().context("bad layer")?,
                 position: position.trim().parse().context("bad position")?,
@@ -386,45 +480,24 @@ fn cmd_build_local(serial: Option<&str>, rev: Option<String>, sets: &[String], d
 
     let dances = dance
         .iter()
-        .map(|s| {
-            let (lhs, spec) = s.split_once('=').context("expected LAYER,POSITION=TAP,HOLD,DOUBLE,TAPHOLD")?;
-            let (layer, position) = lhs.split_once(',').context("expected LAYER,POSITION=…")?;
-            let slot = |i: usize| -> Option<String> {
-                spec.split(',')
-                    .nth(i)
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty() && *v != "-")
-                    .map(str::to_string)
-            };
-            Ok::<_, anyhow::Error>(keymap::DanceSpec {
-                layer: layer.trim().parse().context("bad layer")?,
-                position: position.trim().parse().context("bad position")?,
-                tap: slot(0),
-                hold: slot(1),
-                double_tap: slot(2),
-                tap_hold: slot(3),
-            })
-        })
+        .map(|s| parse_dance_arg(s))
         .collect::<Result<Vec<_>>>()?;
 
     let new_layers = new_layer
         .iter()
-        .map(|s| {
-            let (idx, rest) = s.split_once(':').unwrap_or((s.as_str(), ""));
-            let keys = rest
-                .split(',')
-                .filter(|p| !p.trim().is_empty())
-                .map(|p| {
-                    let (pos, code) = p.split_once('=').context("expected POS=CODE")?;
-                    Ok::<_, anyhow::Error>((pos.trim().parse::<usize>().context("bad position")?, code.trim().to_string()))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok::<_, anyhow::Error>(localbuild::NewLayer { position: idx.trim().parse().context("bad layer index")?, keys })
-        })
+        .map(|s| parse_new_layer_arg(s))
         .collect::<Result<Vec<_>>>()?;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let bin = localbuild::build(&revision, &edits, &dances, &new_layers, None, &cancel, &|line| println!("{line}"))?;
+    let bin = localbuild::build(
+        &revision,
+        &edits,
+        &dances,
+        &new_layers,
+        None,
+        &cancel,
+        &|line| println!("{line}"),
+    )?;
     println!("\n✓ built: {}", bin.display());
     Ok(())
 }
@@ -449,53 +522,55 @@ fn cmd_list() -> Result<()> {
 }
 
 fn cmd_status(serial: Option<&str>) -> Result<()> {
-    let kb = Keyboard::open(serial)?;
-    println!("Keyboard : {} (pid 0x{:04x})", kb.info.model(), kb.info.pid);
-    if let Some(s) = &kb.info.serial {
-        println!("Serial   : {s}");
-    }
-    let proto = kb.protocol_version()?;
-    print!("Protocol : v{proto}");
-    if proto != PROTOCOL_VERSION {
-        print!("  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)");
-    }
-    println!();
-    let layer = kb.pair()?;
-    println!("Firmware : {}", kb.fw_version()?);
-    match layer {
-        Some(n) => println!("Layer    : {n}"),
-        None => println!("Layer    : (not reported)"),
-    }
-    kb.disconnect();
-    Ok(())
+    with_keyboard(serial, |kb| {
+        println!("Keyboard : {} (pid 0x{:04x})", kb.info.model(), kb.info.pid);
+        if let Some(s) = &kb.info.serial {
+            println!("Serial   : {s}");
+        }
+        let proto = kb.protocol_version()?;
+        print!("Protocol : v{proto}");
+        if proto != PROTOCOL_VERSION {
+            print!(
+                "  (keyjitsu targets v{PROTOCOL_VERSION} - consider re-flashing recent firmware)"
+            );
+        }
+        println!();
+        let layer = kb.pair()?;
+        println!("Firmware : {}", kb.fw_version()?);
+        match layer {
+            Some(n) => println!("Layer    : {n}"),
+            None => println!("Layer    : (not reported)"),
+        }
+        Ok(())
+    })
 }
 
 fn cmd_watch(serial: Option<&str>, json: bool) -> Result<()> {
-    let kb = Keyboard::open(serial)?;
-    kb.pair()?;
-    if !json {
-        eprintln!(
-            "Watching {} - press keys on the keyboard. Ctrl+C to stop.",
-            kb.info.model()
-        );
-    }
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))?;
-
-    while running.load(Ordering::SeqCst) {
-        let Some(ev) = kb.read_event(Duration::from_millis(200))? else {
-            continue;
-        };
-        if json {
-            println!("{}", event_json(&ev));
-        } else {
-            print_event(&ev);
+    with_keyboard(serial, |kb| {
+        kb.pair()?;
+        if !json {
+            eprintln!(
+                "Watching {} - press keys on the keyboard. Ctrl+C to stop.",
+                kb.info.model()
+            );
         }
-    }
-    kb.disconnect();
-    Ok(())
+
+        let running = Arc::new(AtomicBool::new(true));
+        let r = running.clone();
+        ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))?;
+
+        while running.load(Ordering::SeqCst) {
+            let Some(ev) = kb.read_event(Duration::from_millis(200))? else {
+                continue;
+            };
+            if json {
+                println!("{}", event_json(&ev));
+            } else {
+                print_event(&ev);
+            }
+        }
+        Ok(())
+    })
 }
 
 fn cmd_layout(
@@ -535,11 +610,18 @@ fn print_layout_header(layout: &Layout) {
         layout.title, layout.hash_id, layout.revision.hash_id, layout.geometry
     );
     if layout.geometry != "voyager" {
-        println!("warning: keyjitsu renders the Voyager geometry, but this layout is for {:?}", layout.geometry);
+        println!(
+            "warning: keyjitsu renders the Voyager geometry, but this layout is for {:?}",
+            layout.geometry
+        );
     }
 }
 
-fn cmd_heatmap_show(serial: Option<&str>, source: &LayoutSource, only_layer: Option<u8>) -> Result<()> {
+fn cmd_heatmap_show(
+    serial: Option<&str>,
+    source: &LayoutSource,
+    only_layer: Option<u8>,
+) -> Result<()> {
     let id = source.resolve(serial)?;
     let geo = geometry::voyager();
     let store = HeatmapStore::load(&id.hash, geo.len())?;
@@ -609,7 +691,10 @@ fn cmd_heatmap_show(serial: Option<&str>, source: &LayoutSource, only_layer: Opt
 fn cmd_heatmap_reset(serial: Option<&str>, source: &LayoutSource, yes: bool) -> Result<()> {
     let id = source.resolve(serial)?;
     if !yes {
-        print!("Delete recorded key statistics for layout {}? [y/N] ", id.hash);
+        print!(
+            "Delete recorded key statistics for layout {}? [y/N] ",
+            id.hash
+        );
         std::io::stdout().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
@@ -651,4 +736,28 @@ fn event_json(ev: &Event) -> String {
         other => json!({"event": "other", "debug": format!("{other:?}")}),
     };
     v.to_string()
+}
+
+#[cfg(test)]
+mod cli_parse_tests {
+    use super::{parse_dance_arg, parse_new_layer_arg};
+
+    #[test]
+    fn dance_parser_keeps_commas_inside_qmk_keycodes() {
+        let dance = parse_dance_arg("1,2=KC_A,MO(3),LCTL(KC_C),LT(2,KC_SPC)").unwrap();
+        assert_eq!(dance.layer, 1);
+        assert_eq!(dance.position, 2);
+        assert_eq!(dance.hold.as_deref(), Some("MO(3)"));
+        assert_eq!(dance.double_tap.as_deref(), Some("LCTL(KC_C)"));
+        assert_eq!(dance.tap_hold.as_deref(), Some("LT(2,KC_SPC)"));
+        assert!(parse_dance_arg("1,2=A,B,C,D,E").is_err());
+    }
+
+    #[test]
+    fn new_layer_parser_keeps_nested_keycode_commas() {
+        let layer = parse_new_layer_arg("3:0=KC_A,1=LT(2,KC_SPC),2=LCTL(KC_C)").unwrap();
+        assert_eq!(layer.position, 3);
+        assert_eq!(layer.keys.len(), 3);
+        assert_eq!(layer.keys[1], (1, "LT(2,KC_SPC)".to_string()));
+    }
 }

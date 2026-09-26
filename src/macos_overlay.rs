@@ -251,11 +251,17 @@ impl Overlay {
     }
 
     pub fn set_pressed(&self, idx: usize, pressed: bool) {
-        let Some(&layer) = self.key_layers.get(idx) else { return };
+        let Some(&layer) = self.key_layers.get(idx) else {
+            return;
+        };
         autoreleasepool(|_| unsafe {
             let _: () = msg_send![class!(CATransaction), begin];
             let _: () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
-            let color = if pressed { self.bg_pressed } else { self.bg_normal };
+            let color = if pressed {
+                self.bg_pressed
+            } else {
+                self.bg_normal
+            };
             let _: () = msg_send![layer, setBackgroundColor: color];
             let _: () = msg_send![class!(CATransaction), commit];
         });
@@ -281,7 +287,8 @@ impl Overlay {
     pub fn pump(&self) {
         autoreleasepool(|_| unsafe {
             let mode = NSString::from_str("kCFRunLoopDefaultMode");
-            let date: Id = msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: PUMP_INTERVAL_SECS];
+            let date: Id =
+                msg_send![class!(NSDate), dateWithTimeIntervalSinceNow: PUMP_INTERVAL_SECS];
             loop {
                 let ev: Id = msg_send![
                     self.app,

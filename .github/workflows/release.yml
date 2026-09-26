@@ -1,46 +1,124 @@
 name: Release
 
-# Builds Keyjitsu.app and the CLI binary from the tagged source on a GitHub
-# runner and attaches them, with SHA256 sums, to the GitHub release.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and attach assets to (for example v0.9.2)'
+        description: 'Existing tag to build and attach assets to'
         required: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   macos:
-    name: macOS (Apple Silicon) assets
+    name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build the app bundle
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build app bundle
         run: scripts/bundle.sh
       - name: Package
-        id: pkg
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          BASE="keyjitsu-${TAG}-macos-arm64"
-          ditto -c -k --keepParent target/release/Keyjitsu.app "${BASE}.zip"
-          cp target/release/keyjitsu "${BASE}-cli"
-          shasum -a 256 "${BASE}.zip" "${BASE}-cli" > SHA256SUMS.txt
+          arch="$(uname -m)"
+          base="keyjitsu-${RELEASE_TAG}-macos-${arch}"
+          ditto -c -k --keepParent target/release/Keyjitsu.app "${base}.zip"
+          cp target/release/keyjitsu "${base}-cli"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            keyjitsu-*-macos-*.zip
+            keyjitsu-*-macos-*-cli
+
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev libxkbcommon-dev libwayland-dev
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          base="keyjitsu-${RELEASE_TAG}-linux-x86_64"
+          mkdir "${base}"
+          cp target/release/keyjitsu "${base}/"
+          cp README.md "${base}/"
+          tar -czf "${base}.tar.gz" "${base}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: keyjitsu-*-linux-x86_64.tar.gz
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          $base = "keyjitsu-$env:RELEASE_TAG-windows-x86_64"
+          New-Item -ItemType Directory -Path $base | Out-Null
+          Copy-Item target/release/keyjitsu.exe "$base/keyjitsu.exe"
+          Copy-Item README.md "$base/README.md"
+          Compress-Archive -Path "$base/*" -DestinationPath "$base.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x86_64
+          path: keyjitsu-*-windows-x86_64.zip
+
+  publish:
+    name: Publish release assets
+    needs: [macos, linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-      - name: Attach to the GitHub release
+      - name: Attach assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ steps.pkg.outputs.tag }}"
-          gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --verify-tag --title "keyjitsu $TAG" --notes "See CHANGELOG.md."
-          gh release upload "$TAG" keyjitsu-*.zip keyjitsu-*-cli SHA256SUMS.txt --clobber
+          gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
+            gh release create "${RELEASE_TAG}" --verify-tag --title "keyjitsu ${RELEASE_TAG}" --notes-file CHANGELOG.md
+          gh release upload "${RELEASE_TAG}" dist/* --clobber

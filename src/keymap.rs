@@ -45,24 +45,81 @@ fn is_layer_switch(code: &str) -> bool {
 /// The (press, release) C statements for an action keycode inside a tap dance.
 /// Layer-switch families become real layer ops (a raw `register_code16(MO(1))`
 /// would NOT switch layers); everything else is a plain keycode.
+fn validate_generated_action(code: &str) -> Result<()> {
+    for step in code
+        .split('\n')
+        .map(str::trim)
+        .filter(|step| !step.is_empty())
+    {
+        let nested_tap_hold = step.starts_with("TT(")
+            || step.starts_with("LT(")
+            || step.starts_with("MT(")
+            || [
+                "LCTL_T(", "RCTL_T(", "LSFT_T(", "RSFT_T(", "LALT_T(", "RALT_T(", "LGUI_T(",
+                "RGUI_T(", "HYPR_T(", "MEH_T(",
+            ]
+            .iter()
+            .any(|prefix| step.starts_with(prefix));
+        if nested_tap_hold {
+            bail!(
+                "{step} cannot be nested inside a generated sequence; use the separate Tap/Hold slots or a plain key assignment"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn action_stmts(code: &str) -> (String, String) {
     // A multi-step macro (see MacroSpec): tap every step fully, in order, the
     // moment the dance resolves - nothing is left held, so there is no
     // release-side statement.
     if code.contains('\n') {
-        let taps: String = code.split('\n').map(|c| format!("tap_code16({c}); ")).collect();
+        let mut taps = String::new();
+        for step in code
+            .split('\n')
+            .map(str::trim)
+            .filter(|step| !step.is_empty())
+        {
+            let (press, release) = action_stmts(step);
+            taps.push_str(&press);
+            if !press.is_empty() && !release.is_empty() {
+                taps.push(' ');
+            }
+            taps.push_str(&release);
+            taps.push(' ');
+        }
         return (taps.trim_end().to_string(), String::new());
     }
     // Momentary-style: on at press, off at release.
-    for pfx in ["MO(", "OSL("] {
-        if let Some(n) = code.strip_prefix(pfx).and_then(|r| r.strip_suffix(')')) {
-            return (format!("layer_on({});", n.trim()), format!("layer_off({});", n.trim()));
-        }
+    if let Some(n) = code.strip_prefix("MO(").and_then(|r| r.strip_suffix(')')) {
+        return (
+            format!("layer_on({});", n.trim()),
+            format!("layer_off({});", n.trim()),
+        );
+    }
+    // Preserve QMK one-shot semantics instead of treating OSL as a momentary
+    // layer. When one-shot keys are disabled, QMK itself falls back to MO.
+    if let Some(n) = code.strip_prefix("OSL(").and_then(|r| r.strip_suffix(')')) {
+        let n = n.trim();
+        return (
+            format!("if (is_oneshot_enabled()) {{ set_oneshot_layer({n}, ONESHOT_START); }} else {{ layer_on({n}); }}"),
+            format!("if (is_oneshot_enabled()) {{ clear_oneshot_layer_state(ONESHOT_PRESSED); }} else {{ layer_off({n}); }}"),
+        );
+    }
+    if let Some(mods) = code.strip_prefix("OSM(").and_then(|r| r.strip_suffix(')')) {
+        let mods = mods.trim();
+        return (
+            format!("if (is_oneshot_enabled()) {{ set_oneshot_mods({mods}); }} else {{ register_mods({mods}); }}"),
+            format!("if (!is_oneshot_enabled()) {{ unregister_mods({mods}); }}"),
+        );
     }
     // A layer-tap held inside a dance = hold half = momentary that layer.
     if let Some(rest) = code.strip_prefix("LT(").and_then(|r| r.strip_suffix(')')) {
         if let Some(n) = rest.split(',').next() {
-            return (format!("layer_on({});", n.trim()), format!("layer_off({});", n.trim()));
+            return (
+                format!("layer_on({});", n.trim()),
+                format!("layer_off({});", n.trim()),
+            );
         }
     }
     if let Some(n) = code.strip_prefix("TO(").and_then(|r| r.strip_suffix(')')) {
@@ -75,9 +132,16 @@ fn action_stmts(code: &str) -> (String, String) {
         }
     }
     if let Some(n) = code.strip_prefix("DF(").and_then(|r| r.strip_suffix(')')) {
-        return (format!("default_layer_set({});", n.trim()), String::new());
+        // default_layer_set() takes a layer-state bitmask, not a layer index.
+        return (
+            format!("default_layer_set(1UL << {});", n.trim()),
+            String::new(),
+        );
     }
-    (format!("register_code16({code});"), format!("unregister_code16({code});"))
+    (
+        format!("register_code16({code});"),
+        format!("unregister_code16({code});"),
+    )
 }
 
 /// Generate `TD(DANCE_KJ_i)` keycodes plus the Oryx-style tap-dance plumbing
@@ -88,30 +152,61 @@ pub fn apply_dances(source: &str, dances: &[DanceSpec]) -> Result<String> {
     if dances.is_empty() {
         return Ok(source.to_string());
     }
+    for (index, dance) in dances.iter().enumerate() {
+        for (slot, code) in [
+            ("tap", &dance.tap),
+            ("hold", &dance.hold),
+            ("double tap", &dance.double_tap),
+            ("tap-hold", &dance.tap_hold),
+        ] {
+            if let Some(code) = code {
+                validate_generated_action(code)
+                    .map_err(|e| anyhow!("tap dance {} {slot}: {e}", index + 1))?;
+            }
+        }
+    }
     let mut out = source.to_string();
 
     // 1. Swap the key slots to TD(DANCE_KJ_i).
     for (i, d) in dances.iter().enumerate() {
         out = apply_one(
             &out,
-            &Edit { layer: d.layer, position: d.position, keycode: format!("TD(DANCE_KJ_{i})") },
+            &Edit {
+                layer: d.layer,
+                position: d.position,
+                keycode: format!("TD(DANCE_KJ_{i})"),
+            },
         )?;
     }
 
     // 2. Dance names into the `tap_dance_codes` enum (create it if missing).
-    let names: String = (0..dances.len()).map(|i| format!("  DANCE_KJ_{i},
-")).collect();
+    let names: String = (0..dances.len())
+        .map(|i| {
+            format!(
+                "  DANCE_KJ_{i},
+"
+            )
+        })
+        .collect();
     if let Some(e) = out.find("enum tap_dance_codes") {
-        let close = out[e..].find("};").map(|r| e + r).ok_or_else(|| anyhow!("unterminated tap_dance_codes enum"))?;
+        let close = out[e..]
+            .find("};")
+            .map(|r| e + r)
+            .ok_or_else(|| anyhow!("unterminated tap_dance_codes enum"))?;
         out.insert_str(close, &names);
     } else {
         let km = out
             .find("const uint16_t PROGMEM keymaps")
             .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
-        out.insert_str(km, &format!("enum tap_dance_codes {{
+        out.insert_str(
+            km,
+            &format!(
+                "enum tap_dance_codes {{
 {names}}};
 
-"));
+"
+            ),
+        );
     }
 
     // 3. Shared step machinery (only when the source has none).
@@ -158,19 +253,25 @@ uint8_t dance_step(tap_dance_state_t *state) {
         let mut arm = |step: &str, code: &Option<String>, double_single: bool| {
             if let Some(c) = code {
                 let (on, off) = action_stmts(c);
-                fin.push_str(&format!("        case {step}: {on} break;
-"));
+                fin.push_str(&format!(
+                    "        case {step}: {on} break;
+"
+                ));
                 if !off.is_empty() {
-                    rst.push_str(&format!("        case {step}: {off} break;
-"));
+                    rst.push_str(&format!(
+                        "        case {step}: {off} break;
+"
+                    ));
                 }
                 // The fast-double-tap arm only makes sense for plain keycodes,
                 // never a layer-switch family (they aren't register_code16-able).
                 if double_single && !is_layer_switch(c) && !c.contains('\n') {
                     fin.push_str(&format!("        case DOUBLE_SINGLE_TAP: tap_code16({c}); register_code16({c}); break;
 "));
-                    rst.push_str(&format!("        case DOUBLE_SINGLE_TAP: unregister_code16({c}); break;
-"));
+                    rst.push_str(&format!(
+                        "        case DOUBLE_SINGLE_TAP: unregister_code16({c}); break;
+"
+                    ));
                 }
             }
         };
@@ -210,17 +311,29 @@ void dance_kj_{i}_reset(tap_dance_state_t *state, void *user_data) {{
     if let Some(arr) = out.find("tap_dance_actions[] = {") {
         // Back up to the start of the declaration line.
         let decl = out[..arr].rfind('\n').map(|n| n + 1).unwrap_or(0);
-        out.insert_str(decl, &format!("{fns}
-"));
-        let arr = out.find("tap_dance_actions[] = {").unwrap();
-        let close = out[arr..].find("};").map(|r| arr + r).ok_or_else(|| anyhow!("unterminated tap_dance_actions"))?;
+        out.insert_str(
+            decl,
+            &format!(
+                "{fns}
+"
+            ),
+        );
+        let arr = out
+            .find("tap_dance_actions[] = {")
+            .ok_or_else(|| anyhow!("tap_dance_actions disappeared while patching"))?;
+        let close = out[arr..]
+            .find("};")
+            .map(|r| arr + r)
+            .ok_or_else(|| anyhow!("unterminated tap_dance_actions"))?;
         out.insert_str(close, &entries);
     } else {
         out.push_str(&fns);
-        out.push_str(&format!("
+        out.push_str(&format!(
+            "
 tap_dance_action_t tap_dance_actions[] = {{
 {entries}}};
-"));
+"
+        ));
     }
 
     // 6. Give each generated dance a comfortable tapping term (default 200ms)
@@ -265,46 +378,73 @@ fn apply_dance_tapping_term(source: &str, n: usize) -> String {
     }
 }
 
-/// One generated macro: a custom keycode that, on press, taps every step in
-/// `steps` fully (each a complete press+release via `tap_code16`), in order.
-/// Used for a key whose Tap (or Hold/Double-tap/Tap-hold) slot has more than
-/// one step but ISN'T going through the tap-dance machinery - i.e. a plain
-/// `LAYOUT` position, not a `TD()`. Unlike a dance, there is no tap/hold
-/// ambiguity to resolve, so this fires the instant the key is pressed.
+/// Multi-step action emitted as a generated custom keycode.
 #[derive(Debug, Clone)]
 pub struct MacroSpec {
     pub id: usize,
     pub steps: Vec<String>,
 }
 
-/// Generate `MACRO_KJ_{id}` custom keycodes plus a `process_record_user` case
-/// per macro that taps its steps in order. Creates the custom-keycode enum
-/// and `process_record_user` fresh each build (the Oryx source keyjitsu
-/// starts from never has either), extending an existing
-/// `process_record_user` if the source unexpectedly already has one rather
-/// than silently dropping it.
+/// Emit generated macro keycodes and their `process_record_user` cases.
 pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
     if macros.is_empty() {
         return Ok(source.to_string());
     }
     let mut out = source.to_string();
 
-    // 1. The custom-keycode enum, anchored at SAFE_RANGE.
-    let mut names = String::new();
-    for (i, m) in macros.iter().enumerate() {
-        if i == 0 {
-            names.push_str(&format!("    MACRO_KJ_{} = SAFE_RANGE,\n", m.id));
+    // 1. Allocate custom keycodes without colliding with custom keycodes that
+    // Oryx may already have emitted. If an enum already owns SAFE_RANGE, append
+    // our names to that enum so C continues numbering after its last entry.
+    let plain_names: String = macros
+        .iter()
+        .map(|m| format!("    MACRO_KJ_{},\n", m.id))
+        .collect();
+    if let Some(safe) = out.find("SAFE_RANGE") {
+        let open = out[..safe]
+            .rfind('{')
+            .ok_or_else(|| anyhow!("SAFE_RANGE is not inside an enum-like block"))?;
+        let close = matching_brace(&out, open)?;
+        let body = &out[open + 1..close];
+        let separator = if body.trim_end().ends_with(',') {
+            ""
         } else {
-            names.push_str(&format!("    MACRO_KJ_{},\n", m.id));
+            ","
+        };
+        out.insert_str(close, &format!("{separator}\n{plain_names}"));
+    } else {
+        let mut names = String::new();
+        for (i, m) in macros.iter().enumerate() {
+            if i == 0 {
+                names.push_str(&format!("    MACRO_KJ_{} = SAFE_RANGE,\n", m.id));
+            } else {
+                names.push_str(&format!("    MACRO_KJ_{},\n", m.id));
+            }
         }
+        let km = out
+            .find("const uint16_t PROGMEM keymaps")
+            .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
+        out.insert_str(
+            km,
+            &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"),
+        );
     }
-    let km = out.find("const uint16_t PROGMEM keymaps").ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
-    out.insert_str(km, &format!("enum keyjitsu_macro_keycodes {{\n{names}}};\n\n"));
 
-    // 2. One `case MACRO_KJ_i:` per macro, tapping its steps on press.
+    // 2. One `case MACRO_KJ_i:` per macro, executing each full action in
+    // order. Layer-family keycodes need real QMK layer operations rather than
+    // tap_code16, which does not activate layer keycodes.
     let mut cases = String::new();
     for m in macros {
-        let taps: String = m.steps.iter().map(|s| format!("tap_code16({s}); ")).collect();
+        let mut taps = String::new();
+        for step in &m.steps {
+            validate_generated_action(step).map_err(|e| anyhow!("macro {}: {e}", m.id + 1))?;
+            let (press, release) = action_stmts(step.trim());
+            taps.push_str(&press);
+            if !press.is_empty() && !release.is_empty() {
+                taps.push(' ');
+            }
+            taps.push_str(&release);
+            taps.push(' ');
+        }
         cases.push_str(&format!(
             "        case MACRO_KJ_{}:\n            if (record->event.pressed) {{ {} }}\n            return false;\n",
             m.id,
@@ -312,8 +452,14 @@ pub fn apply_macros(source: &str, macros: &[MacroSpec]) -> Result<String> {
         ));
     }
     if let Some(f) = out.find("bool process_record_user(uint16_t keycode, keyrecord_t *record) {") {
-        let body_start = out[f..].find('{').map(|r| f + r + 1).ok_or_else(|| anyhow!("malformed process_record_user"))?;
-        out.insert_str(body_start, &format!("\n    switch (keycode) {{\n{cases}        default: break;\n    }}\n"));
+        let body_start = out[f..]
+            .find('{')
+            .map(|r| f + r + 1)
+            .ok_or_else(|| anyhow!("malformed process_record_user"))?;
+        out.insert_str(
+            body_start,
+            &format!("\n    switch (keycode) {{\n{cases}        default: break;\n    }}\n"),
+        );
     } else {
         out.push_str(&format!(
             "\nbool process_record_user(uint16_t keycode, keyrecord_t *record) {{\n    switch (keycode) {{\n{cases}    }}\n    return true;\n}}\n"
@@ -358,11 +504,7 @@ fn apply_one(source: &str, edit: &Edit) -> Result<String> {
     Ok(result)
 }
 
-/// Append a brand-new layer block `[position] = LAYOUT_*( … )` at the end of
-/// the `keymaps[]` array. Sized/named from layer 0; every key is
-/// `KC_TRANSPARENT` except the `(position → keycode)` entries in `keys`
-/// (positions are LAYOUT-macro indices). Enables authoring layers that don't
-/// exist in the Oryx source.
+/// Append a custom layer, transparent except for explicitly assigned keys.
 pub fn add_layer(source: &str, position: u8, keys: &[(usize, String)]) -> Result<String> {
     // Refuse to append a layer index that already exists - a second
     // `[position] = LAYOUT(...)` silently overrides the real one in C.
@@ -389,13 +531,19 @@ pub fn add_layer(source: &str, position: u8, keys: &[(usize, String)]) -> Result
             tokens[*pos] = code.clone();
         }
     }
-    let block = format!("  [{position}] = {macro_name}(\n    {}\n  ),\n", tokens.join(", "));
+    let block = format!(
+        "  [{position}] = {macro_name}(\n    {}\n  ),\n",
+        tokens.join(", ")
+    );
 
     // Insert before the keymaps[] array's closing brace.
     let km = source
         .find("PROGMEM keymaps")
         .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
-    let open = km + source[km..].find('{').ok_or_else(|| anyhow!("keymaps[] has no opening brace"))?;
+    let open = km
+        + source[km..]
+            .find('{')
+            .ok_or_else(|| anyhow!("keymaps[] has no opening brace"))?;
     let close = matching_brace(source, open)?;
 
     let mut out = String::with_capacity(source.len() + block.len());
@@ -428,22 +576,36 @@ fn matching_brace(source: &str, open: usize) -> Result<usize> {
 /// `[layer] = LAYOUT_*( … )` block: inner spans the arguments between the outer
 /// parentheses.
 fn find_layer_block(source: &str, layer: u8) -> Result<(usize, usize, usize)> {
+    let km = source
+        .find("PROGMEM keymaps")
+        .ok_or_else(|| anyhow!("no keymaps[] in keymap.c"))?;
+    let array_open = km
+        + source[km..]
+            .find('{')
+            .ok_or_else(|| anyhow!("keymaps[] has no opening brace"))?;
+    let array_close = matching_brace(source, array_open)?;
     let needle = format!("[{layer}]");
-    let mut search_from = 0;
-    while let Some(rel) = source[search_from..].find(&needle) {
+    let mut search_from = array_open + 1;
+
+    while search_from < array_close {
+        let Some(rel) = source[search_from..array_close].find(&needle) else {
+            break;
+        };
         let idx = search_from + rel;
-        // Expect `[layer] = LAYOUT...(` shortly after.
-        let after = &source[idx + needle.len()..];
+        let after_start = idx + needle.len();
+        let after = &source[after_start..array_close];
         if let Some(paren_rel) = after.find('(') {
             let between = &after[..paren_rel];
             if between.contains('=') && between.contains("LAYOUT") {
-                let open = idx + needle.len() + paren_rel;
+                let open = after_start + paren_rel;
                 let inner_start = open + 1;
                 let inner_end = matching_paren(source, open)?;
-                return Ok((idx, inner_start, inner_end));
+                if inner_end <= array_close {
+                    return Ok((idx, inner_start, inner_end));
+                }
             }
         }
-        search_from = idx + needle.len();
+        search_from = after_start;
     }
     Err(anyhow!("could not find `[{layer}] = LAYOUT…(` in keymap.c"))
 }
@@ -470,7 +632,7 @@ fn matching_paren(source: &str, open: usize) -> Result<usize> {
 
 /// Split a `LAYOUT(...)` argument list on commas that are at paren depth 0, so
 /// that nested keycodes like `LT(2, KC_SPC)` stay intact.
-fn split_top_level(inner: &str) -> Vec<String> {
+pub(crate) fn split_top_level(inner: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
@@ -525,25 +687,98 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     #[test]
     fn macro_generates_enum_and_process_record_user() {
-        let edits = [Edit { layer: 0, position: 1, keycode: "MACRO_KJ_0".into() }];
+        let edits = [Edit {
+            layer: 0,
+            position: 1,
+            keycode: "MACRO_KJ_0".into(),
+        }];
         let patched = apply_edits(SAMPLE, &edits).unwrap();
-        let macros = [MacroSpec { id: 0, steps: vec!["LGUI(KC_C)".into(), "KC_BSPC".into()] }];
+        let macros = [MacroSpec {
+            id: 0,
+            steps: vec!["LGUI(KC_C)".into(), "KC_BSPC".into()],
+        }];
         let out = apply_macros(&patched, &macros).unwrap();
         // Position 1 points at our custom keycode.
         let layer0 = &out[out.find("[0]").unwrap()..out.find("[1]").unwrap()];
         assert!(layer0.contains("MACRO_KJ_0"));
-        // The enum anchors at SAFE_RANGE, and process_record_user taps both
-        // steps in order on press, then eats the keycode (returns false).
+        // The enum anchors at SAFE_RANGE, and process_record_user executes
+        // both complete actions in order on press, then eats the keycode.
         assert!(out.contains("enum keyjitsu_macro_keycodes"));
         assert!(out.contains("MACRO_KJ_0 = SAFE_RANGE"));
         assert!(out.contains("case MACRO_KJ_0:"));
         let case = &out[out.find("case MACRO_KJ_0:").unwrap()..];
-        let tap_c = case.find("tap_code16(LGUI(KC_C));").unwrap();
-        let tap_bspc = case.find("tap_code16(KC_BSPC);").unwrap();
-        assert!(tap_c < tap_bspc, "steps must fire in the order they were staged");
-        assert!(case.contains("return false;"), "the macro keycode itself must not also register");
+        let first = case.find("register_code16(LGUI(KC_C));").unwrap();
+        let second = case.find("register_code16(KC_BSPC);").unwrap();
+        assert!(
+            first < second,
+            "steps must fire in the order they were staged"
+        );
+        assert!(case.contains("unregister_code16(LGUI(KC_C));"));
+        assert!(case.contains("unregister_code16(KC_BSPC);"));
+        assert!(
+            case.contains("return false;"),
+            "the macro keycode itself must not also register"
+        );
         // Defined before first use (process_record_user references it).
-        assert!(out.find("enum keyjitsu_macro_keycodes").unwrap() < out.find("process_record_user").unwrap());
+        assert!(
+            out.find("enum keyjitsu_macro_keycodes").unwrap()
+                < out.find("process_record_user").unwrap()
+        );
+    }
+
+    #[test]
+    fn generated_macros_reject_nested_tap_hold_keycodes() {
+        for code in ["TT(2)", "LT(2,KC_A)", "LGUI_T(KC_SPC)", "MT(MOD_LSFT,KC_A)"] {
+            let err = apply_macros(
+                SAMPLE,
+                &[MacroSpec {
+                    id: 0,
+                    steps: vec!["KC_A".into(), code.into()],
+                }],
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("cannot be nested inside a generated sequence"));
+        }
+    }
+
+    #[test]
+    fn macro_layer_steps_use_layer_operations() {
+        let out = apply_macros(
+            SAMPLE,
+            &[MacroSpec {
+                id: 0,
+                steps: vec!["KC_A".into(), "TO(2)".into(), "DF(3)".into()],
+            }],
+        )
+        .unwrap();
+        let case = &out[out.find("case MACRO_KJ_0:").unwrap()..];
+        assert!(case.contains("register_code16(KC_A); unregister_code16(KC_A);"));
+        assert!(case.contains("layer_move(2);"));
+        assert!(case.contains("default_layer_set(1UL << 3);"));
+        assert!(!case.contains("tap_code16(TO(2))"));
+    }
+
+    #[test]
+    fn macros_extend_existing_safe_range_enum_without_reusing_its_value() {
+        let src = format!(
+            "enum custom_keycodes {{\n    EXISTING = SAFE_RANGE,\n    EXISTING_TWO\n}};\n{SAMPLE}\nbool process_record_user(uint16_t keycode, keyrecord_t *record) {{\n    switch (keycode) {{\n        case EXISTING: return false;\n        default: return true;\n    }}\n}}\n"
+        );
+        let out = apply_macros(
+            &src,
+            &[MacroSpec {
+                id: 0,
+                steps: vec!["KC_A".into()],
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(out.matches("SAFE_RANGE").count(), 1);
+        assert!(!out.contains("MACRO_KJ_0 = SAFE_RANGE"));
+        let existing = out.find("EXISTING_TWO").unwrap();
+        let generated = out.find("MACRO_KJ_0").unwrap();
+        let keymaps = out.find("PROGMEM keymaps").unwrap();
+        assert!(existing < generated && generated < keymaps);
     }
 
     #[test]
@@ -556,12 +791,20 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         // A dance's SINGLE_TAP with a two-step macro ("KC_A\nKC_B") should
         // tap both, in order, instead of the plain register/unregister pair
         // a single keycode gets.
-        let d = DanceSpec { layer: 0, position: 1, tap: Some("KC_A\nKC_B".into()), ..Default::default() };
+        let d = DanceSpec {
+            layer: 0,
+            position: 1,
+            tap: Some("KC_A\nKC_B".into()),
+            ..Default::default()
+        };
         let out = apply_dances(SAMPLE, std::slice::from_ref(&d)).unwrap();
         let fin = &out[out.find("dance_kj_0_finished").unwrap()..];
-        assert!(fin.contains("case SINGLE_TAP: tap_code16(KC_A); tap_code16(KC_B); break;"));
-        // No release-side statement for a multi-step tap: nothing was left held.
-        let rst = &out[out.find("dance_kj_0_reset").unwrap()..];
+        assert!(fin.contains(
+            "case SINGLE_TAP: register_code16(KC_A); unregister_code16(KC_A); register_code16(KC_B); unregister_code16(KC_B); break;"
+        ));
+        // No reset-side statement for a multi-step action: each step completed.
+        let reset_def = "void dance_kj_0_reset(tap_dance_state_t *state, void *user_data) {";
+        let rst = &out[out.find(reset_def).unwrap()..];
         let rst_body = &rst[..rst.find('}').unwrap_or(rst.len())];
         assert!(!rst_body.contains("unregister_code16(KC_A)"));
     }
@@ -575,8 +818,31 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
     }
 
     #[test]
+    fn layer_lookup_ignores_decoy_indices_outside_keymaps_array() {
+        let src = format!("const uint16_t ledmap[][2] = {{ [0] = {{ 1, 2 }} }};\n{SAMPLE}");
+        let out = apply_edits(
+            &src,
+            &[Edit {
+                layer: 0,
+                position: 1,
+                keycode: "KC_ESC".into(),
+            }],
+        )
+        .unwrap();
+
+        let layer0 = &out
+            [out.find("[0] = LAYOUT_voyager").unwrap()..out.find("[1] = LAYOUT_voyager").unwrap()];
+        assert!(layer0.contains("KC_ESC"));
+        assert!(out.contains("ledmap[][2] = { [0] = { 1, 2 } }"));
+    }
+
+    #[test]
     fn replaces_a_keycode_by_position() {
-        let edits = [Edit { layer: 0, position: 1, keycode: "KC_ESC".into() }];
+        let edits = [Edit {
+            layer: 0,
+            position: 1,
+            keycode: "KC_ESC".into(),
+        }];
         let out = apply_edits(SAMPLE, &edits).unwrap();
         // Position 1 was KC_1 → KC_ESC; KC_2 (pos 2) untouched.
         let layer0 = &out[out.find("[0]").unwrap()..out.find("[1]").unwrap()];
@@ -587,7 +853,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     #[test]
     fn replace_survives_reparse() {
-        let edits = [Edit { layer: 1, position: 0, keycode: "LT(3, KC_TAB)".into() }];
+        let edits = [Edit {
+            layer: 1,
+            position: 0,
+            keycode: "LT(3, KC_TAB)".into(),
+        }];
         let out = apply_edits(SAMPLE, &edits).unwrap();
         // Still 9 slots after inserting a keycode that itself contains a comma.
         assert_eq!(layer_key_count(&out, 1).unwrap(), 9);
@@ -611,7 +881,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
 
     #[test]
     fn out_of_range_position_errors() {
-        let edits = [Edit { layer: 0, position: 99, keycode: "KC_A".into() }];
+        let edits = [Edit {
+            layer: 0,
+            position: 99,
+            keycode: "KC_A".into(),
+        }];
         assert!(apply_edits(SAMPLE, &edits).is_err());
     }
 
@@ -629,7 +903,11 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         // Slot swapped, enum created before keymaps, infra + actions appended.
         assert!(out.contains("TD(DANCE_KJ_0)"));
         assert!(out.find("enum tap_dance_codes").unwrap() < out.find("PROGMEM keymaps").unwrap());
-        assert_eq!(out.matches("uint8_t dance_step(tap_dance_state_t *state) {").count(), 1);
+        assert_eq!(
+            out.matches("uint8_t dance_step(tap_dance_state_t *state) {")
+                .count(),
+            1
+        );
         assert!(out.contains("case SINGLE_TAP: register_code16(KC_1); break;"));
         assert!(out.contains("case SINGLE_HOLD: layer_on(2); break;"));
         assert!(out.contains("case SINGLE_HOLD: layer_off(2); break;"));
@@ -656,11 +934,21 @@ tap_dance_action_t tap_dance_actions[] = {{
 }};
 "
         );
-        let d = DanceSpec { layer: 1, position: 0, tap: Some("KC_TAB".into()), tap_hold: Some("MO(3)".into()), ..Default::default() };
+        let d = DanceSpec {
+            layer: 1,
+            position: 0,
+            tap: Some("KC_TAB".into()),
+            tap_hold: Some("MO(3)".into()),
+            ..Default::default()
+        };
         let out = apply_dances(&src, &[d]).unwrap();
         // Reuses the existing enum + step machinery (no duplicates).
         assert_eq!(out.matches("enum tap_dance_codes").count(), 1);
-        assert_eq!(out.matches("uint8_t dance_step(tap_dance_state_t *state) {").count(), 1);
+        assert_eq!(
+            out.matches("uint8_t dance_step(tap_dance_state_t *state) {")
+                .count(),
+            1
+        );
         assert_eq!(out.matches("tap_dance_actions[] = {").count(), 1);
         assert!(out.contains("DANCE_KJ_0,"));
         assert!(out.contains("case DOUBLE_HOLD: layer_on(3); break;"));
@@ -669,7 +957,11 @@ tap_dance_action_t tap_dance_actions[] = {{
         let arr = &arr[..arr.find("};").unwrap()];
         assert!(arr.contains("[DANCE_0]") && arr.contains("[DANCE_KJ_0]"));
         // Functions are defined before the array (C needs the symbols).
-        assert!(out.find("dance_kj_0_finished(tap_dance_state_t *state, void *user_data) {").unwrap() < out.find("tap_dance_actions[] = {").unwrap());
+        assert!(
+            out.find("dance_kj_0_finished(tap_dance_state_t *state, void *user_data) {")
+                .unwrap()
+                < out.find("tap_dance_actions[] = {").unwrap()
+        );
     }
 
     #[test]
@@ -697,34 +989,111 @@ tap_dance_action_t tap_dance_actions[] = {{
         let src = format!(
             "enum tap_dance_codes {{\n  DANCE_0,\n}};\n{SAMPLE}\nuint16_t get_tapping_term(uint16_t keycode, keyrecord_t *record) {{\n    switch (keycode) {{\n        default:\n            return TAPPING_TERM;\n    }}\n}}\nuint8_t dance_step(tap_dance_state_t *state);\nuint8_t dance_step(tap_dance_state_t *state) {{ return 1; }}\ntap_dance_action_t tap_dance_actions[] = {{\n}};\n"
         );
-        let d = DanceSpec { layer: 0, position: 1, tap: None, hold: Some("MO(1)".into()), double_tap: None, tap_hold: Some("MO(2)".into()) };
+        let d = DanceSpec {
+            layer: 0,
+            position: 1,
+            tap: None,
+            hold: Some("MO(1)".into()),
+            double_tap: None,
+            tap_hold: Some("MO(2)".into()),
+        };
         let out = apply_dances(&src, &[d]).unwrap();
         assert!(out.contains("case TD(DANCE_KJ_0): return 200;"));
         assert!(out.contains("case DOUBLE_HOLD: layer_on(2); break;"));
     }
 
     #[test]
+    fn generated_dances_reject_nested_tap_hold_keycodes() {
+        for code in ["TT(2)", "LT(2,KC_A)", "LGUI_T(KC_SPC)", "MT(MOD_LSFT,KC_A)"] {
+            let dance = DanceSpec {
+                layer: 0,
+                position: 1,
+                tap: Some(code.into()),
+                ..Default::default()
+            };
+            let err = apply_dances(SAMPLE, &[dance]).unwrap_err().to_string();
+            assert!(err.contains("cannot be nested inside a generated sequence"));
+        }
+    }
+
+    #[test]
     fn action_stmts_variants() {
-        assert_eq!(action_stmts("MO(2)"), ("layer_on(2);".into(), "layer_off(2);".into()));
-        assert_eq!(action_stmts("TO(1)"), ("layer_move(1);".into(), String::new()));
-        assert_eq!(action_stmts("KC_A"), ("register_code16(KC_A);".into(), "unregister_code16(KC_A);".into()));
+        assert_eq!(
+            action_stmts("MO(2)"),
+            ("layer_on(2);".into(), "layer_off(2);".into())
+        );
+        assert_eq!(
+            action_stmts("TO(1)"),
+            ("layer_move(1);".into(), String::new())
+        );
+        assert_eq!(
+            action_stmts("KC_A"),
+            (
+                "register_code16(KC_A);".into(),
+                "unregister_code16(KC_A);".into()
+            )
+        );
         // Layer families that used to fall through to register_code16:
-        assert_eq!(action_stmts("LT(2,KC_A)"), ("layer_on(2);".into(), "layer_off(2);".into()));
-        assert_eq!(action_stmts("TT(3)"), ("layer_invert(3);".into(), String::new()));
-        assert_eq!(action_stmts("DF(1)"), ("default_layer_set(1);".into(), String::new()));
+        assert_eq!(
+            action_stmts("LT(2,KC_A)"),
+            ("layer_on(2);".into(), "layer_off(2);".into())
+        );
+        assert_eq!(
+            action_stmts("OSL(2)"),
+            (
+                "if (is_oneshot_enabled()) { set_oneshot_layer(2, ONESHOT_START); } else { layer_on(2); }".into(),
+                "if (is_oneshot_enabled()) { clear_oneshot_layer_state(ONESHOT_PRESSED); } else { layer_off(2); }".into(),
+            )
+        );
+        assert_eq!(
+            action_stmts("OSM(MOD_LSFT)"),
+            (
+                "if (is_oneshot_enabled()) { set_oneshot_mods(MOD_LSFT); } else { register_mods(MOD_LSFT); }".into(),
+                "if (!is_oneshot_enabled()) { unregister_mods(MOD_LSFT); }".into(),
+            )
+        );
+        assert_eq!(
+            action_stmts("TT(3)"),
+            ("layer_invert(3);".into(), String::new())
+        );
+        assert_eq!(
+            action_stmts("DF(0)"),
+            ("default_layer_set(1UL << 0);".into(), String::new())
+        );
+        assert_eq!(
+            action_stmts("DF(3)"),
+            ("default_layer_set(1UL << 3);".into(), String::new())
+        );
+        assert_eq!(
+            action_stmts("KC_A\nTO(2)"),
+            (
+                "register_code16(KC_A); unregister_code16(KC_A); layer_move(2);".into(),
+                String::new(),
+            )
+        );
     }
 
     #[test]
     fn add_layer_rejects_duplicate_and_out_of_range() {
         // SAMPLE has layers [0] and [1].
-        assert!(add_layer(SAMPLE, 1, &[]).is_err(), "duplicate layer index must error");
-        assert!(add_layer(SAMPLE, 2, &[(99, "KC_A".into())]).is_err(), "out-of-range key must error");
+        assert!(
+            add_layer(SAMPLE, 1, &[]).is_err(),
+            "duplicate layer index must error"
+        );
+        assert!(
+            add_layer(SAMPLE, 2, &[(99, "KC_A".into())]).is_err(),
+            "out-of-range key must error"
+        );
         assert!(add_layer(SAMPLE, 2, &[(1, "KC_A".into())]).is_ok());
     }
 
     #[test]
     fn missing_layer_errors() {
-        let edits = [Edit { layer: 7, position: 0, keycode: "KC_A".into() }];
+        let edits = [Edit {
+            layer: 7,
+            position: 0,
+            keycode: "KC_A".into(),
+        }];
         assert!(apply_edits(SAMPLE, &edits).is_err());
     }
 }

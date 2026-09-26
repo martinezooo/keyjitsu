@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind};
 use ratatui::layout::{Constraint, Layout as RtLayout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -35,10 +35,15 @@ struct App {
     status: String,
 }
 
+enum ReaderMsg {
+    Event(Event),
+    Disconnected(String),
+}
+
 pub fn run(serial: Option<&str>) -> Result<()> {
     let kb = Keyboard::open(serial)?;
     let active_layer = kb.pair()?.unwrap_or(0);
-    let fw = kb.fw_version().unwrap_or_default();
+    let fw = kb.fw_version()?;
 
     // Legends are best-effort: no Oryx id / no network still gives live keys.
     let (layout, layout_hash) = match LayoutId::from_serial(&fw) {
@@ -68,19 +73,22 @@ pub fn run(serial: Option<&str>) -> Result<()> {
     };
 
     // HID reader thread → channel.
-    let (tx, rx) = mpsc::channel::<Event>();
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_reader = stop.clone();
     let reader = std::thread::spawn(move || {
         while !stop_reader.load(Ordering::SeqCst) {
             match kb.read_event(Duration::from_millis(150)) {
                 Ok(Some(ev)) => {
-                    if tx.send(ev).is_err() {
+                    if tx.send(ReaderMsg::Event(ev)).is_err() {
                         break;
                     }
                 }
                 Ok(None) => {}
-                Err(_) => break, // unplugged; UI will show stale state until quit
+                Err(e) => {
+                    let _ = tx.send(ReaderMsg::Disconnected(format!("{e:#}")));
+                    break;
+                }
             }
         }
         kb.disconnect();
@@ -91,20 +99,28 @@ pub fn run(serial: Option<&str>) -> Result<()> {
     ratatui::restore();
 
     stop.store(true, Ordering::SeqCst);
-    let _ = reader.join();
+    let reader_result = reader.join();
     app.heat.save()?;
-    res
+    res?;
+    reader_result.map_err(|_| anyhow!("HID reader thread panicked"))?;
+    Ok(())
 }
 
 fn event_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
-    rx: &mpsc::Receiver<Event>,
+    rx: &mpsc::Receiver<ReaderMsg>,
 ) -> Result<()> {
     loop {
         // Drain pending keyboard events.
-        while let Ok(ev) = rx.try_recv() {
-            handle_hid_event(app, ev);
+        while let Ok(msg) = rx.try_recv() {
+            match msg {
+                ReaderMsg::Event(ev) => handle_hid_event(app, ev),
+                ReaderMsg::Disconnected(error) => {
+                    app.pressed.fill(false);
+                    app.status = format!("keyboard disconnected: {error}");
+                }
+            }
         }
         app.heat.autosave()?;
 
@@ -142,7 +158,7 @@ impl App {
     fn max_layer(&self) -> u8 {
         self.layout
             .as_ref()
-            .map(|l| l.revision.layers.len().saturating_sub(1) as u8)
+            .and_then(|l| l.revision.layers.iter().map(|layer| layer.position).max())
             .unwrap_or(15)
     }
 
@@ -189,7 +205,10 @@ fn draw(f: &mut Frame, app: &App) {
 
     // Header: layout name + layer tabs.
     let mut spans: Vec<Span> = vec![
-        Span::styled(" keyjitsu live ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " keyjitsu live ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(&app.status),
         Span::raw("   "),
     ];
@@ -214,7 +233,9 @@ fn draw(f: &mut Frame, app: &App) {
     let mut widget = KeyboardWidget::new(geo, app.layer(app.view_layer));
     widget.pressed = app.pressed.clone();
     if app.show_heat {
-        widget.heat = Some(normalize(&app.heat.counts(Some(app.view_layer), app.key_count)));
+        widget.heat = Some(normalize(
+            &app.heat.counts(Some(app.view_layer), app.key_count),
+        ));
     }
     let kb_area = Rect {
         x: chunks[1].x,

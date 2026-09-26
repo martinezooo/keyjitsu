@@ -1,10 +1,12 @@
 //! Persisted app settings: overlay trigger/chord, RGB + layer-peek HUD,
 //! autolayer rules, per-key glow and press effects, custom layers/shortcuts,
-//! saved profiles, and local toolchain paths. One JSON file, loaded once at
-//! startup and rewritten atomically on change.
+//! saved profiles, and local toolchain paths. Writes are atomic and schema
+//! migrations are applied before any mutation.
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::oryx_api::cache_dir;
 
@@ -147,6 +149,12 @@ pub struct CustomKey {
     pub code: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomLayerSet {
+    pub layout: String,
+    pub layers: Vec<CustomLayer>,
+}
+
 /// A user-added entry in the Shortcuts cheatsheet (built-ins ship in the
 /// binary; these extend/customize them and survive restarts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -173,8 +181,7 @@ pub struct KeyFx {
 }
 
 /// A per-key remap the user staged but hasn't built into firmware yet. Keyed
-/// by layout hash (like [`GlowOverride`]) so it survives restarts and rides
-/// along in profiles, instead of living only in memory until the next build.
+/// by layout hash so it survives restarts without becoming profile state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StagedEdit {
     pub layout: String,
@@ -193,9 +200,12 @@ pub struct StagedDance {
     pub slots: [Option<String>; 4],
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub schema_version: u32,
     /// Matrix position `[row, col]` of the key that summons the overlay.
     pub overlay_trigger: Option<[u8; 2]>,
     /// Chord (one or more matrix positions held together) that shows the
@@ -216,8 +226,11 @@ pub struct Config {
     pub key_fx: Vec<KeyFx>,
     /// User-built step-sequence effects from FX Studio.
     pub custom_fx: Vec<crate::gui::CustomFx>,
-    /// User-authored extra layers (beyond the Oryx source).
+    /// Legacy flat custom-layer storage kept for migration.
     pub custom_layers: Vec<CustomLayer>,
+    /// Desired custom-layer sets that differ from (or have not yet been
+    /// confirmed against) the running firmware.
+    pub custom_layer_sets: Vec<CustomLayerSet>,
     /// Per-key remaps staged in the editor but not yet built into firmware.
     pub staged_edits: Vec<StagedEdit>,
     /// Per-key tap dances staged in the editor but not yet built into firmware.
@@ -241,46 +254,194 @@ pub struct Config {
     pub autolayer_enabled: bool,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Profile {
+    pub overlay_trigger: Option<[u8; 2]>,
+    pub overlay_chord: Vec<[u8; 2]>,
+    pub hidden_shortcuts: Vec<String>,
+    pub autolayer_rules: Vec<AutolayerRule>,
+    pub glow_overrides: Vec<GlowOverride>,
+    pub key_fx: Vec<KeyFx>,
+    pub custom_fx: Vec<crate::gui::CustomFx>,
+    pub custom_shortcuts: Vec<CustomShortcut>,
+    pub rgb: RgbState,
+    pub peek: PeekConfig,
+    pub autolayer_enabled: bool,
+}
+
+impl Profile {
+    pub fn from_config(c: &Config) -> Self {
+        Self {
+            overlay_trigger: c.overlay_trigger,
+            overlay_chord: c.overlay_chord.clone(),
+            hidden_shortcuts: c.hidden_shortcuts.clone(),
+            autolayer_rules: c.autolayer_rules.clone(),
+            glow_overrides: c.glow_overrides.clone(),
+            key_fx: c.key_fx.clone(),
+            custom_fx: c.custom_fx.clone(),
+            custom_shortcuts: c.custom_shortcuts.clone(),
+            rgb: c.rgb.clone(),
+            peek: c.peek.clone(),
+            autolayer_enabled: c.autolayer_enabled,
+        }
+    }
+
+    pub fn apply_to(&self, c: &mut Config) {
+        c.overlay_trigger = self.overlay_trigger;
+        c.overlay_chord = self.overlay_chord.clone();
+        c.hidden_shortcuts = self.hidden_shortcuts.clone();
+        c.autolayer_rules = self.autolayer_rules.clone();
+        c.glow_overrides = self.glow_overrides.clone();
+        c.key_fx = self.key_fx.clone();
+        c.custom_fx = self.custom_fx.clone();
+        c.custom_shortcuts = self.custom_shortcuts.clone();
+        c.rgb = self.rgb.clone();
+        c.peek = self.peek.clone();
+        c.autolayer_enabled = self.autolayer_enabled;
+    }
+}
+
 fn path() -> Result<std::path::PathBuf> {
     Ok(cache_dir()?.join("config.json"))
 }
 
-pub fn load() -> Config {
-    let Ok(p) = path() else { return Config::default() };
-    let Ok(bytes) = std::fs::read(&p) else {
-        // Missing file = first run; that's a clean default.
-        return Config::default();
+fn migrate(mut cfg: Config) -> Result<Config> {
+    if cfg.schema_version > CURRENT_SCHEMA_VERSION {
+        bail!(
+            "config schema {} is newer than this Keyjitsu supports ({CURRENT_SCHEMA_VERSION})",
+            cfg.schema_version
+        );
+    }
+
+    if cfg.schema_version == 0 {
+        if cfg.custom_layer_sets.is_empty() && !cfg.custom_layers.is_empty() {
+            for layer in &cfg.custom_layers {
+                if let Some(set) = cfg
+                    .custom_layer_sets
+                    .iter_mut()
+                    .find(|set| set.layout == layer.layout)
+                {
+                    set.layers.push(layer.clone());
+                } else {
+                    cfg.custom_layer_sets.push(CustomLayerSet {
+                        layout: layer.layout.clone(),
+                        layers: vec![layer.clone()],
+                    });
+                }
+            }
+            cfg.custom_layers.clear();
+        }
+        cfg.schema_version = 1;
+    }
+
+    Ok(cfg)
+}
+
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("persisted file has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("creating temporary file in {}", parent.display()))?;
+    tmp.write_all(bytes)
+        .with_context(|| format!("writing temporary file for {}", path.display()))?;
+    tmp.as_file_mut()
+        .sync_all()
+        .with_context(|| format!("syncing temporary file for {}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| e.error)
+        .with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
+pub fn preserve_corrupt_bytes(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .context("corrupt recovery file has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let mut suffix = 0u32;
+    loop {
+        let extension = if suffix == 0 {
+            "json.corrupt".to_string()
+        } else {
+            format!("json.corrupt.{suffix}")
+        };
+        let backup = path.with_extension(extension);
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("creating recovery file in {}", parent.display()))?;
+        tmp.write_all(bytes)
+            .with_context(|| format!("writing recovery copy for {}", path.display()))?;
+        tmp.as_file_mut()
+            .sync_all()
+            .with_context(|| format!("syncing recovery copy for {}", path.display()))?;
+        match tmp.persist_noclobber(&backup) {
+            Ok(_) => return Ok(backup),
+            Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                suffix = suffix
+                    .checked_add(1)
+                    .context("too many corrupt recovery copies")?;
+            }
+            Err(e) => {
+                return Err(e.error)
+                    .with_context(|| format!("preserving recovery copy {}", backup.display()));
+            }
+        }
+    }
+}
+
+pub fn load_checked() -> Result<Config> {
+    let p = path()?;
+    let bytes = match std::fs::read(&p) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Config {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                ..Config::default()
+            });
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
     };
     match serde_json::from_slice(&bytes) {
+        Ok(cfg) => migrate(cfg),
+        Err(e) => {
+            let backup = preserve_corrupt_bytes(&p, &bytes).with_context(|| {
+                format!("config is unreadable ({e}); failed to preserve the original bytes")
+            })?;
+            Err(e).with_context(|| {
+                format!(
+                    "config is unreadable; preserved the original bytes in {}",
+                    backup.display()
+                )
+            })
+        }
+    }
+}
+
+pub fn load() -> Config {
+    match load_checked() {
         Ok(cfg) => cfg,
         Err(e) => {
-            // The file EXISTS but won't parse (corruption, a truncated save, a
-            // downgrade past a new enum variant…). Do NOT silently return
-            // default and let the next save clobber it - preserve the bytes so
-            // the user (or we) can recover, and warn.
-            let backup = p.with_extension("json.corrupt");
-            let _ = std::fs::write(&backup, &bytes);
-            eprintln!(
-                "keyjitsu: config.json is unreadable ({e}). Backed it up to {} and started from defaults",
-                backup.display()
-            );
+            eprintln!("keyjitsu: {e:#}");
             Config::default()
         }
     }
 }
 
+pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
+    let mut cfg = load_checked()?;
+    f(&mut cfg);
+    save(&cfg)
+}
+
 pub fn save(config: &Config) -> Result<()> {
     let p = path()?;
-    if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let bytes = serde_json::to_vec_pretty(config)?;
-    // Atomic write: serialize to a temp file, then rename over the target, so a
-    // crash / full disk / power loss can never leave a truncated config.json.
-    let tmp = p.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, &p)?;
-    Ok(())
+    let config = migrate(config.clone())?;
+    let bytes = serde_json::to_vec_pretty(&config)?;
+    write_atomic(&p, &bytes)
 }
 
 #[cfg(test)]
@@ -288,15 +449,141 @@ mod tests {
     use super::*;
 
     #[test]
+    fn atomic_write_replaces_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, b"old").unwrap();
+
+        write_atomic(&path, b"new").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn corrupt_recovery_copies_never_overwrite_previous_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        let first = preserve_corrupt_bytes(&path, b"first").unwrap();
+        let second = preserve_corrupt_bytes(&path, b"second").unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(first).unwrap(), b"first".to_vec());
+        assert_eq!(std::fs::read(second).unwrap(), b"second".to_vec());
+    }
+
+    #[test]
+    fn profile_does_not_overwrite_device_state() {
+        let mut cfg = Config {
+            last_layout: Some("layout/rev~kj0123456789".into()),
+            qmk_firmware_dir: Some("/qmk".into()),
+            ..Config::default()
+        };
+        cfg.staged_edits.push(StagedEdit {
+            layout: "layout".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout".into(),
+            name: "Extra".into(),
+            keys: vec![CustomKey {
+                key: 2,
+                code: "KC_B".into(),
+            }],
+        });
+
+        let mut profile = Profile::from_config(&cfg);
+        profile.peek.enabled = false;
+
+        let mut target = cfg;
+        profile.apply_to(&mut target);
+        assert_eq!(
+            target.last_layout.as_deref(),
+            Some("layout/rev~kj0123456789")
+        );
+        assert_eq!(target.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(target.staged_edits.len(), 1);
+        assert_eq!(target.custom_layers.len(), 1);
+        assert!(!target.peek.enabled);
+    }
+
+    #[test]
+    fn profile_default_new_default_roundtrip_preserves_device_truth() {
+        let mut cfg = Config {
+            last_layout: Some("layout/rev~kj0123456789".into()),
+            qmk_firmware_dir: Some("/qmk".into()),
+            ..Config::default()
+        };
+        cfg.staged_edits.push(StagedEdit {
+            layout: "layout".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
+        cfg.peek.enabled = true;
+        cfg.autolayer_enabled = false;
+
+        let default_profile = Profile::from_config(&cfg);
+        let mut new_profile = default_profile.clone();
+        new_profile.peek.enabled = false;
+        new_profile.autolayer_enabled = true;
+
+        new_profile.apply_to(&mut cfg);
+        cfg.active_profile = Some("work".into());
+        assert_eq!(cfg.active_profile.as_deref(), Some("work"));
+        assert!(!cfg.peek.enabled);
+        assert!(cfg.autolayer_enabled);
+        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(cfg.staged_edits.len(), 1);
+
+        default_profile.apply_to(&mut cfg);
+        cfg.active_profile = None;
+        assert!(cfg.active_profile.is_none());
+        assert!(cfg.peek.enabled);
+        assert!(!cfg.autolayer_enabled);
+        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
+        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
+        assert_eq!(cfg.staged_edits.len(), 1);
+    }
+
+    #[test]
+    fn cloned_profile_changes_do_not_mutate_source() {
+        let mut cfg = Config::default();
+        cfg.peek.enabled = true;
+        let source = Profile::from_config(&cfg);
+        let mut clone = source.clone();
+        clone.peek.enabled = false;
+        clone.overlay_chord.push([1, 2]);
+
+        assert!(source.peek.enabled);
+        assert!(source.overlay_chord.is_empty());
+        assert!(!clone.peek.enabled);
+        assert_eq!(clone.overlay_chord, vec![[1, 2]]);
+    }
+
+    #[test]
     fn staged_roundtrip_and_old_config_compat() {
         // New fields round-trip (incl. the [Option<String>;4] dance slots).
         let mut c = Config::default();
-        c.staged_edits.push(StagedEdit { layout: "H".into(), layer: 0, key: 1, code: "KC_A".into() });
+        c.staged_edits.push(StagedEdit {
+            layout: "H".into(),
+            layer: 0,
+            key: 1,
+            code: "KC_A".into(),
+        });
         c.staged_dances.push(StagedDance {
             layout: "H".into(),
             layer: 0,
             key: 2,
-            slots: [Some("KC_A".into()), Some("MO(2)".into()), Some("KC_B".into()), None],
+            slots: [
+                Some("KC_A".into()),
+                Some("MO(2)".into()),
+                Some("KC_B".into()),
+                None,
+            ],
         });
         let js = serde_json::to_string(&c).unwrap();
         let back: Config = serde_json::from_str(&js).unwrap();
@@ -305,6 +592,39 @@ mod tests {
         assert_eq!(back.staged_dances[0].slots[3], None);
         // An OLD config (no staged_* keys) must still load → empty vecs.
         let old: Config = serde_json::from_str(r#"{"guard_enabled":true}"#).unwrap();
+        let old = migrate(old).unwrap();
+        assert_eq!(old.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
+        assert!(old.custom_layer_sets.is_empty());
+    }
+
+    #[test]
+    fn migrates_legacy_custom_layers_into_pending_sets() {
+        let mut cfg = Config::default();
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout-a".into(),
+            name: "One".into(),
+            keys: vec![],
+        });
+        cfg.custom_layers.push(CustomLayer {
+            layout: "layout-a".into(),
+            name: "Two".into(),
+            keys: vec![],
+        });
+
+        let cfg = migrate(cfg).unwrap();
+        assert!(cfg.custom_layers.is_empty());
+        assert_eq!(cfg.custom_layer_sets.len(), 1);
+        assert_eq!(cfg.custom_layer_sets[0].layers.len(), 2);
+        assert_eq!(cfg.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn rejects_newer_config_schema() {
+        let cfg = Config {
+            schema_version: CURRENT_SCHEMA_VERSION + 1,
+            ..Config::default()
+        };
+        assert!(migrate(cfg).is_err());
     }
 }

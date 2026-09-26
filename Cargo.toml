@@ -1,6 +1,6 @@
 [package]
 name = "keyjitsu"
-version = "0.9.2"
+version = "0.9.6"
 edition = "2021"
 description = "GUI and CLI manager for the ZSA Voyager: live layout, heatmap, per-key RGB and effects, local QMK builds with tap dances, a layer minimap. No daemon, no cloud."
 repository = "https://github.com/martinezooo/keyjitsu"
@@ -14,6 +14,7 @@ license = "MIT"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hidapi = "2"
+nusb = "0.2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
@@ -22,7 +23,8 @@ libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 ctrlc = { version = "3", features = ["termination"] }
-eframe = "0.31"
+eframe = "0.32.3"
+tempfile = "3.27"
 
 zapp-core = { git = "https://github.com/zsa/zapp" }
 zip = { version = "2", default-features = false, features = ["deflate"] }

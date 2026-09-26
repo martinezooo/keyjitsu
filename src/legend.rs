@@ -47,13 +47,17 @@ fn action_kind(a: &KeyAction) -> Option<KeyKind> {
         return Some(KeyKind::Layer(a.layer));
     }
     let s = code.strip_prefix("KC_").unwrap_or(code);
-    if s.starts_with("MS_") || s.starts_with("BTN") || s.starts_with("WH_") || s.starts_with("ACL") {
+    if s.starts_with("MS_") || s.starts_with("BTN") || s.starts_with("WH_") || s.starts_with("ACL")
+    {
         return Some(KeyKind::Mouse);
     }
     if s.starts_with("MEDIA_")
         || s.starts_with("AUDIO_")
         || s.starts_with("BRIGHTNESS_")
-        || matches!(s, "MPLY" | "MNXT" | "MPRV" | "MSTP" | "MUTE" | "VOLU" | "VOLD" | "BRIU" | "BRID")
+        || matches!(
+            s,
+            "MPLY" | "MNXT" | "MPRV" | "MSTP" | "MUTE" | "VOLU" | "VOLD" | "BRIU" | "BRID"
+        )
     {
         return Some(KeyKind::Media);
     }
@@ -62,9 +66,24 @@ fn action_kind(a: &KeyAction) -> Option<KeyKind> {
     }
     if matches!(
         s,
-        "LCTL" | "RCTL" | "LSFT" | "RSFT" | "LALT" | "RALT" | "LGUI" | "RGUI" | "HYPR" | "MEH"
-            | "LEFT_CTRL" | "RIGHT_CTRL" | "LEFT_SHIFT" | "RIGHT_SHIFT" | "LEFT_ALT" | "RIGHT_ALT"
-            | "LEFT_GUI" | "RIGHT_GUI"
+        "LCTL"
+            | "RCTL"
+            | "LSFT"
+            | "RSFT"
+            | "LALT"
+            | "RALT"
+            | "LGUI"
+            | "RGUI"
+            | "HYPR"
+            | "MEH"
+            | "LEFT_CTRL"
+            | "RIGHT_CTRL"
+            | "LEFT_SHIFT"
+            | "RIGHT_SHIFT"
+            | "LEFT_ALT"
+            | "RIGHT_ALT"
+            | "LEFT_GUI"
+            | "RIGHT_GUI"
     ) {
         return Some(KeyKind::Modifier);
     }
@@ -88,39 +107,74 @@ pub fn key_kind(key: &OryxKey) -> KeyKind {
     KeyKind::Plain
 }
 
-pub fn labels_for(key: &OryxKey) -> KeyLabels {
+pub fn full_labels_for(key: &OryxKey) -> KeyLabels {
     if let Some(custom) = key.custom_label.as_deref().filter(|s| !s.is_empty()) {
         return KeyLabels {
-            tap: clip(custom),
-            hold: key.hold.as_ref().map(action_label),
+            tap: custom.to_string(),
+            hold: key
+                .hold
+                .as_ref()
+                .map(action_label)
+                .filter(|s| !s.is_empty()),
         };
     }
     if let Some(emoji) = key.emoji.as_deref().filter(|s| !s.is_empty()) {
-        return KeyLabels { tap: clip(emoji), hold: None };
+        return KeyLabels {
+            tap: emoji.to_string(),
+            hold: None,
+        };
     }
     KeyLabels {
         tap: key.tap.as_ref().map(action_label).unwrap_or_default(),
-        hold: key.hold.as_ref().map(action_label).filter(|s| !s.is_empty()),
+        hold: key
+            .hold
+            .as_ref()
+            .map(action_label)
+            .filter(|s| !s.is_empty()),
+    }
+}
+
+pub fn labels_for(key: &OryxKey) -> KeyLabels {
+    let full = full_labels_for(key);
+    KeyLabels {
+        tap: clip(&full.tap),
+        hold: full.hold.as_deref().map(clip),
+    }
+}
+
+pub fn keycap_labels_for(key: &OryxKey) -> KeyLabels {
+    let full = full_labels_for(key);
+    KeyLabels {
+        tap: clip_to(&full.tap, 8),
+        hold: full.hold.as_deref().map(|s| clip_to(s, 8)),
     }
 }
 
 pub fn action_label(a: &KeyAction) -> String {
-    let code = a.code.as_deref().unwrap_or("");
-    // Layer-switch families come through as bare code + layer field.
     if let Some(layer) = a.layer {
-        let fam = code;
-        return clip(&format!("{fam}{layer}"));
+        let fam = a.code.as_deref().unwrap_or("MO");
+        return format!("{fam}{layer}");
     }
-    clip(&keycode_label(code))
+    if let Some(code) = a.qmk_code() {
+        return keycode_label(&code);
+    }
+    if let Some(description) = a.description.as_deref().filter(|s| !s.trim().is_empty()) {
+        return description.to_string();
+    }
+    a.fallback_kind().unwrap_or("").to_string()
 }
 
 /// Short human label for a QMK keycode.
 pub fn keycode_label(code: &str) -> String {
     for (pfx, sym) in [
-        ("LALT(", "⌥"), ("RALT(", "⌥"),
-        ("LGUI(", "⌘"), ("RGUI(", "⌘"),
-        ("LCTL(", "⌃"), ("RCTL(", "⌃"),
-        ("LSFT(", "⇧"), ("RSFT(", "⇧"),
+        ("LALT(", "⌥"),
+        ("RALT(", "⌥"),
+        ("LGUI(", "⌘"),
+        ("RGUI(", "⌘"),
+        ("LCTL(", "⌃"),
+        ("RCTL(", "⌃"),
+        ("LSFT(", "⇧"),
+        ("RSFT(", "⇧"),
     ] {
         if let Some(inner) = code.strip_prefix(pfx).and_then(|r| r.strip_suffix(')')) {
             return format!("{sym}{}", keycode_label(inner));
@@ -227,15 +281,22 @@ fn fallback_label(stripped: &str) -> String {
     let tail = stripped.rsplit('_').next().unwrap_or(stripped);
     let mut chars = tail.chars();
     let pretty: String = match chars.next() {
-        Some(c) => c.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect(),
+        Some(c) => c
+            .to_uppercase()
+            .chain(chars.flat_map(char::to_lowercase))
+            .collect(),
         None => String::new(),
     };
     clip(&pretty)
 }
 
 /// Clip to `LABEL_WIDTH` terminal cells (chars are a good-enough proxy here).
+fn clip_to(s: &str, width: usize) -> String {
+    s.chars().take(width).collect()
+}
+
 fn clip(s: &str) -> String {
-    s.chars().take(LABEL_WIDTH).collect()
+    clip_to(s, LABEL_WIDTH)
 }
 
 #[cfg(test)]
@@ -244,7 +305,10 @@ mod tests {
     use crate::oryx_api::KeyAction;
 
     fn action(code: &str) -> KeyAction {
-        KeyAction { code: Some(code.into()), layer: None, description: None }
+        KeyAction {
+            code: Some(code.into()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -258,8 +322,55 @@ mod tests {
 
     #[test]
     fn layer_switch_labels() {
-        let a = KeyAction { code: Some("TO".into()), layer: Some(2), description: None };
+        let a = KeyAction {
+            code: Some("TO".into()),
+            layer: Some(2),
+            ..Default::default()
+        };
         assert_eq!(action_label(&a), "TO2");
+    }
+
+    #[test]
+    fn oryx_modifier_flags_are_part_of_the_label() {
+        let a = KeyAction {
+            code: Some("KC_TAB".into()),
+            modifiers: Some(crate::oryx_api::KeyModifiers {
+                left_alt: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(action_label(&a), "⌥Tab");
+
+        let b = KeyAction {
+            code: Some("KC_4".into()),
+            modifiers: Some(crate::oryx_api::KeyModifiers {
+                left_gui: true,
+                left_shift: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(action_label(&b), "⇧⌘4");
+
+        let c = KeyAction {
+            code: Some("KC_F11".into()),
+            modifiers: Some(crate::oryx_api::KeyModifiers {
+                left_ctrl: true,
+                left_shift: true,
+                left_alt: true,
+                left_gui: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(action_label(&c), "⌃⇧⌥⌘F11");
+    }
+
+    #[test]
+    fn unsupported_oryx_actions_are_never_rendered_as_blank() {
+        let a: KeyAction = serde_json::from_str(r#"{"macro":{"name":"example"}}"#).unwrap();
+        assert_eq!(action_label(&a), "Macro");
     }
 
     #[test]

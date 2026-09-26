@@ -30,7 +30,9 @@ pub struct Opts {
 
 /// `--key 4,0` → matrix (row, col); see `keyjitsu watch` output for values.
 pub fn parse_matrix_key(s: &str) -> Result<(u8, u8), String> {
-    let (r, c) = s.split_once(',').ok_or_else(|| format!("expected ROW,COL - got {s:?}"))?;
+    let (r, c) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected ROW,COL - got {s:?}"))?;
     let row = r.trim().parse().map_err(|_| format!("bad row {r:?}"))?;
     let col = c.trim().parse().map_err(|_| format!("bad col {c:?}"))?;
     Ok((row, col))
@@ -41,17 +43,17 @@ pub fn run(serial: Option<&str>, opts: Opts) -> Result<()> {
     let mut active_layer = kb.pair()?.unwrap_or(0);
 
     // Trigger key: flag > interactive pick > saved config.
-    let mut cfg = config::load();
+    let mut cfg = config::load_checked()?;
     let trigger: Option<(u8, u8)> = if let Some(k) = opts.key {
         cfg.overlay_trigger = Some([k.0, k.1]);
-        config::save(&cfg).ok();
+        config::save(&cfg)?;
         Some(k)
     } else if opts.pick {
         println!("Press the key on the keyboard you want as the overlay trigger…");
         let k = wait_for_keydown(&kb)?;
         println!("Trigger set to row {}, col {} (saved).", k.0, k.1);
         cfg.overlay_trigger = Some([k.0, k.1]);
-        config::save(&cfg).ok(); // best-effort, like the --key path; the overlay still runs
+        config::save(&cfg)?;
         Some(k)
     } else {
         cfg.overlay_trigger.map(|[r, c]| (r, c))
@@ -65,10 +67,9 @@ pub fn run(serial: Option<&str>, opts: Opts) -> Result<()> {
     }
 
     // Legends: best effort, same as `live`.
-    let layout = kb
-        .fw_version()
+    let fw = kb.fw_version()?;
+    let layout = LayoutId::from_serial(&fw)
         .ok()
-        .and_then(|fw| LayoutId::from_serial(&fw).ok())
         .and_then(|id| fetch_layout(&id, "voyager", false).ok());
     if layout.is_none() {
         eprintln!("note: no Oryx layout available - keys will light up without legends");
@@ -160,14 +161,23 @@ fn apply_layer(overlay: &Overlay, layout: Option<&Layout>, layer_no: u8) {
     let (labels, glow, title) = match layer {
         Some(layer) => (
             layer.keys.iter().map(labels_for).collect::<Vec<_>>(),
-            layer.keys.iter().map(|k| k.glow_color.as_deref().and_then(parse_hex)).collect(),
+            layer
+                .keys
+                .iter()
+                .map(|k| k.glow_color.as_deref().and_then(parse_hex))
+                .collect(),
             format!(
                 "L{layer_no} · {}",
                 layer.title.as_deref().unwrap_or("(unnamed)")
             ),
         ),
         None => (
-            (0..geo.len()).map(|_| KeyLabels { tap: String::new(), hold: None }).collect(),
+            (0..geo.len())
+                .map(|_| KeyLabels {
+                    tap: String::new(),
+                    hold: None,
+                })
+                .collect(),
             vec![None; geo.len()],
             format!("L{layer_no}"),
         ),

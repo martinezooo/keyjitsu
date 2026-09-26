@@ -4,10 +4,10 @@
 //! identifies the running build via a short marker embedded in its USB serial;
 //! this cache maps that marker back to the exact state that produced the binary.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::config::CustomLayer;
+use crate::config::{self, CustomLayer};
 use crate::oryx_api::cache_dir;
 
 pub const STATE_ID_HEX_LEN: usize = 10;
@@ -66,38 +66,80 @@ impl FirmwareState {
 
     /// Stable, compact identity for the complete authored firmware state.
     /// FNV-1a is used as an identity checksum, not for security.
-    pub fn state_id(&self) -> String {
-        let bytes = serde_json::to_vec(self).expect("FirmwareState is serializable");
+    pub fn state_id(&self) -> Result<String> {
+        let bytes = serde_json::to_vec(self).context("serializing firmware state identity")?;
         let mut hash = 0xcbf29ce484222325u64;
         for b in bytes {
             hash ^= b as u64;
             hash = hash.wrapping_mul(0x100000001b3);
         }
-        format!("{:010x}", hash & 0xffffffffff)
+        Ok(format!("{:010x}", hash & 0xffffffffff))
     }
 
     pub fn save(&self) -> Result<String> {
-        let id = self.state_id();
+        let id = self.state_id()?;
         let dir = cache_dir()?.join("firmware-states");
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
         let path = dir.join(format!("{id}.json"));
+
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let existing: FirmwareState =
+                    serde_json::from_slice(&bytes).with_context(|| {
+                        format!("existing firmware state {} is unreadable", path.display())
+                    })?;
+                if existing != *self {
+                    bail!("firmware state identity collision for {id}; refusing to overwrite");
+                }
+                return Ok(id);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        }
+
         let bytes = serde_json::to_vec_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)
-            .with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("installing {}", path.display()))?;
+        config::write_atomic(&path, &bytes)
+            .with_context(|| format!("persisting {}", path.display()))?;
         Ok(id)
     }
 
-    pub fn load(id: &str) -> Option<Self> {
+    pub fn load_checked(id: &str) -> Result<Option<Self>> {
         if id.len() != STATE_ID_HEX_LEN || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
+            return Ok(None);
         }
-        let path = cache_dir().ok()?.join("firmware-states").join(format!("{id}.json"));
-        let bytes = std::fs::read(path).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        let path = cache_dir()?
+            .join("firmware-states")
+            .join(format!("{id}.json"));
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(state) => Ok(Some(state)),
+            Err(e) => {
+                let backup = config::preserve_corrupt_bytes(&path, &bytes).with_context(|| {
+                    format!(
+                        "firmware state is unreadable ({e}); failed to preserve the original bytes"
+                    )
+                })?;
+                Err(e).with_context(|| {
+                    format!(
+                        "firmware state is unreadable; preserved the original bytes in {}",
+                        backup.display()
+                    )
+                })
+            }
+        }
+    }
+
+    pub fn load(id: &str) -> Option<Self> {
+        match Self::load_checked(id) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("keyjitsu: {e:#}");
+                None
+            }
+        }
     }
 }
 
@@ -107,10 +149,58 @@ mod tests {
 
     #[test]
     fn parses_state_marker_only_when_complete() {
-        assert_eq!(state_id_from_serial("abc/rev~kj0123456789"), Some("0123456789"));
+        assert_eq!(
+            state_id_from_serial("abc/rev~kj0123456789"),
+            Some("0123456789")
+        );
         assert_eq!(state_id_from_serial("abc/rev"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj123"), None);
         assert_eq!(state_id_from_serial("abc/rev~kj012345678z"), None);
+    }
+
+    #[test]
+    fn canonicalizes_custom_layer_key_order() {
+        let a = FirmwareState::new(
+            "layout".into(),
+            "rev".into(),
+            vec![],
+            vec![],
+            vec![CustomLayer {
+                layout: "layout".into(),
+                name: "Extra".into(),
+                keys: vec![
+                    crate::config::CustomKey {
+                        key: 4,
+                        code: "KC_B".into(),
+                    },
+                    crate::config::CustomKey {
+                        key: 1,
+                        code: "KC_A".into(),
+                    },
+                ],
+            }],
+        );
+        let b = FirmwareState::new(
+            "layout".into(),
+            "rev".into(),
+            vec![],
+            vec![],
+            vec![CustomLayer {
+                layout: "layout".into(),
+                name: "Extra".into(),
+                keys: vec![
+                    crate::config::CustomKey {
+                        key: 1,
+                        code: "KC_A".into(),
+                    },
+                    crate::config::CustomKey {
+                        key: 4,
+                        code: "KC_B".into(),
+                    },
+                ],
+            }],
+        );
+        assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
     }
 
     #[test]
@@ -119,8 +209,16 @@ mod tests {
             "layout".into(),
             "rev".into(),
             vec![
-                FirmwareEdit { layer: 1, key: 4, code: "KC_B".into() },
-                FirmwareEdit { layer: 0, key: 2, code: "KC_A".into() },
+                FirmwareEdit {
+                    layer: 1,
+                    key: 4,
+                    code: "KC_B".into(),
+                },
+                FirmwareEdit {
+                    layer: 0,
+                    key: 2,
+                    code: "KC_A".into(),
+                },
             ],
             Vec::new(),
             Vec::new(),
@@ -129,13 +227,21 @@ mod tests {
             "layout".into(),
             "rev".into(),
             vec![
-                FirmwareEdit { layer: 0, key: 2, code: "KC_A".into() },
-                FirmwareEdit { layer: 1, key: 4, code: "KC_B".into() },
+                FirmwareEdit {
+                    layer: 0,
+                    key: 2,
+                    code: "KC_A".into(),
+                },
+                FirmwareEdit {
+                    layer: 1,
+                    key: 4,
+                    code: "KC_B".into(),
+                },
             ],
             Vec::new(),
             Vec::new(),
         );
-        assert_eq!(a.state_id(), b.state_id());
-        assert_eq!(a.state_id().len(), STATE_ID_HEX_LEN);
+        assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
+        assert_eq!(a.state_id().unwrap().len(), STATE_ID_HEX_LEN);
     }
 }
