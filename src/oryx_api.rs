@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://oryx.zsa.io/graphql";
 const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
 
+fn null_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 const LAYOUT_QUERY: &str = r#"query Layout($hashId: String!, $geometry: String!, $revisionId: String!) {
   layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {
     hashId title geometry
@@ -42,7 +50,7 @@ pub struct Revision {
     /// Oryx combos are revision-level chords, not properties of an individual
     /// key. Keep them in the canonical layout model so every UI surface sees
     /// the same relation between physical key positions and the emitted action.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_vec")]
     pub combos: Vec<OryxCombo>,
 }
 
@@ -301,12 +309,25 @@ fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
     LayoutId::validate_part("layout hash", &id.hash)?;
     LayoutId::validate_part("revision", &id.revision)?;
     LayoutId::validate_part("geometry", geometry)?;
-    // v3: revision-level Oryx combos added. Do not reuse v2 while connected:
-    // a v2 cache silently makes every combo disappear from Live/Peek.
     Ok(cache_dir()?.join(format!(
         "layout-{geometry}-{}-{}-v3.json",
         id.hash, id.revision
     )))
+}
+
+fn legacy_cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
+    LayoutId::validate_part("layout hash", &id.hash)?;
+    LayoutId::validate_part("revision", &id.revision)?;
+    LayoutId::validate_part("geometry", geometry)?;
+    Ok(cache_dir()?.join(format!(
+        "layout-{geometry}-{}-{}-v2.json",
+        id.hash, id.revision
+    )))
+}
+
+fn cached_layout_from_path(path: &Path) -> Option<Layout> {
+    let bytes = read_layout_cache(path).ok()?;
+    parse_layout(&bytes).ok()
 }
 
 fn read_layout_bytes(reader: impl Read, source: &str) -> Result<Vec<u8>> {
@@ -331,8 +352,11 @@ fn read_layout_cache(path: &Path) -> Result<Vec<u8>> {
 /// show the last-seen layout when no keyboard is plugged in.
 pub fn cached_layout(id: &LayoutId, geometry: &str) -> Option<Layout> {
     let cache = cache_path(id, geometry).ok()?;
-    let bytes = read_layout_cache(&cache).ok()?;
-    parse_layout(&bytes).ok()
+    if let Some(layout) = cached_layout_from_path(&cache) {
+        return Some(layout);
+    }
+    let legacy = legacy_cache_path(id, geometry).ok()?;
+    cached_layout_from_path(&legacy)
 }
 
 /// Find any layout already in the cache (newest first). Lets the GUI show a
@@ -372,12 +396,11 @@ pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
 /// `revision = "latest"` always goes to the network.
 pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layout> {
     let cache = cache_path(id, geometry)?;
+    let legacy_cache = legacy_cache_path(id, geometry)?;
     let cacheable = id.revision != "latest";
     if cacheable && !refresh {
-        if let Ok(bytes) = read_layout_cache(&cache) {
-            if let Ok(layout) = parse_layout(&bytes) {
-                return Ok(layout);
-            }
+        if let Some(layout) = cached_layout_from_path(&cache) {
+            return Ok(layout);
         }
     }
 
@@ -385,42 +408,62 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
         "query": LAYOUT_QUERY,
         "variables": { "hashId": id.hash, "geometry": geometry, "revisionId": id.revision },
     });
-    let response = ureq::post(ENDPOINT)
-        .timeout(Duration::from_secs(8))
-        .set("Content-Type", "application/json")
-        .set(
-            "User-Agent",
-            concat!("keyjitsu/", env!("CARGO_PKG_VERSION")),
-        )
-        .send_json(body)
-        .context("Oryx API request failed (offline? cached layouts still work)")?;
-    let bytes = read_layout_bytes(response.into_reader(), "Oryx API response")?;
-    let resp: serde_json::Value =
-        serde_json::from_slice(&bytes).context("Oryx API returned malformed JSON")?;
+    let live = (|| -> Result<(Layout, Vec<u8>)> {
+        let response = ureq::post(ENDPOINT)
+            .timeout(Duration::from_secs(8))
+            .set("Content-Type", "application/json")
+            .set(
+                "User-Agent",
+                concat!("keyjitsu/", env!("CARGO_PKG_VERSION")),
+            )
+            .send_json(body)
+            .context("Oryx API request failed")?;
+        let bytes = read_layout_bytes(response.into_reader(), "Oryx API response")?;
+        let resp: serde_json::Value =
+            serde_json::from_slice(&bytes).context("Oryx API returned malformed JSON")?;
 
-    if let Some(errs) = resp.get("errors").and_then(|e| e.as_array()) {
-        let msgs: Vec<String> = errs
-            .iter()
-            .filter_map(|e| e.get("message").and_then(|m| m.as_str()).map(String::from))
-            .collect();
-        bail!("Oryx API error for layout {}: {}", id.hash, msgs.join("; "));
-    }
-
-    let raw = resp
-        .get("data")
-        .and_then(|d| d.get("layout"))
-        .filter(|l| !l.is_null())
-        .ok_or_else(|| anyhow!("layout {} not found on Oryx (is it private?)", id.hash))?
-        .clone();
-
-    let bytes = serde_json::to_vec(&raw)?;
-    let layout = parse_layout(&bytes)?;
-    if cacheable {
-        if let Err(e) = crate::config::write_atomic(&cache, &bytes) {
-            eprintln!("keyjitsu: could not cache Oryx layout {}: {e:#}", id.hash);
+        if let Some(errs) = resp.get("errors").and_then(|e| e.as_array()) {
+            let msgs: Vec<String> = errs
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()).map(String::from))
+                .collect();
+            bail!("Oryx API error for layout {}: {}", id.hash, msgs.join("; "));
         }
+
+        let raw = resp
+            .get("data")
+            .and_then(|d| d.get("layout"))
+            .filter(|l| !l.is_null())
+            .ok_or_else(|| anyhow!("layout {} not found on Oryx (is it private?)", id.hash))?
+            .clone();
+
+        let bytes = serde_json::to_vec(&raw)?;
+        let layout = parse_layout(&bytes)?;
+        Ok((layout, bytes))
+    })();
+
+    match live {
+        Ok((layout, bytes)) => {
+            if cacheable {
+                if let Err(e) = crate::config::write_atomic(&cache, &bytes) {
+                    eprintln!("keyjitsu: could not cache Oryx layout {}: {e:#}", id.hash);
+                }
+            }
+            Ok(layout)
+        }
+        Err(live_err) if cacheable => {
+            if let Some(layout) = cached_layout_from_path(&legacy_cache) {
+                eprintln!(
+                    "keyjitsu: live Oryx layout failed, using v2 cache for {}: {live_err:#}",
+                    id.hash
+                );
+                Ok(layout)
+            } else {
+                Err(live_err.context("no matching cached Oryx layout available"))
+            }
+        }
+        Err(live_err) => Err(live_err),
     }
-    Ok(layout)
 }
 
 fn parse_layout(bytes: &[u8]) -> Result<Layout> {
@@ -462,6 +505,16 @@ mod tests {
     fn rejects_oversized_layout_payloads() {
         let bytes = vec![b'x'; MAX_LAYOUT_BYTES as usize + 1];
         assert!(read_layout_bytes(std::io::Cursor::new(bytes), "test layout").is_err());
+    }
+
+    #[test]
+    fn combo_less_layout_accepts_null_combos() {
+        let json = br#"{
+          "hashId":"xBrnx","title":"Test","geometry":"voyager",
+          "revision":{"hashId":"wODgzD","title":"rev","layers":[],"combos":null}
+        }"#;
+        let layout = parse_layout(json).unwrap();
+        assert!(layout.revision.combos.is_empty());
     }
 
     #[test]
