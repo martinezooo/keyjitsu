@@ -480,8 +480,8 @@ fn draw_combo_marker(painter: &Painter, cap: Rect, unit: f32, tint: Color32) {
     );
 }
 
-/// Combo membership is a relation between physical key positions, so it gets
-/// its own small marker instead of replacing the key's actual assignment.
+// Combo membership is a relation between physical key positions, so it gets
+// its own small marker instead of replacing the key's actual assignment.
 
 /// Category badge in the key's top-left corner. Layer keys get a readable
 /// "L<n>" (which layer they reach); media/mouse/lighting get their glyph.
