@@ -170,7 +170,8 @@ pub fn build(
 
     let keymap_c = take_file(&mut files, "keymap.c")
         .ok_or_else(|| anyhow!("no keymap.c in the generated source"))?;
-    let rules_mk = take_file(&mut files, "rules.mk").unwrap_or_default();
+    let rules_mk = take_file(&mut files, "rules.mk")
+        .ok_or_else(|| anyhow!("generated source has no rules.mk; refusing to rebuild from an incomplete source bundle"))?;
 
     // Plain multi-step slots become generated custom keycodes.
     let mut macros: Vec<keymap::MacroSpec> = Vec::new();
