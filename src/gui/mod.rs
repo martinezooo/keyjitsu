@@ -865,7 +865,7 @@ impl App {
         if app.auto_update_check {
             app.update_rx = Some(spawn_update_check());
         }
-      0.0);
+        app
     }
 
     fn start_perf_observe(&mut self) {
