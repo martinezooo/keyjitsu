@@ -12,6 +12,7 @@ mod firmware_state;
 mod geometry;
 mod gui;
 mod heatmap;
+mod key_action;
 mod keycodes;
 mod keymap;
 mod legend;
