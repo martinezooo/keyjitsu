@@ -239,6 +239,8 @@ struct App {
     connected: Option<(String, String)>, // (model, serial/layout-id)
     connection_generation: Option<u64>,
     layout: Option<Layout>,
+    /// Last layout-fetch/parse error for the current connection generation.
+    layout_error: Option<String>,
     /// Exact state declared by the currently connected Keyjitsu-built firmware.
     /// This is device truth, not a user profile/snapshot.
     firmware_state: Option<FirmwareState>,
@@ -690,6 +692,7 @@ impl App {
             connected: None,
             connection_generation: None,
             layout: None,
+            layout_error: None,
             firmware_state: None,
             heat: None,
             heat_error: None,
