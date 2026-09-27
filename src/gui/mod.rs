@@ -48,6 +48,7 @@ use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
 use crate::keycodes;
+use crate::key_action::{hold_wrap, synth_key, synth_slots, unknown_device_key};
 use crate::legend::{self, labels_for};
 use crate::localbuild::{self, BuildMsg, KeyEdit};
 use crate::oryx_api::{KeyAction, Layer, Layout, LayoutId, OryxKey};
@@ -227,26 +228,6 @@ const SLOT_COLORS: [Color32; 4] = [
 
 /// Wrap a tap keycode with a hold action: `MO(n)` → `LT(n,tap)`, a plain
 /// modifier → the matching mod-tap macro. None = not expressible as MT/LT.
-fn hold_wrap(hold: &str, tap: &str) -> Option<String> {
-    if let Some(n) = hold.strip_prefix("MO(").and_then(|r| r.strip_suffix(')')) {
-        return Some(format!("LT({},{tap})", n.trim()));
-    }
-    let m = match hold {
-        "KC_LSFT" | "KC_LEFT_SHIFT" | "KC_LSHIFT" => "LSFT_T",
-        "KC_RSFT" | "KC_RIGHT_SHIFT" | "KC_RSHIFT" => "RSFT_T",
-        "KC_LCTL" | "KC_LEFT_CTRL" | "KC_LCTRL" => "LCTL_T",
-        "KC_RCTL" | "KC_RIGHT_CTRL" | "KC_RCTRL" => "RCTL_T",
-        "KC_LALT" | "KC_LEFT_ALT" => "LALT_T",
-        "KC_RALT" | "KC_RIGHT_ALT" => "RALT_T",
-        "KC_LGUI" | "KC_LEFT_GUI" | "KC_LCMD" => "LGUI_T",
-        "KC_RGUI" | "KC_RIGHT_GUI" | "KC_RCMD" => "RGUI_T",
-        "KC_HYPR" => "HYPR_T",
-        "KC_MEH" => "MEH_T",
-        _ => return None,
-    };
-    Some(format!("{m}({tap})"))
-}
-
 struct App {
     egui_ctx: egui::Context,
     _device_handle: worker::DeviceWorkerHandle,
@@ -2579,96 +2560,6 @@ fn merge_firmware_maps(
         dances.insert(pos, slots.clone());
     }
     (edits, dances)
-}
-
-fn unknown_device_key() -> OryxKey {
-    OryxKey {
-        custom_label: Some("?".into()),
-        ..Default::default()
-    }
-}
-
-fn synth_slots(slots: &[Option<String>; 4]) -> OryxKey {
-    let mut key = OryxKey::default();
-    let action = |code: &Option<String>| -> Option<KeyAction> {
-        let code = code.as_deref()?;
-        let synthesized = synth_key(code);
-        synthesized.tap.or(synthesized.hold)
-    };
-    key.tap = action(&slots[0]);
-    key.hold = action(&slots[1]);
-    key.double_tap = action(&slots[2]);
-    key.tap_hold = action(&slots[3]);
-    key
-}
-
-fn synth_key(code: &str) -> OryxKey {
-    let mut k = OryxKey::default();
-    for fam in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
-        if let Some(rest) = code.strip_prefix(fam).and_then(|r| r.strip_prefix('(')) {
-            if let Some(inner) = rest.strip_suffix(')') {
-                if let Ok(layer) = inner.trim().parse::<u8>() {
-                    k.tap = Some(KeyAction {
-                        code: Some(fam.to_string()),
-                        layer: Some(layer),
-                        description: None,
-                        ..Default::default()
-                    });
-                    return k;
-                }
-            }
-        }
-    }
-    // LT(n, tap) → tap key + a hold-to-layer hint.
-    if let Some(rest) = code.strip_prefix("LT(").and_then(|r| r.strip_suffix(')')) {
-        let mut it = rest.splitn(2, ',');
-        if let (Some(n), Some(tap)) = (it.next(), it.next()) {
-            if let Ok(layer) = n.trim().parse::<u8>() {
-                k.tap = Some(KeyAction {
-                    code: Some(tap.trim().to_string()),
-                    layer: None,
-                    description: None,
-                    ..Default::default()
-                });
-                k.hold = Some(KeyAction {
-                    code: Some("MO".into()),
-                    layer: Some(layer),
-                    description: None,
-                    ..Default::default()
-                });
-                return k;
-            }
-        }
-    }
-    for (wrapper, hold) in [
-        ("LSFT_T(", "KC_LSFT"),
-        ("RSFT_T(", "KC_RSFT"),
-        ("LCTL_T(", "KC_LCTL"),
-        ("RCTL_T(", "KC_RCTL"),
-        ("LALT_T(", "KC_LALT"),
-        ("RALT_T(", "KC_RALT"),
-        ("LGUI_T(", "KC_LGUI"),
-        ("RGUI_T(", "KC_RGUI"),
-        ("HYPR_T(", "KC_HYPR"),
-        ("MEH_T(", "KC_MEH"),
-    ] {
-        if let Some(tap) = code.strip_prefix(wrapper).and_then(|r| r.strip_suffix(')')) {
-            k.tap = Some(KeyAction {
-                code: Some(tap.to_string()),
-                ..Default::default()
-            });
-            k.hold = Some(KeyAction {
-                code: Some(hold.to_string()),
-                ..Default::default()
-            });
-            return k;
-        }
-    }
-    k.tap = Some(KeyAction {
-        code: Some(code.to_string()),
-        ..Default::default()
-    });
-    k
 }
 
 fn status_dot(ui: &mut egui::Ui, ok: bool) {
