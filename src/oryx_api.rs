@@ -269,8 +269,13 @@ impl KeyAction {
             return None;
         }
         let mut mods = self.modifiers.clone().unwrap_or_default();
+        if !mods.semantics_supported() {
+            return None;
+        }
         if let Some(modifier) = self.modifier.as_deref() {
-            let _ = mods.apply_token(modifier);
+            if !mods.apply_token(modifier) {
+                return None;
+            }
         }
         Some(if mods.is_empty() {
             base.to_string()
@@ -302,7 +307,16 @@ impl KeyAction {
             Some("Macro")
         } else if self.color.is_some() {
             Some("RGB action")
-        } else if !self.extra.is_empty() {
+        } else if !self.extra.is_empty()
+            || self
+                .modifiers
+                .as_ref()
+                .is_some_and(|mods| !mods.semantics_supported())
+            || self.modifier.as_deref().is_some_and(|token| {
+                let mut probe = KeyModifiers::default();
+                !probe.apply_token(token)
+            })
+        {
             Some("Oryx action")
         } else {
             None
@@ -633,19 +647,22 @@ mod tests {
         let future_array: KeyAction =
             serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT","FUTURE_MOD"]}"#)
                 .unwrap();
-        assert_eq!(future_array.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert_eq!(future_array.qmk_code(), None);
+        assert_eq!(future_array.fallback_kind(), Some("Oryx action"));
         assert!(!future_array.roundtrip_safe());
 
         let future_object: KeyAction = serde_json::from_str(
             r#"{"code":"KC_TAB","modifiers":{"leftAlt":true,"futureMod":true}}"#,
         )
         .unwrap();
-        assert_eq!(future_object.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert_eq!(future_object.qmk_code(), None);
+        assert_eq!(future_object.fallback_kind(), Some("Oryx action"));
         assert!(!future_object.roundtrip_safe());
 
         let future_singular: KeyAction =
             serde_json::from_str(r#"{"code":"KC_TAB","modifier":"FUTURE_MOD"}"#).unwrap();
-        assert_eq!(future_singular.qmk_code().as_deref(), Some("KC_TAB"));
+        assert_eq!(future_singular.qmk_code(), None);
+        assert_eq!(future_singular.fallback_kind(), Some("Oryx action"));
         assert!(!future_singular.roundtrip_safe());
     }
 
