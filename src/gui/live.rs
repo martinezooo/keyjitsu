@@ -7,48 +7,41 @@
 use super::*;
 
 impl App {
-    pub(super) fn connected_state_marker(&self) -> Option<&str> {
-        self.connected
-            .as_ref()
-            .and_then(|(_, serial)| firmware_state::state_id_from_serial(serial))
-    }
-
-    pub(super) fn firmware_state_verified(&self) -> bool {
-        self.connected_state_marker().is_some()
-            && self.firmware_state.is_some()
-            && !self.firmware_state_unknown
-    }
-
     /// Compact connection status as a colored pill.
     pub(super) fn connection_pill(&self, ui: &mut egui::Ui) {
-        let (dot, text, hover) = match &self.connected {
-            Some((model, _)) if self.firmware_state_unknown => (
+        let (dot, text, hover) = match (&self.connected, self.device_state_kind()) {
+            (Some((model, _)), DeviceStateKind::MissingFirmwareState) => (
                 pal::AMBER,
                 format!("{model} · state unknown"),
                 "The keyboard reports a Keyjitsu firmware marker, but the matching local firmware-state is unavailable.".to_string(),
             ),
-            Some((model, _)) if !self.firmware_state_verified() => {
+            (Some((model, _)), DeviceStateKind::OryxBaseline) => {
                 let text = match &self.layout {
-                    Some(l) => format!("{model} · {} · unverified", l.title),
-                    None => format!("{model} · device state unverified"),
+                    Some(layout) => format!("{model} · {} · Oryx baseline", layout.title),
+                    None => format!("{model} · Oryx baseline"),
                 };
                 (
                     pal::AMBER,
                     text,
-                    "The keyboard has no verifiable Keyjitsu firmware-state marker. Oryx is only a baseline; local/custom firmware changes cannot be reconstructed from the device.".to_string(),
+                    "The device serial identifies this Oryx revision, but no Keyjitsu state marker proves that local/custom firmware changes are represented.".to_string(),
                 )
             }
-            Some((model, serial)) => {
+            (Some((model, serial)), DeviceStateKind::VerifiedFirmware) => {
                 let text = match &self.layout {
-                    Some(l) => format!("{model} · {}", l.title),
+                    Some(layout) => format!("{model} · {}", layout.title),
                     None => format!("{model} · {serial}"),
                 };
                 (pal::GREEN, text.clone(), text)
             }
-            None => (
+            (None, DeviceStateKind::OfflineSnapshot) => (
                 pal::RED,
                 "No keyboard".to_string(),
                 "Plug in your Voyager and quit Keymapp (the HID channel is exclusive).".to_string(),
+            ),
+            _ => (
+                pal::AMBER,
+                "device state inconsistent".to_string(),
+                "The runtime state is internally inconsistent; reconnect the keyboard and inspect diagnostics.".to_string(),
             ),
         };
         egui::Frame::new()
@@ -59,10 +52,6 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(dot, RichText::new("●").size(11.0));
-                    // Truncate long text (disconnected hint, long layout titles)
-                    // instead of overflowing: content wider than the sidebar
-                    // makes egui reserve the overflow as an unpainted strip
-                    // next to the panel. Full text stays readable on hover.
                     ui.add(egui::Label::new(RichText::new(&text).color(pal::TEXT_DIM)).truncate())
                         .on_hover_text(hover);
                 });
