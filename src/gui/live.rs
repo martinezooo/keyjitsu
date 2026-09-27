@@ -195,7 +195,11 @@ impl App {
                 ui.add_space(10.0);
                 if self.connected.is_some() {
                     ui.label(
-                        RichText::new(if self.firmware_state_unknown {
+                        RichText::new(if matches!(
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        ) {
                             "Connected keyboard state is unknown"
                         } else {
                             "Reading keyboard layout…"
@@ -206,7 +210,11 @@ impl App {
                     );
                     ui.add_space(6.0);
                     ui.label(
-                        RichText::new(if self.firmware_state_unknown {
+                        RichText::new(if matches!(
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        ) {
                             "Keyjitsu will not guess from Oryx when the connected firmware reports a state that cannot be reconstructed locally."
                         } else {
                             "The keyboard is connected. Waiting for its matching layout definition."
@@ -929,7 +937,11 @@ impl App {
             return;
         }
 
-        let ready = self.env.is_ready() && self.connected.is_some() && !self.firmware_state_unknown;
+        let ready = self.env.is_ready() && self.connected.is_some() && !matches!(
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        );
         if ui
             .add_enabled(
                 ready,
@@ -956,7 +968,11 @@ impl App {
         }
 
         if !ready {
-            let reason = if self.firmware_state_unknown {
+            let reason = if matches!(
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        ) {
                 "Device state is unknown; rebuilding is blocked to protect working firmware changes."
             } else if self.connected.is_none() {
                 "Connect the keyboard to build firmware."
