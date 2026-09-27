@@ -32,6 +32,7 @@ use profiles::{
     profile_path, snapshot_profile,
 };
 use rgb_anim::{Anim, FxEvent};
+use state::DeviceStateKind;
 use update::{spawn_update_check, UpdateCheck};
 
 #[cfg(target_os = "macos")]
@@ -240,7 +241,6 @@ struct App {
     /// Exact state declared by the currently connected Keyjitsu-built firmware.
     /// This is device truth, not a user profile/snapshot.
     firmware_state: Option<FirmwareState>,
-    firmware_state_unknown: bool,
     heat: Option<HeatmapStore>,
     heat_error: Option<String>,
 
@@ -690,7 +690,6 @@ impl App {
             connection_generation: None,
             layout: None,
             firmware_state: None,
-            firmware_state_unknown: false,
             heat: None,
             heat_error: None,
             active_layer: 0,
@@ -2840,7 +2839,10 @@ iwants it.
         // network is an anonymous read of the generated QMK source.
         ui.add_space(4.0);
         let pending = self.pending_firmware_count();
-        if self.firmware_state_unknown {
+        if matches!(
+                    self.device_state_kind(),
+                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+                ) {
             ui.colored_label(
                 pal::AMBER,
                 "⚠ The connected firmware state is unknown. Building is blocked to avoid losing working keyboard changes.",
@@ -2858,7 +2860,10 @@ iwants it.
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let can = self.connected.is_some() && !self.build_busy && !self.firmware_state_unknown;
+            let can = self.connected.is_some() && !self.build_busy && !matches!(
+                    self.device_state_kind(),
+                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+                );
             if ui
                 .add_enabled(
                     can,
