@@ -27,9 +27,6 @@ impl App {
                             state_marker.and_then(FirmwareState::load).filter(|state| {
                                 state.layout_hash == id.hash && state.revision == id.revision
                             });
-                        self.firmware_state_unknown =
-                            state_marker.is_some() && self.firmware_state.is_none();
-
                         self.confirm_expected_firmware(generation, state_marker);
 
                         self.layout = crate::oryx_api::cached_layout(&id, "voyager");
@@ -47,7 +44,6 @@ impl App {
                     } else {
                         self.layout = None;
                         self.firmware_state = None;
-                        self.firmware_state_unknown = true;
                     }
                     self.connected = Some((model, serial));
                     self.edit_synced = None;
@@ -60,7 +56,11 @@ impl App {
                     self.layout = Some(*layout);
                     if self.firmware_state.is_some() {
                         self.rebuild_synth_layers();
-                    } else if !self.firmware_state_unknown {
+                    } else if !matches!(
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        ) {
                         if let Some(hash) = self.layout_hash.clone() {
                             self.hydrate_custom_layers(&hash);
                         }
