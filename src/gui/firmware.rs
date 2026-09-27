@@ -105,7 +105,10 @@ impl App {
         let Ok(id) = LayoutId::from_serial(serial) else {
             return;
         };
-        if self.firmware_state_unknown {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             self.build_open = true;
             self.build_busy = false;
             self.build_phase = "State unknown".into();
@@ -237,6 +240,11 @@ impl App {
             })
             .collect();
         self.build_log.clear();
+        if self.device_state_kind() == DeviceStateKind::OryxBaseline {
+            self.build_log.push_str(
+                "WARNING: building from the Oryx baseline. Existing untracked custom firmware changes cannot be reconstructed from the device.\n",
+            );
+        }
         self.build_busy = true;
         self.build_flash_after = flash_after;
         self.build_open = true;
@@ -278,7 +286,10 @@ impl App {
 
             ui.separator();
             let pending = self.pending_firmware_count();
-            if self.firmware_state_unknown {
+            if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
                 status_pill(ui, "⚠ device state unknown", pal::AMBER);
             } else if pending > 0 {
                 status_pill(
@@ -322,7 +333,10 @@ impl App {
                 if pending > 0 {
                     let ready = self.env.is_ready()
                         && self.connected.is_some()
-                        && !self.firmware_state_unknown
+                        && !matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        )
                         && !self.build_busy
                         && !self.flash_in_progress();
                     if ui
