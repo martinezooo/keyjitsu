@@ -29,6 +29,10 @@ pub enum DevEvent {
         generation: u64,
         layout: Box<Layout>,
     },
+    LayoutFailed {
+        generation: u64,
+        error: String,
+    },
     Hid(Event),
     Disconnected {
         generation: u64,
@@ -223,13 +227,18 @@ fn device_loop(
             let layout_tx = etx.clone();
             let layout_ctx = ctx.clone();
             std::thread::spawn(move || {
-                if let Ok(layout) = fetch_layout(&id, "voyager", false) {
-                    let _ = layout_tx.send(DevEvent::LayoutLoaded {
+                let event = match fetch_layout(&id, "voyager", false) {
+                    Ok(layout) => DevEvent::LayoutLoaded {
                         generation: connection_generation,
                         layout: Box::new(layout),
-                    });
-                    layout_ctx.request_repaint();
-                }
+                    },
+                    Err(error) => DevEvent::LayoutFailed {
+                        generation: connection_generation,
+                        error: format!("{error:#}"),
+                    },
+                };
+                let _ = layout_tx.send(event);
+                layout_ctx.request_repaint();
             });
         }
 
