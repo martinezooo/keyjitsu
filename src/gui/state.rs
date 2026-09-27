@@ -20,6 +20,9 @@ pub(super) enum DeviceStateKind {
     /// The firmware reports a Keyjitsu state id, but its exact state is missing
     /// locally. Never substitute the Oryx baseline for this case.
     MissingFirmwareState,
+    /// A keyboard is connected, but its reported firmware/layout identity
+    /// cannot be parsed into an Oryx layout id.
+    UnknownDeviceIdentity,
 }
 
 impl App {
@@ -30,14 +33,15 @@ impl App {
     }
 
     pub(super) fn device_state_kind(&self) -> DeviceStateKind {
-        if self.connected.is_none() {
+        let Some((_, serial)) = &self.connected else {
             return DeviceStateKind::OfflineSnapshot;
+        };
+        if LayoutId::from_serial(serial).is_err() {
+            return DeviceStateKind::UnknownDeviceIdentity;
         }
         match (self.connected_state_marker(), self.firmware_state.as_ref()) {
-            (Some(_), Some(_)) if !self.firmware_state_unknown => {
-                DeviceStateKind::VerifiedFirmware
-            }
-            (Some(_), _) => DeviceStateKind::MissingFirmwareState,
+            (Some(_), Some(_)) => DeviceStateKind::VerifiedFirmware,
+            (Some(_), None) => DeviceStateKind::MissingFirmwareState,
             (None, _) => DeviceStateKind::OryxBaseline,
         }
     }
@@ -78,7 +82,10 @@ impl App {
     /// unverified baseline. MissingFirmwareState returns "?" rather than
     /// silently substituting Oryx.
     pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
-        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             return Some(unknown_device_key());
         }
 
@@ -116,7 +123,10 @@ impl App {
     }
 
     pub(super) fn device_layer(&self, layer: u8) -> Option<Layer> {
-        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             let mut out = self.layer_def(layer).cloned().unwrap_or_else(|| Layer {
                 title: Some("Unknown device state".into()),
                 position: layer,
@@ -151,7 +161,10 @@ impl App {
     /// Editing projection = best available baseline plus explicit pending edits.
     /// A missing marked firmware state is never replaced by an Oryx guess.
     pub(super) fn editing_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
-        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             return self.device_key(layer, key);
         }
         if layer >= self.oryx_layer_count() {
@@ -179,7 +192,10 @@ impl App {
     }
 
     pub(super) fn editing_layer(&self, layer: u8) -> Option<Layer> {
-        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             return self.device_layer(layer);
         }
         if layer >= self.oryx_layer_count() {
@@ -195,6 +211,12 @@ impl App {
     }
 
     pub(super) fn assignment_editable(&self, layer: u8, key: usize) -> bool {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
+            return false;
+        }
         self.device_key(layer, key)
             .map(|key| key.assignment_roundtrip_safe())
             .unwrap_or(true)
@@ -554,7 +576,6 @@ impl App {
         self.firmware_state = state_marker
             .and_then(FirmwareState::load)
             .filter(|state| state.layout_hash == id.hash && state.revision == id.revision);
-        self.firmware_state_unknown = state_marker.is_some() && self.firmware_state.is_none();
         self.layout = Some(layout);
         self.hydrate_glow(&id.hash); // also sets self.layout_hash
         self.hydrate_key_fx(&id.hash);
