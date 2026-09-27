@@ -38,9 +38,7 @@ where
                     .as_str()
                     .ok_or_else(|| serde::de::Error::custom("modifier list must contain strings"))?;
                 if !out.apply_token(token) {
-                    return Err(serde::de::Error::custom(format!(
-                        "unknown Oryx modifier token {token:?}"
-                    )));
+                    out.unknown_tokens.push(token.to_string());
                 }
             }
         }
@@ -158,6 +156,14 @@ pub struct KeyModifiers {
     pub right_ctrl: bool,
     pub right_gui: bool,
     pub right_shift: bool,
+    /// Unknown object fields from newer Oryx schemas. Keeping them makes the
+    /// action explicitly non-editable instead of silently dropping semantics.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+    /// Unknown tokens from the historical array form, e.g. ["LALT", "..."].
+    /// This is an internal safety marker; Keyjitsu never writes Oryx JSON.
+    #[serde(skip)]
+    pub unknown_tokens: Vec<String>,
 }
 
 impl KeyModifiers {
@@ -170,6 +176,10 @@ impl KeyModifiers {
             && !self.right_ctrl
             && !self.right_gui
             && !self.right_shift
+    }
+
+    pub fn semantics_supported(&self) -> bool {
+        self.extra.is_empty() && self.unknown_tokens.is_empty()
     }
 
     /// Oryx has used both a singular `modifier: "LALT"` field and the
@@ -272,7 +282,19 @@ impl KeyAction {
     /// False means editing this action as a plain QMK string could lose Oryx
     /// semantics that Keyjitsu does not model yet.
     pub fn roundtrip_safe(&self) -> bool {
-        self.macro_action.is_none() && self.color.is_none() && self.extra.is_empty()
+        let modifiers_supported = self
+            .modifiers
+            .as_ref()
+            .is_none_or(KeyModifiers::semantics_supported);
+        let singular_modifier_supported = self.modifier.as_deref().is_none_or(|token| {
+            let mut probe = KeyModifiers::default();
+            probe.apply_token(token)
+        });
+        self.macro_action.is_none()
+            && self.color.is_none()
+            && self.extra.is_empty()
+            && modifiers_supported
+            && singular_modifier_supported
     }
 
     pub fn fallback_kind(&self) -> Option<&'static str> {
@@ -607,6 +629,24 @@ mod tests {
         let prefixed: KeyAction =
             serde_json::from_str(r#"{"code":"KC_TAB","modifier":"KC_LALT"}"#).unwrap();
         assert_eq!(prefixed.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let future_array: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT","FUTURE_MOD"]}"#)
+                .unwrap();
+        assert_eq!(future_array.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(!future_array.roundtrip_safe());
+
+        let future_object: KeyAction = serde_json::from_str(
+            r#"{"code":"KC_TAB","modifiers":{"leftAlt":true,"futureMod":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(future_object.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(!future_object.roundtrip_safe());
+
+        let future_singular: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"FUTURE_MOD"}"#).unwrap();
+        assert_eq!(future_singular.qmk_code().as_deref(), Some("KC_TAB"));
+        assert!(!future_singular.roundtrip_safe());
     }
 
     #[test]
