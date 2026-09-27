@@ -370,4 +370,259 @@ impl App {
             });
         });
     }
+
+    pub(super) fn ui_localbuild(&mut self, ui: &mut egui::Ui) {
+        // Uses the cached env - recompute only on demand (each check spawns
+        // `which` processes, so never do it per frame).
+        ui.horizontal(|ui| {
+            status_dot(ui, self.env.qmk_cli);
+            ui.label(RichText::new("qmk CLI").color(pal::TEXT_MUTED));
+            ui.add_space(10.0);
+            status_dot(ui, self.env.firmware_dir.is_some());
+            ui.label(RichText::new("qmk_firmware tree").color(pal::TEXT_MUTED));
+            ui.add_space(10.0);
+            status_dot(ui, self.env.arm_gcc);
+            ui.label(RichText::new("arm-gcc").color(pal::TEXT_MUTED));
+            ui.add_space(10.0);
+            status_dot(ui, self.connected.is_some());
+            ui.label(RichText::new("zsa/voyager").color(pal::TEXT_MUTED));
+        });
+        if let Some(d) = &self.env.firmware_dir {
+            ui.label(
+                RichText::new(format!("tree: {}", d.display()))
+                    .size(11.5)
+                    .monospace()
+                    .color(pal::TEXT_DIM),
+            );
+        }
+
+        if !self.env.is_ready() {
+            egui::CollapsingHeader::new(RichText::new("Setup guide").color(pal::AMBER))
+                .default_open(true)
+                .show(ui, |ui| {
+                    if !self.env.qmk_cli {
+                        ui.label("1. Install the QMK CLI:");
+                        ui.code("pip3 install qmk   # or: brew install qmk/qmk/qmk");
+                    }
+                    if self.env.firmware_dir.is_none() {
+                        ui.label("2. Fetch ZSA's firmware tree (one-time):");
+                        ui.code("qmk setup zsa/qmk_firmware -b firmware25");
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("↻ Recheck setup").clicked() {
+                            self.env = localbuild::detect_env();
+                        }
+                    });
+                });
+            return;
+        }
+
+        // Ready - power-user actions. Everything here runs locally; the only
+        // network is an anonymous read of the generated QMK source.
+        ui.add_space(4.0);
+        let pending = self.pending_firmware_count();
+        if matches!(
+                    self.device_state_kind(),
+                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+                ) {
+            ui.colored_label(
+                pal::AMBER,
+                "⚠ The connected firmware state is unknown. Building is blocked to avoid losing working keyboard changes.",
+            );
+        } else if pending > 0 {
+            ui.colored_label(
+                pal::AMBER,
+                format!(
+                    "● {pending} pending firmware change{}",
+                    if pending == 1 { "" } else { "s" }
+                ),
+            );
+        } else {
+            ui.weak("No pending firmware changes. Build can still reproduce the confirmed device state.");
+        }
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let can = self.connected.is_some() && !self.build_busy && !matches!(
+                    self.device_state_kind(),
+                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+                );
+            if ui
+                .add_enabled(
+                    can,
+                    egui::Button::new(RichText::new("⚙ Build firmware").color(Color32::WHITE))
+                        .fill(pal::VIOLET),
+                )
+                .clicked()
+            {
+                self.start_local_build(false);
+            }
+            if ui
+                .add_enabled(
+                    can,
+                    egui::Button::new(RichText::new("⚡ Build & flash").color(Color32::WHITE))
+                        .fill(pal::VIOLET),
+                )
+                .clicked()
+            {
+                self.start_local_build(true);
+            }
+            if ui.button("🔦 Flash a file / Oryx URL…").clicked() {
+                self.show_flash = true;
+            }
+            if ui.button("📂 Open firmware folder").clicked() {
+                if let Some(d) = &self.env.firmware_dir {
+                    match crate::platform::reveal_path(
+                        &d.join("keyboards/zsa/voyager/keymaps/keyjitsu"),
+                    ) {
+                        Ok(()) => self.file_action_error = None,
+                        Err(e) => {
+                            self.file_action_error =
+                                Some(format!("could not open firmware folder: {e:#}"));
+                        }
+                    }
+                }
+            }
+            if ui.button("↻ Recheck").clicked() {
+                self.env = localbuild::detect_env();
+            }
+            if self.build_busy {
+                ui.spinner();
+                if ui.button("✕ cancel").clicked() {
+                    self.build_cancel.store(true, Ordering::SeqCst);
+                }
+            }
+        });
+
+        if let Some(e) = &self.file_action_error {
+            ui.colored_label(pal::RED, e);
+        }
+
+        if let Some(bin) = self.last_build_bin.clone() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.colored_label(pal::GREEN, "✓ built");
+                if ui
+                    .link(
+                        RichText::new(bin.display().to_string())
+                            .size(11.5)
+                            .monospace(),
+                    )
+                    .clicked()
+                {
+                    match crate::platform::reveal_path(&bin) {
+                        Ok(()) => self.file_action_error = None,
+                        Err(e) => {
+                            self.file_action_error =
+                                Some(format!("could not open build location: {e:#}"));
+                        }
+                    }
+                }
+                let can_flash = self.last_build_state_id.is_some()
+                    && !self.build_busy
+                    && !self.flash_in_progress();
+                if ui
+                    .add_enabled(can_flash, egui::Button::new("Flash this build"))
+                    .clicked()
+                {
+                    self.flash_last_build();
+                }
+            });
+        }
+        if !self.build_log.is_empty() {
+            egui::CollapsingHeader::new("Build log").show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(140.0)
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(&self.build_log)
+                                .monospace()
+                                .size(11.0)
+                                .color(pal::TEXT_MUTED),
+                        );
+                    });
+            });
+        }
+        ui.add_space(2.0);
+        ui.weak("To flash: keyjitsu waits for the bootloader - press the Voyager's reset button when prompted, and don't unplug it while it writes.");
+    }
+
+    pub(super) fn flash_controls(&mut self, ui: &mut egui::Ui) {
+        ui.weak("Firmware, separate from the glow above. This flashes a complete firmware file or Oryx URL. To change what keys do, stage edits in Live and use Build & flash.");
+        if let Some((_, serial)) = &self.connected {
+            ui.label(format!("current firmware/layout: {serial}"));
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Oryx URL or .bin path:");
+            ui.text_edit_singleline(&mut self.flash_input);
+        });
+
+        let busy = matches!(
+            self.flash_state,
+            Some(FlashState::Downloading)
+                | Some(FlashState::WaitingForBootloader)
+                | Some(FlashState::Working { .. })
+        );
+        ui.horizontal(|ui| {
+            let can_latest = self.connected.is_some() && !busy;
+            if ui
+                .add_enabled(can_latest, egui::Button::new("⚡ flash latest from Oryx"))
+                .on_hover_text(
+                    "updates to the newest revision of the layout already on the keyboard",
+                )
+                .clicked()
+            {
+                self.start_flash_job(None, true, None);
+            }
+            let can_input = !self.flash_input.trim().is_empty() && !busy;
+            if ui
+                .add_enabled(can_input, egui::Button::new("flash from URL/file"))
+                .clicked()
+            {
+                self.start_flash_job(Some(self.flash_input.trim().to_string()), false, None);
+            }
+            let flash_is_writing = flash_is_writing(self.flash_state.as_ref());
+            if busy
+                && flash_can_cancel(self.flash_state.as_ref())
+                && ui.button("✕ cancel").clicked()
+            {
+                self.flash_cancel.store(true, Ordering::SeqCst);
+            } else if flash_is_writing {
+                ui.label(
+                    RichText::new("Writing firmware - do not unplug")
+                        .size(11.0)
+                        .color(pal::TEXT_DIM),
+                );
+            }
+        });
+        ui.add_space(8.0);
+
+        match &self.flash_state {
+            None => {
+                ui.weak("After starting, press the keyboard's RESET button (Voyager: tiny button on the left half).");
+            }
+            Some(FlashState::Downloading) => {
+                ui.label("Downloading firmware…");
+                ui.add(ProgressBar::new(0.0).animate(true));
+            }
+            Some(FlashState::WaitingForBootloader) => {
+                ui.label(RichText::new("Press the RESET button on the keyboard now").strong());
+                ui.add(ProgressBar::new(0.0).animate(true));
+            }
+            Some(FlashState::Working { phase, fraction }) => {
+                ui.label(*phase);
+                ui.add(ProgressBar::new(*fraction).show_percentage());
+            }
+            Some(FlashState::Done) => {
+                ui.colored_label(
+                    pal::GREEN,
+                    "✓ Flash complete - the keyboard reconnects automatically.",
+                );
+            }
+            Some(FlashState::Failed(e)) => {
+                ui.colored_label(pal::RED, e);
+            }
+        }
+    }
+}
 }
