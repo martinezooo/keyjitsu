@@ -124,14 +124,19 @@ pub fn full_labels_for(key: &OryxKey) -> KeyLabels {
             hold: None,
         };
     }
-    KeyLabels {
-        tap: key.tap.as_ref().map(action_label).unwrap_or_default(),
-        hold: key
-            .hold
-            .as_ref()
-            .map(action_label)
-            .filter(|s| !s.is_empty()),
-    }
+    let hold = key
+        .hold
+        .as_ref()
+        .map(action_label)
+        .filter(|s| !s.is_empty());
+    let tap = key.tap.as_ref().map(action_label).unwrap_or_else(|| {
+        if hold.is_none() && key.double_tap.is_none() && key.tap_hold.is_none() {
+            "∅".to_string()
+        } else {
+            String::new()
+        }
+    });
+    KeyLabels { tap, hold }
 }
 
 pub fn labels_for(key: &OryxKey) -> KeyLabels {
@@ -188,7 +193,7 @@ pub fn keycode_label(code: &str) -> String {
     }
     let s = match stripped {
         "TRANSPARENT" | "TRNS" => "▽",
-        "NO" => "",
+        "NO" => "∅",
         "ESCAPE" | "ESC" => "Esc",
         "ENTER" | "ENT" => "⏎",
         "SPACE" | "SPC" => "Spc",
@@ -328,6 +333,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(action_label(&a), "TO2");
+    }
+
+    #[test]
+    fn truly_empty_keys_are_explicit_not_blank() {
+        let key = OryxKey::default();
+        assert_eq!(full_labels_for(&key).tap, "∅");
+        assert_eq!(keycode_label("KC_NO"), "∅");
     }
 
     #[test]
