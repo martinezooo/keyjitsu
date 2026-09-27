@@ -7,7 +7,45 @@
 
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeviceStateKind {
+    /// No keyboard is attached; the UI can only show the last cached snapshot.
+    OfflineSnapshot,
+    /// The connected serial identifies an Oryx revision, but there is no
+    /// Keyjitsu state marker proving that local/custom changes are represented.
+    OryxBaseline,
+    /// The connected firmware reports a Keyjitsu state id and the exact state
+    /// is available locally.
+    VerifiedFirmware,
+    /// The firmware reports a Keyjitsu state id, but its exact state is missing
+    /// locally. Never substitute the Oryx baseline for this case.
+    MissingFirmwareState,
+}
+
 impl App {
+    pub(super) fn connected_state_marker(&self) -> Option<&str> {
+        self.connected
+            .as_ref()
+            .and_then(|(_, serial)| firmware_state::state_id_from_serial(serial))
+    }
+
+    pub(super) fn device_state_kind(&self) -> DeviceStateKind {
+        if self.connected.is_none() {
+            return DeviceStateKind::OfflineSnapshot;
+        }
+        match (self.connected_state_marker(), self.firmware_state.as_ref()) {
+            (Some(_), Some(_)) if !self.firmware_state_unknown => {
+                DeviceStateKind::VerifiedFirmware
+            }
+            (Some(_), _) => DeviceStateKind::MissingFirmwareState,
+            (None, _) => DeviceStateKind::OryxBaseline,
+        }
+    }
+
+    pub(super) fn firmware_state_verified(&self) -> bool {
+        self.device_state_kind() == DeviceStateKind::VerifiedFirmware
+    }
+
     pub(super) fn geometry(&self) -> &'static Geometry {
         geometry::voyager()
     }
@@ -33,10 +71,14 @@ impl App {
         }
     }
 
-    /// What the connected keyboard is confirmed to be running. This is the
-    /// base truth for every runtime surface (Peek, heatmap, combo HUD).
+    /// Best available runtime projection for a physical key.
+    ///
+    /// VerifiedFirmware applies the exact Keyjitsu-authored overlay. An
+    /// unmarked keyboard can only use its Oryx revision as an explicitly
+    /// unverified baseline. MissingFirmwareState returns "?" rather than
+    /// silently substituting Oryx.
     pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
-        if self.connected.is_some() && self.firmware_state_unknown {
+        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
             return Some(unknown_device_key());
         }
 
@@ -74,7 +116,7 @@ impl App {
     }
 
     pub(super) fn device_layer(&self, layer: u8) -> Option<Layer> {
-        if self.connected.is_some() && self.firmware_state_unknown {
+        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
             let mut out = self.layer_def(layer).cloned().unwrap_or_else(|| Layer {
                 title: Some("Unknown device state".into()),
                 position: layer,
@@ -106,10 +148,10 @@ impl App {
         Some(out)
     }
 
-    /// Editing projection = confirmed device truth plus explicit pending edits.
-    /// Unknown device truth is never replaced by an Oryx guess.
+    /// Editing projection = best available baseline plus explicit pending edits.
+    /// A missing marked firmware state is never replaced by an Oryx guess.
     pub(super) fn editing_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
-        if self.connected.is_some() && self.firmware_state_unknown {
+        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
             return self.device_key(layer, key);
         }
         if layer >= self.oryx_layer_count() {
@@ -137,7 +179,7 @@ impl App {
     }
 
     pub(super) fn editing_layer(&self, layer: u8) -> Option<Layer> {
-        if self.connected.is_some() && self.firmware_state_unknown {
+        if self.device_state_kind() == DeviceStateKind::MissingFirmwareState {
             return self.device_layer(layer);
         }
         if layer >= self.oryx_layer_count() {
