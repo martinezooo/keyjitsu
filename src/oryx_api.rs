@@ -20,6 +20,42 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn optional_modifiers<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<KeyModifiers>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let mut out = KeyModifiers::default();
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                let token = value
+                    .as_str()
+                    .ok_or_else(|| serde::de::Error::custom("modifier list must contain strings"))?;
+                if !out.apply_token(token) {
+                    return Err(serde::de::Error::custom(format!(
+                        "unknown Oryx modifier token {token:?}"
+                    )));
+                }
+            }
+        }
+        serde_json::Value::Object(_) => {
+            out = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        }
+        other => {
+            return Err(serde::de::Error::custom(format!(
+                "unexpected Oryx modifiers shape: {other}"
+            )));
+        }
+    }
+    Ok(Some(out))
+}
+
 const LAYOUT_QUERY: &str = r#"query Layout($hashId: String!, $geometry: String!, $revisionId: String!) {
   layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {
     hashId title geometry
@@ -61,8 +97,30 @@ pub struct OryxCombo {
     pub key_indices: Vec<usize>,
     /// Layer index on which the chord is active.
     pub layer_idx: u8,
-    /// Action emitted when all combo keys are pressed.
-    pub trigger: Option<KeyAction>,
+    /// Raw Oryx trigger. The server has used both a flat Action and a full
+    /// Key-shaped object whose action lives under `tap`.
+    pub trigger: serde_json::Value,
+}
+
+impl OryxCombo {
+    /// Normalize the wire-format variants of combo triggers into the same
+    /// KeyAction used by ordinary keys.
+    pub fn trigger_action(&self) -> Option<KeyAction> {
+        let value = &self.trigger;
+        if value.is_null() {
+            return None;
+        }
+        if let Some(obj) = value.as_object() {
+            for slot in ["tap", "hold", "doubleTap", "tapHold"] {
+                if let Some(candidate) = obj.get(slot).filter(|v| !v.is_null()) {
+                    if let Ok(action) = serde_json::from_value::<KeyAction>(candidate.clone()) {
+                        return Some(action);
+                    }
+                }
+            }
+        }
+        serde_json::from_value::<KeyAction>(value.clone()).ok()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,14 +177,22 @@ impl KeyModifiers {
     /// one mask before anything reaches the UI/editor.
     pub fn apply_token(&mut self, token: &str) -> bool {
         match token.trim().to_ascii_uppercase().as_str() {
-            "LALT" | "LEFT_ALT" => self.left_alt = true,
-            "RALT" | "RIGHT_ALT" => self.right_alt = true,
-            "LCTL" | "LCTRL" | "LEFT_CTRL" => self.left_ctrl = true,
-            "RCTL" | "RCTRL" | "RIGHT_CTRL" => self.right_ctrl = true,
-            "LGUI" | "LEFT_GUI" => self.left_gui = true,
-            "RGUI" | "RIGHT_GUI" => self.right_gui = true,
-            "LSFT" | "LSHIFT" | "LEFT_SHIFT" => self.left_shift = true,
-            "RSFT" | "RSHIFT" | "RIGHT_SHIFT" => self.right_shift = true,
+            "LALT" | "KC_LALT" | "LEFT_ALT" | "KC_LEFT_ALT" => self.left_alt = true,
+            "RALT" | "KC_RALT" | "RIGHT_ALT" | "KC_RIGHT_ALT" => self.right_alt = true,
+            "LCTL" | "LCTRL" | "KC_LCTL" | "KC_LCTRL" | "LEFT_CTRL" | "KC_LEFT_CTRL" => {
+                self.left_ctrl = true
+            }
+            "RCTL" | "RCTRL" | "KC_RCTL" | "KC_RCTRL" | "RIGHT_CTRL" | "KC_RIGHT_CTRL" => {
+                self.right_ctrl = true
+            }
+            "LGUI" | "KC_LGUI" | "LEFT_GUI" | "KC_LEFT_GUI" => self.left_gui = true,
+            "RGUI" | "KC_RGUI" | "RIGHT_GUI" | "KC_RIGHT_GUI" => self.right_gui = true,
+            "LSFT" | "LSHIFT" | "KC_LSFT" | "KC_LSHIFT" | "LEFT_SHIFT" | "KC_LEFT_SHIFT" => {
+                self.left_shift = true
+            }
+            "RSFT" | "RSHIFT" | "KC_RSFT" | "KC_RSHIFT" | "RIGHT_SHIFT" | "KC_RIGHT_SHIFT" => {
+                self.right_shift = true
+            }
             _ => return false,
         }
         true
@@ -164,6 +230,7 @@ pub struct KeyAction {
     pub description: Option<String>,
     /// Oryx stores precomposed shortcuts (for example Option+Tab) as a base
     /// keycode plus modifier flags instead of a wrapped QMK code.
+    #[serde(default, deserialize_with = "optional_modifiers")]
     pub modifiers: Option<KeyModifiers>,
     /// Older/current Oryx payloads may carry one modifier separately from
     /// the boolean modifier mask. It is part of the action, not metadata.
@@ -532,6 +599,14 @@ mod tests {
         let long_form: KeyAction =
             serde_json::from_str(r#"{"code":"KC_TAB","modifier":"left_alt"}"#).unwrap();
         assert_eq!(long_form.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let list: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT"]}"#).unwrap();
+        assert_eq!(list.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let prefixed: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"KC_LALT"}"#).unwrap();
+        assert_eq!(prefixed.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
     }
 
     #[test]
@@ -591,9 +666,21 @@ mod tests {
         assert_eq!(l.revision.combos[0].layer_idx, 0);
         assert_eq!(
             l.revision.combos[0]
-                .trigger
-                .as_ref()
-                .and_then(KeyAction::qmk_code)
+                .trigger_action()
+                .and_then(|action| action.qmk_code())
+                .as_deref(),
+            Some("LALT(KC_TAB)")
+        );
+
+        let nested: OryxCombo = serde_json::from_str(
+            r#"{"keyIndices":[1,2],"layerIdx":0,
+                "trigger":{"tap":{"code":"KC_TAB","modifier":"LALT"},"hold":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            nested
+                .trigger_action()
+                .and_then(|action| action.qmk_code())
                 .as_deref(),
             Some("LALT(KC_TAB)")
         );
