@@ -364,4 +364,222 @@ impl App {
         self.peek_layer = sample;
         self.peek_until = Some(Instant::now() + Duration::from_millis(ms.max(c.duration_ms)));
     }
+
+    pub(super) fn maybe_peek(&mut self, n: u8) {
+        if !self.peek.enabled {
+            return;
+        }
+        if self.peek.only_non_base && n == 0 {
+            // Returning to base: dismiss any active peek immediately.
+            self.peek_until = None;
+            return;
+        }
+        self.peek_layer = n;
+        // "Only outside the base layer" = the minimap stays up for the whole
+        // stay on the layer (dismissed by the return to base above); otherwise
+        // it's a timed flash.
+        self.peek_until = Some(if self.peek.only_non_base {
+            Instant::now() + Duration::from_secs(3600)
+        } else {
+            Instant::now() + Duration::from_millis(self.peek.duration_ms)
+        });
+    }
+
+    /// Draw the transparent, click-through layer peek as its own polished,
+    /// card-like viewport, positioned on the chosen monitor.
+    pub(super) fn show_peek(&self, ctx: &egui::Context) {
+        let geo = self.geometry();
+        let scale = self.peek.scale.clamp(0.5, 1.6);
+        // Card padding + header add to the raw keyboard size.
+        let pad = 16.0;
+        let header = if self.peek.show_layer_name { 40.0 } else { 0.0 };
+        let kb_w = 620.0 * scale;
+        // draw_keyboard sizes by width, so derive the unit from it.
+        let unit = kb_w / PEEK_BOARD_UNITS_WIDE;
+        let width = kb_w + pad * 2.0;
+        let combo_h = if self.peek.show_combo { 42.0 } else { 0.0 };
+        let height = unit * PEEK_BOARD_UNITS_TALL + header + combo_h + pad * 2.0;
+
+        // Position on the selected monitor (falls back to the main display).
+        let (mx, my, mw, mh) = self.peek_monitor_rect(ctx);
+        let edge = 48.0;
+        let x =
+            mx + match self.peek.halign {
+                HAlign::Left => edge,
+                HAlign::Center => (mw - width) / 2.0,
+                HAlign::Right => mw - width - edge,
+            } + self.peek.offset[0];
+        let y =
+            my + match self.peek.valign {
+                VAlign::Top => edge,
+                VAlign::Middle => (mh - height) / 2.0,
+                VAlign::Bottom => mh - height - edge - 24.0,
+            } + self.peek.offset[1];
+
+        let builder = egui::ViewportBuilder::default()
+            .with_title("keyjitsu peek")
+            .with_inner_size([width, height])
+            .with_position([x, y])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_mouse_passthrough(true)
+            .with_always_on_top();
+
+        let device_layer = self.device_layer(self.peek_layer);
+        let glow = self.glow_colors(self.peek_layer);
+        let legends = if self.peek.show_legends {
+            device_layer.as_ref()
+        } else {
+            None
+        };
+        let title = device_layer
+            .as_ref()
+            .and_then(|l| l.title.clone())
+            .unwrap_or_else(|| format!("Layer {}", self.peek_layer));
+        // Overall translucency, applied to the whole overlay so it reads like
+        // frosted glass (panel + keys + text fade together) rather than a solid
+        // panel with opaque keys.
+        let opacity = self.peek.opacity.clamp(0.08, 1.0);
+        let accent = Color32::from_rgb(
+            self.peek.accent[0],
+            self.peek.accent[1],
+            self.peek.accent[2],
+        );
+        // With the combo HUD on, mirror physically-held keys so a hold lights
+        // up live on the minimap; otherwise no press highlight.
+        let no_press = if self.peek.show_combo {
+            self.pressed.clone()
+        } else {
+            vec![false; geo.len()]
+        };
+        let peek_layer = self.peek_layer;
+        let combo_keys = self.combo_member_mask(peek_layer);
+        let show_name = self.peek.show_layer_name;
+        let show_bg = self.peek.show_background;
+        let mono = self.peek.monochrome;
+        let show_combo = self.peek.show_combo;
+        let show_combo_ms = self.peek.show_combo_ms;
+        let combo = if show_combo {
+            self.combo_recent()
+        } else {
+            Vec::new()
+        };
+
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("keyjitsu_peek"),
+            builder,
+            move |ctx, _class| {
+                // The window is transparent; the opacity is baked directly into
+                // every color's alpha (card, keys, text), so the whole overlay
+                // genuinely becomes see-through as the slider goes down - the
+                // desktop shows through more, not a fade-to-black.
+                let a = (opacity * 255.0) as u8;
+                // Background (dark card) is optional - off = keys float on pure
+                // transparency. Colors are optional too (monochrome high-contrast).
+                let card_fill = if show_bg {
+                    Color32::from_rgba_unmultiplied(17, 18, 24, a)
+                } else {
+                    Color32::TRANSPARENT
+                };
+                let card_stroke = if show_bg {
+                    egui::Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(
+                            accent.r(),
+                            accent.g(),
+                            accent.b(),
+                            (a as f32 * 0.6) as u8,
+                        ),
+                    )
+                } else {
+                    egui::Stroke::NONE
+                };
+                let clear = egui::Frame::new().fill(Color32::TRANSPARENT);
+                egui::CentralPanel::default().frame(clear).show(ctx, |ui| {
+                    let card = egui::Frame::new()
+                        .fill(card_fill)
+                        .stroke(card_stroke)
+                        .inner_margin(egui::Margin::same(pad as i8))
+                        .corner_radius(egui::CornerRadius::same(16))
+                        .shadow(if show_bg {
+                            egui::epaint::Shadow {
+                                offset: [0, 6],
+                                blur: 22,
+                                spread: 0,
+                                color: Color32::from_black_alpha((90.0 * opacity) as u8),
+                            }
+                        } else {
+                            egui::epaint::Shadow::NONE
+                        });
+                    card.show(ui, |ui| {
+                        if show_name {
+                            ui.horizontal(|ui| {
+                                egui::Frame::new()
+                                    .fill(Color32::from_rgba_unmultiplied(
+                                        accent.r(),
+                                        accent.g(),
+                                        accent.b(),
+                                        a,
+                                    ))
+                                    .corner_radius(egui::CornerRadius::same(8))
+                                    .inner_margin(egui::Margin::symmetric(9, 4))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(format!("L{peek_layer}")).strong().color(
+                                                Color32::from_rgba_unmultiplied(255, 255, 255, a),
+                                            ),
+                                        );
+                                    });
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(&title)
+                                        .size(16.0)
+                                        .color(Color32::from_rgba_unmultiplied(235, 236, 242, a)),
+                                );
+                            });
+                            ui.add_space(8.0);
+                        }
+                        draw_keyboard(
+                            ui,
+                            geo,
+                            legends,
+                            &glow,
+                            &no_press,
+                            None,
+                            Some(&combo_keys),
+                            opacity,
+                            mono,
+                        );
+                        if show_combo {
+                            ui.add_space(6.0);
+                            combo_strip(ui, &combo, opacity, accent, show_combo_ms);
+                        }
+                    });
+                });
+            },
+        );
+    }
+
+    /// (x, y, w, h) of the monitor to show the peek on, in egui point space.
+    pub(super) fn peek_monitor_rect(&self, ctx: &egui::Context) -> (f32, f32, f32, f32) {
+        if let Some(m) = self
+            .monitors_cache
+            .get(self.peek.monitor)
+            .or_else(|| self.monitors_cache.first())
+        {
+            return (m.x, m.y, m.w, m.h);
+        }
+        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+            return (rect.min.x, rect.min.y, rect.width(), rect.height());
+        }
+        let mon = ctx
+            .input(|i| i.viewport().monitor_size)
+            .unwrap_or(egui::vec2(1440.0, 900.0));
+        (0.0, 0.0, mon.x, mon.y)
+    }
+
+    /// A flash is actively downloading / waiting / writing (not a  Okprev);
+    }
 }
