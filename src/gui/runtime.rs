@@ -17,6 +17,7 @@ impl App {
                     generation,
                 } => {
                     self.connection_generation = Some(generation);
+                    self.layout_error = None;
                     if let Ok(id) = LayoutId::from_serial(&serial) {
                         self.hydrate_heatmap(&id.hash, key_count);
                         self.hydrate_glow(&id.hash);
@@ -53,6 +54,7 @@ impl App {
                     if !layout_event_is_current(self.connection_generation, generation) {
                         continue;
                     }
+                    self.layout_error = None;
                     self.layout = Some(*layout);
                     if self.firmware_state.is_some() {
                         self.rebuild_synth_layers();
@@ -67,6 +69,14 @@ impl App {
                     }
                     self.edit_synced = None;
                     self.push_anim_base();
+                }
+                DevEvent::LayoutFailed { generation, error } => {
+                    if !layout_event_is_current(self.connection_generation, generation) {
+                        continue;
+                    }
+                    self.layout = None;
+                    self.layout_error = Some(error);
+                    self.edit_synced = None;
                 }
                 DevEvent::Disconnected { generation } => {
                     if !disconnect_event_is_current(self.connection_generation, generation) {
