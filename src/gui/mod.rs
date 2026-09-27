@@ -4031,14 +4031,37 @@ fn status_dot(ui: &mut egui::Ui, ok: bool) {
 }
 
 impl App {
+    fn connected_state_marker(&self) -> Option<&str> {
+        self.connected
+            .as_ref()
+            .and_then(|(_, serial)| firmware_state::state_id_from_serial(serial))
+    }
+
+    fn firmware_state_verified(&self) -> bool {
+        self.connected_state_marker().is_some()
+            && self.firmware_state.is_some()
+            && !self.firmware_state_unknown
+    }
+
     /// Compact connection status as a colored pill.
     fn connection_pill(&self, ui: &mut egui::Ui) {
         let (dot, text, hover) = match &self.connected {
             Some((model, _)) if self.firmware_state_unknown => (
                 pal::AMBER,
                 format!("{model} · state unknown"),
-                "The keyboard reports a Keyjitsu firmware state that is not available locally. Keyjitsu will not rebuild from an unverified base.".to_string(),
+                "The keyboard reports a Keyjitsu firmware marker, but the matching local firmware-state is unavailable.".to_string(),
             ),
+            Some((model, _)) if !self.firmware_state_verified() => {
+                let text = match &self.layout {
+                    Some(l) => format!("{model} · {} · unverified", l.title),
+                    None => format!("{model} · device state unverified"),
+                };
+                (
+                    pal::AMBER,
+                    text,
+                    "The keyboard has no verifiable Keyjitsu firmware-state marker. Oryx is only a baseline; local/custom firmware changes cannot be reconstructed from the device.".to_string(),
+                )
+            }
             Some((model, serial)) => {
                 let text = match &self.layout {
                     Some(l) => format!("{model} · {}", l.title),
@@ -5972,8 +5995,10 @@ impl App {
                     ),
                     pal::AMBER,
                 );
-            } else if self.connected.is_some() {
+            } else if self.firmware_state_verified() {
                 status_pill(ui, "firmware synced", pal::GREEN);
+            } else if self.connected.is_some() {
+                status_pill(ui, "device state unverified", pal::AMBER);
             } else {
                 ui.weak("no pending firmware changes");
             }
