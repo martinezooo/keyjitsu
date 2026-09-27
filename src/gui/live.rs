@@ -193,7 +193,26 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("⌨").size(46.0).color(pal::TEXT_DIM));
                 ui.add_space(10.0);
-                if self.connected.is_some() {
+                if let Some(error) = &self.layout_error {
+                    ui.label(
+                        RichText::new("Keyboard layout unavailable")
+                            .strong()
+                            .size(18.0)
+                            .color(pal::TEXT),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(error)
+                            .size(12.0)
+                            .color(pal::RED),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("HID is still connected; this is a layout/Oryx/cache problem, not a keyboard connection failure.")
+                            .size(11.5)
+                            .color(pal::TEXT_DIM),
+                    );
+                } else if self.connected.is_some() {
                     ui.label(
                         RichText::new(if matches!(
                             self.device_state_kind(),
