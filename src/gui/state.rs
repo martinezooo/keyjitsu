@@ -205,9 +205,8 @@ impl App {
                     .collect::<Vec<_>>()
                     .join(" + ");
                 let trigger = combo
-                    .trigger
-                    .as_ref()
-                    .map(legend::action_label)
+                    .trigger_action()
+                    .map(|action| legend::action_label(&action))
                     .filter(|label| !label.is_empty())
                     .unwrap_or_else(|| "unassigned".to_string());
                 format!("{chord} → {trigger}")
