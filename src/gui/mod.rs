@@ -1275,13 +1275,22 @@ impl App {
                     }
                     ui.horizontal_wrapped(|ui| {
                         #[cfg(target_os = "macos")]
-                        if self.guard.is_some() {
-                            let (label, color, hover) = if self.guard_hidutil_ok {
-                                ("🔒 guard", pal::GREEN, "hidutil's remap is applied. Use \"Test the guard\" in Settings for a definitive check.")
+                        {
+                            let (label, color, hover) = self.guard_indicator();
+                            let action = if self.guard_enabled {
+                                "Click to turn the guard OFF and restore the built-in keyboard immediately."
                             } else {
-                                ("⚠ guard", pal::RED, "hidutil no longer reports the remap as applied. Open Settings to check.")
+                                "Click to turn the guard ON. It engages while the Voyager is connected."
                             };
-                            egui::Frame::new().show(ui, |ui| status_pill(ui, label, color)).response.on_hover_text(hover);
+                            let resp = egui::Frame::new()
+                                .show(ui, |ui| status_pill(ui, &label, color))
+                                .response
+                                .interact(egui::Sense::click())
+                                .on_hover_text(format!("{hover}
+{action}"));
+                            if resp.clicked() {
+                                self.set_guard_enabled(!self.guard_enabled);
+                            }
                         }
                         if cfg!(target_os = "macos") && self.autolayer_enabled {
                             egui::Frame::new()
