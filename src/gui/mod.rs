@@ -1110,6 +1110,11 @@ impl App {
         self.pending_key_change_count()
             + self.pending_glow_count()
             + usize::from(self.custom_layers_pending())
+            + usize::from(
+                self.firmware_state
+                    .as_ref()
+                    .is_some_and(FirmwareState::needs_action_normalization),
+            )
     }
 
     fn save_glow(&mut self) -> bool {

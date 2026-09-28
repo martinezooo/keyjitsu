@@ -1,4 +1,4 @@
-//! Codec for the ZSA "Oryx" raw-HID protocol (v5).
+//! Codec for the ZSA "Oryx" raw-HID protocol (v4).
 //!
 //! Wire format (both directions): 32-byte reports over QMK raw HID
 //! (usage page 0xFF60, usage 0x61). `bytes[0]` is the command/event id,
@@ -10,8 +10,8 @@
 pub const REPORT_SIZE: usize = 32;
 /// Stop/padding byte.
 pub const STOP: u8 = 0xFE;
-/// Protocol version this crate implements.
-pub const PROTOCOL_VERSION: u8 = 5;
+/// Protocol version published by ZSA's current qmk_modules/oryx module.
+pub const PROTOCOL_VERSION: u8 = 4;
 
 /// Host → keyboard command ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +85,9 @@ pub enum Command {
     UpdateBrightness {
         up: bool,
     },
-    /// Enable/disable automouse for a ZSA pointing device index.
+    /// Optional extension used by pointing-device builds. This is not part
+    /// of the current upstream Oryx v4 command set and must not be used as a
+    /// reason to reject an otherwise compatible v4 keyboard.
     #[allow(dead_code)]
     SetAutomouse {
         device: u8,

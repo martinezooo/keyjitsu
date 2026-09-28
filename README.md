@@ -151,7 +151,7 @@ Oryx later would overwrite your Keyjitsu changes.
 
 ## How it works
 
-- **Protocol.** ZSA's open Oryx raw-HID protocol v5 (32-byte reports, usage
+- **Protocol.** ZSA's open Oryx raw-HID protocol v4 (32-byte reports, usage
   page `0xFF60`), as published in [zsa/qmk_modules](https://github.com/zsa/qmk_modules).
 - **Layout state.** Stock Oryx firmware identifies itself as `hash/revision`.
   Keyjitsu-built firmware extends that identity with a local state id. The base

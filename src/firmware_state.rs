@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, CustomLayer};
+use crate::key_action::canonicalize_qmk_code;
 use crate::oryx_api::{cache_dir, LayoutId};
 
 pub const STATE_ID_HEX_LEN: usize = 10;
@@ -60,6 +61,21 @@ impl FirmwareState {
         mut custom_layers: Vec<CustomLayer>,
         mut glow: Vec<FirmwareGlow>,
     ) -> Self {
+        for edit in &mut edits {
+            edit.code = canonicalize_qmk_code(&edit.code);
+        }
+        for dance in &mut dances {
+            for slot in &mut dance.slots {
+                if let Some(code) = slot.as_mut() {
+                    *code = canonicalize_qmk_code(code);
+                }
+            }
+        }
+        for layer in &mut custom_layers {
+            for key in &mut layer.keys {
+                key.code = canonicalize_qmk_code(&key.code);
+            }
+        }
         edits.sort_by_key(|e| (e.layer, e.key));
         dances.sort_by_key(|d| (d.layer, d.key));
         for layer in &mut custom_layers {
@@ -74,6 +90,25 @@ impl FirmwareState {
             custom_layers,
             glow,
         }
+    }
+
+    pub fn needs_action_normalization(&self) -> bool {
+        self.edits
+            .iter()
+            .any(|edit| canonicalize_qmk_code(&edit.code) != edit.code)
+            || self.dances.iter().any(|dance| {
+                dance
+                    .slots
+                    .iter()
+                    .flatten()
+                    .any(|code| canonicalize_qmk_code(code) != *code)
+            })
+            || self.custom_layers.iter().any(|layer| {
+                layer
+                    .keys
+                    .iter()
+                    .any(|key| canonicalize_qmk_code(&key.code) != key.code)
+            })
     }
 
     /// Stable, compact identity for the complete authored firmware state.
@@ -334,5 +369,53 @@ mod tests {
             },
         ]);
         assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
+    }
+
+    #[test]
+    fn canonicalizes_redundant_modifier_wrappers() {
+        let state = FirmwareState::new(
+            "layout".into(),
+            "rev".into(),
+            vec![FirmwareEdit {
+                layer: 1,
+                key: 6,
+                code: "LALT(LALT(KC_TAB))".into(),
+            }],
+            vec![FirmwareDance {
+                layer: 0,
+                key: 2,
+                slots: [Some("LGUI(LGUI(KC_A))".into()), None, None, None],
+            }],
+            vec![CustomLayer {
+                layout: "layout".into(),
+                name: "Extra".into(),
+                keys: vec![crate::config::CustomKey {
+                    key: 1,
+                    code: "LSFT(LSFT(KC_B))".into(),
+                }],
+            }],
+            vec![],
+        );
+        assert_eq!(state.edits[0].code, "LALT(KC_TAB)");
+        assert_eq!(state.dances[0].slots[0].as_deref(), Some("LGUI(KC_A)"));
+        assert_eq!(state.custom_layers[0].keys[0].code, "LSFT(KC_B)");
+        assert!(!state.needs_action_normalization());
+    }
+
+    #[test]
+    fn detects_noncanonical_loaded_state_without_rewriting_marker_identity() {
+        let state = FirmwareState {
+            layout_hash: "layout".into(),
+            revision: "rev".into(),
+            edits: vec![FirmwareEdit {
+                layer: 1,
+                key: 6,
+                code: "LALT(LALT(KC_TAB))".into(),
+            }],
+            dances: vec![],
+            custom_layers: vec![],
+            glow: vec![],
+        };
+        assert!(state.needs_action_normalization());
     }
 }
