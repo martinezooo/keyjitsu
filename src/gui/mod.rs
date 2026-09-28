@@ -241,8 +241,9 @@ struct App {
     layout: Option<Layout>,
     /// Last layout-fetch/parse error for the current connection generation.
     layout_error: Option<String>,
-    /// Exact state declared by the currently connected Keyjitsu-built firmware.
-    /// This is device truth, not a user profile/snapshot.
+    /// Best known state of the connected Keyjitsu-built firmware. Marker-bearing
+    /// firmware is device-verified; a pre-marker build may use an explicitly
+    /// recovered legacy state for the exact same Oryx serial/revision.
     firmware_state: Option<FirmwareState>,
     heat: Option<HeatmapStore>,
     heat_error: Option<String>,

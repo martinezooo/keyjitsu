@@ -24,10 +24,13 @@ impl App {
                         self.hydrate_key_fx(&id.hash);
 
                         let state_marker = firmware_state::state_id_from_serial(&serial);
-                        self.firmware_state =
-                            state_marker.and_then(FirmwareState::load).filter(|state| {
-                                state.layout_hash == id.hash && state.revision == id.revision
-                            });
+                        self.firmware_state = match state_marker {
+                            Some(marker) => FirmwareState::load(marker),
+                            None => FirmwareState::load_legacy_for_serial(&serial),
+                        }
+                        .filter(|state| {
+                            state.layout_hash == id.hash && state.revision == id.revision
+                        });
                         self.confirm_expected_firmware(generation, state_marker);
 
                         self.layout = crate::oryx_api::cached_layout(&id, "voyager");
