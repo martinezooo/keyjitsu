@@ -16,6 +16,15 @@ pub struct Edit {
     pub keycode: String,
 }
 
+/// One persistent per-key color override in the Oryx `ledmap`: layer + visual
+/// LED index + sRGB color selected in Keyjitsu.
+#[derive(Debug, Clone, Copy)]
+pub struct GlowEdit {
+    pub layer: u8,
+    pub led: usize,
+    pub rgb: [u8; 3],
+}
+
 /// One tap-dance to generate: on layer `layer`, position `position`, the key
 /// gets `TD(DANCE_KJ_i)` implementing up to four actions.
 #[derive(Debug, Clone, Default)]
@@ -504,6 +513,126 @@ fn apply_one(source: &str, edit: &Edit) -> Result<String> {
     Ok(result)
 }
 
+fn rgb_to_hsv(rgb: [u8; 3]) -> [u8; 3] {
+    let r = rgb[0] as f32 / 255.0;
+    let g = rgb[1] as f32 / 255.0;
+    let b = rgb[2] as f32 / 255.0;
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let delta = max - min;
+    let v = (max * 255.0).round() as u8;
+    if max == 0.0 {
+        return [0, 0, v];
+    }
+    let sat = ((delta / max) * 255.0).round() as u8;
+    if delta == 0.0 {
+        return [0, sat, v];
+    }
+    let mut hue = if max == r {
+        60.0 * (((g - b) / delta) % 6.0)
+    } else if max == g {
+        60.0 * (((b - r) / delta) + 2.0)
+    } else {
+        60.0 * (((r - g) / delta) + 4.0)
+    };
+    if hue < 0.0 {
+        hue += 360.0;
+    }
+    [((hue / 360.0) * 255.0).round() as u8, sat, v]
+}
+
+fn split_braced_entries(inner: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut braces = 0i32;
+    let mut parens = 0i32;
+    let mut current = String::new();
+    for c in inner.chars() {
+        match c {
+            '{' => {
+                braces += 1;
+                current.push(c);
+            }
+            '}' => {
+                braces -= 1;
+                current.push(c);
+            }
+            '(' => {
+                parens += 1;
+                current.push(c);
+            }
+            ')' => {
+                parens -= 1;
+                current.push(c);
+            }
+            ',' if braces == 0 && parens == 0 => out.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    if current.split_whitespace().next().is_some() {
+        out.push(current);
+    }
+    out
+}
+
+fn find_ledmap_layer_block(source: &str, layer: u8) -> Result<(usize, usize)> {
+    let map = source
+        .find("const uint8_t PROGMEM ledmap")
+        .ok_or_else(|| anyhow!("no Oryx ledmap in keymap.c"))?;
+    let eq = map
+        + source[map..]
+            .find('=')
+            .ok_or_else(|| anyhow!("malformed ledmap"))?;
+    let array_open = eq
+        + source[eq..]
+            .find('{')
+            .ok_or_else(|| anyhow!("ledmap has no opening brace"))?;
+    let array_close = matching_brace(source, array_open)?;
+    let needle = format!("[{layer}]");
+    let mut search_from = array_open + 1;
+    while search_from < array_close {
+        let Some(rel) = source[search_from..array_close].find(&needle) else {
+            break;
+        };
+        let idx = search_from + rel;
+        let after_start = idx + needle.len();
+        let after = &source[after_start..array_close];
+        let Some(open_rel) = after.find('{') else {
+            break;
+        };
+        if after[..open_rel].contains('=') {
+            let open = after_start + open_rel;
+            return Ok((open + 1, matching_brace(source, open)?));
+        }
+        search_from = after_start;
+    }
+    bail!("could not find ledmap layer [{layer}]")
+}
+
+/// Patch persistent layer colors in the Oryx-generated `ledmap`.
+pub fn apply_glow(source: &str, edits: &[GlowEdit]) -> Result<String> {
+    let mut out = source.to_string();
+    for edit in edits {
+        let (start, end) = find_ledmap_layer_block(&out, edit.layer)?;
+        let inner = &out[start..end];
+        let mut entries = split_braced_entries(inner);
+        if edit.led >= entries.len() {
+            bail!(
+                "ledmap layer {} has {} LEDs but position {} was requested",
+                edit.layer,
+                entries.len(),
+                edit.led
+            );
+        }
+        let slot = &entries[edit.led];
+        let lead: String = slot.chars().take_while(|c| c.is_whitespace()).collect();
+        let hsv = rgb_to_hsv(edit.rgb);
+        entries[edit.led] = format!("{lead}{{{},{},{}}}", hsv[0], hsv[1], hsv[2]);
+        let rebuilt = entries.join(",");
+        out.replace_range(start..end, &rebuilt);
+    }
+    Ok(out)
+}
+
 /// Append a custom layer, transparent except for explicitly assigned keys.
 pub fn add_layer(source: &str, position: u8, keys: &[(usize, String)]) -> Result<String> {
     // Refuse to append a layer index that already exists - a second
@@ -807,6 +936,49 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         let rst = &out[out.find(reset_def).unwrap()..];
         let rst_body = &rst[..rst.find('}').unwrap_or(rst.len())];
         assert!(!rst_body.contains("unregister_code16(KC_A)"));
+    }
+
+    #[test]
+    fn glow_patch_changes_only_requested_led() {
+        let src = format!(
+            "const uint8_t PROGMEM ledmap[][3][3] = {{\n    [0] = {{ {{0,0,0}}, {{10,20,30}}, {{40,50,60}} }},\n    [1] = {{ {{1,2,3}}, {{4,5,6}}, {{7,8,9}} }},\n}};\n{SAMPLE}"
+        );
+        let out = apply_glow(
+            &src,
+            &[GlowEdit {
+                layer: 1,
+                led: 1,
+                rgb: [255, 0, 0],
+            }],
+        )
+        .unwrap();
+        assert!(out.contains("[0] = { {0,0,0}, {10,20,30}, {40,50,60} }"));
+        assert!(out.contains("[1] = { {1,2,3}, {0,255,255}, {7,8,9} }"));
+    }
+
+    #[test]
+    fn glow_patch_rejects_missing_ledmap_or_out_of_range_led() {
+        assert!(apply_glow(
+            SAMPLE,
+            &[GlowEdit {
+                layer: 0,
+                led: 0,
+                rgb: [255, 255, 255]
+            }]
+        )
+        .is_err());
+        let src = format!(
+            "const uint8_t PROGMEM ledmap[][1][3] = {{ [0] = {{ {{0,0,0}} }} }};\n{SAMPLE}"
+        );
+        assert!(apply_glow(
+            &src,
+            &[GlowEdit {
+                layer: 0,
+                led: 2,
+                rgb: [255, 255, 255]
+            }]
+        )
+        .is_err());
     }
 
     #[test]

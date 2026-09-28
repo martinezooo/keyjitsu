@@ -727,10 +727,16 @@ impl App {
                         ui.label("");
                     }
 
-                    if slot > 0 {
+                    let can_clear = self.edit_slots[slot].is_some() || self.slot_added[slot];
+                    if can_clear {
+                        let hover = if slot == 0 {
+                            "clear this key assignment (firmware: KC_NO)"
+                        } else {
+                            "remove this action"
+                        };
                         if ui
                             .add_enabled(assignment_editable, egui::Button::new("✕").small())
-                            .on_hover_text("remove this action")
+                            .on_hover_text(hover)
                             .clicked()
                         {
                             clear_slot = Some(slot);

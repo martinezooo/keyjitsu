@@ -491,15 +491,15 @@ fn cmd_build_local(
         .collect::<Result<Vec<_>>>()?;
 
     let cancel = Arc::new(AtomicBool::new(false));
-    let bin = localbuild::build(
-        &revision,
-        &edits,
-        &dances,
-        &new_layers,
-        None,
-        &cancel,
-        &|line| println!("{line}"),
-    )?;
+    let spec = localbuild::BuildSpec {
+        revision,
+        edits,
+        dances,
+        new_layers,
+        glow: vec![],
+        firmware_serial: None,
+    };
+    let bin = localbuild::build(&spec, &cancel, &|line| println!("{line}"))?;
     println!("\n✓ built: {}", bin.display());
     Ok(())
 }

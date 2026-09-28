@@ -46,7 +46,7 @@ use std::time::Instant;
 use crate::config::{
     self, AutolayerRule, GlowOverride, HAlign, PeekConfig, StagedDance, StagedEdit, VAlign,
 };
-use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareState};
+use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareGlow, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
 use crate::key_action::{hold_wrap, synth_key, synth_slots, unknown_device_key};
@@ -1071,13 +1071,26 @@ impl App {
         }
     }
 
-    fn pending_firmware_count(&self) -> usize {
-        self.key_edits.len() + self.key_dances.len() + usize::from(self.custom_layers_pending())
+    fn pending_glow_count(&self) -> usize {
+        let device = self.device_glow_map();
+        let mut keys: std::collections::HashSet<(u8, usize)> =
+            self.glow_work.keys().copied().collect();
+        keys.extend(device.keys().copied());
+        keys.into_iter()
+            .filter(|k| self.glow_work.get(k) != device.get(k))
+            .count()
     }
 
-    fn save_glow(&mut self) {
+    fn pending_firmware_count(&self) -> usize {
+        self.key_edits.len()
+            + self.key_dances.len()
+            + self.pending_glow_count()
+            + usize::from(self.custom_layers_pending())
+    }
+
+    fn save_glow(&mut self) -> bool {
         let Some(hash) = self.layout_hash.clone() else {
-            return;
+            return false;
         };
         let entries: Vec<_> = self
             .glow_work
@@ -1089,12 +1102,17 @@ impl App {
                 rgb,
             })
             .collect();
-        if self.persist_config("saving glow overrides", move |cfg| {
+        let saved = self.persist_config("saving glow profile draft", move |cfg| {
             cfg.glow_overrides.retain(|o| o.layout != hash);
             cfg.glow_overrides.extend(entries);
-        }) {
+            if !cfg.glow_draft_layouts.iter().any(|layout| layout == &hash) {
+                cfg.glow_draft_layouts.push(hash);
+            }
+        });
+        if saved {
             self.glow_saved = self.glow_work.clone();
         }
+        saved
     }
 
     fn discard_glow(&mut self) {
@@ -2366,6 +2384,7 @@ mod state_composition_tests {
                 slots: [Some("KC_C".into()), None, Some("KC_D".into()), None],
             }],
             vec![],
+            vec![],
         );
         let staged_edits = HashMap::from([((0, 3), "KC_NO".to_string())]);
         let staged_dances = HashMap::from([(
@@ -2400,6 +2419,7 @@ mod state_composition_tests {
                 key: 2,
                 slots: [Some("KC_B".into()), None, None, None],
             }],
+            vec![],
             vec![],
         );
 

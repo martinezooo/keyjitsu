@@ -220,8 +220,11 @@ pub struct Config {
     pub hidden_shortcuts: Vec<String>,
     /// App → layer rules shared by `autolayer` and the GUI.
     pub autolayer_rules: Vec<AutolayerRule>,
-    /// Per-key glow color overrides (see [`GlowOverride`]).
+    /// Desired per-key glow overrides for firmware/profile drafts.
     pub glow_overrides: Vec<GlowOverride>,
+    /// Layouts for which `glow_overrides` is an explicit draft, including an
+    /// intentionally empty draft ("restore the firmware/Oryx colors").
+    pub glow_draft_layouts: Vec<String>,
     /// Per-key press effects (see [`KeyFx`]).
     pub key_fx: Vec<KeyFx>,
     /// User-built step-sequence effects from FX Studio.
@@ -262,6 +265,7 @@ pub struct Profile {
     pub hidden_shortcuts: Vec<String>,
     pub autolayer_rules: Vec<AutolayerRule>,
     pub glow_overrides: Vec<GlowOverride>,
+    pub glow_draft_layouts: Vec<String>,
     pub key_fx: Vec<KeyFx>,
     pub custom_fx: Vec<crate::gui::CustomFx>,
     pub custom_shortcuts: Vec<CustomShortcut>,
@@ -278,6 +282,7 @@ impl Profile {
             hidden_shortcuts: c.hidden_shortcuts.clone(),
             autolayer_rules: c.autolayer_rules.clone(),
             glow_overrides: c.glow_overrides.clone(),
+            glow_draft_layouts: c.glow_draft_layouts.clone(),
             key_fx: c.key_fx.clone(),
             custom_fx: c.custom_fx.clone(),
             custom_shortcuts: c.custom_shortcuts.clone(),
@@ -293,6 +298,7 @@ impl Profile {
         c.hidden_shortcuts = self.hidden_shortcuts.clone();
         c.autolayer_rules = self.autolayer_rules.clone();
         c.glow_overrides = self.glow_overrides.clone();
+        c.glow_draft_layouts = self.glow_draft_layouts.clone();
         c.key_fx = self.key_fx.clone();
         c.custom_fx = self.custom_fx.clone();
         c.custom_shortcuts = self.custom_shortcuts.clone();

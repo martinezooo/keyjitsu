@@ -34,10 +34,25 @@ pub struct KeyEdit {
     pub keycode: String,
 }
 
+pub struct GlowEdit {
+    pub layer: u8,
+    pub led: usize,
+    pub rgb: [u8; 3],
+}
+
 /// A brand-new layer to append: its index + (LAYOUT position → keycode) list.
 pub struct NewLayer {
     pub position: u8,
     pub keys: Vec<(usize, String)>,
+}
+
+pub struct BuildSpec {
+    pub revision: String,
+    pub edits: Vec<KeyEdit>,
+    pub dances: Vec<crate::keymap::DanceSpec>,
+    pub new_layers: Vec<NewLayer>,
+    pub glow: Vec<GlowEdit>,
+    pub firmware_serial: Option<String>,
 }
 
 /// What the local toolchain looks like right now.
@@ -100,11 +115,7 @@ pub enum BuildMsg {
 }
 
 pub fn spawn_build(
-    revision: String,
-    edits: Vec<KeyEdit>,
-    dances: Vec<crate::keymap::DanceSpec>,
-    new_layers: Vec<NewLayer>,
-    firmware_serial: Option<String>,
+    spec: BuildSpec,
     cancel: Arc<AtomicBool>,
     ctx: egui::Context,
 ) -> Receiver<BuildMsg> {
@@ -114,15 +125,7 @@ pub fn spawn_build(
             let _ = tx.send(BuildMsg::Log(s));
             ctx.request_repaint();
         };
-        match build(
-            &revision,
-            &edits,
-            &dances,
-            &new_layers,
-            firmware_serial.as_deref(),
-            &cancel,
-            &log,
-        ) {
+        match build(&spec, &cancel, &log) {
             Ok(bin) => {
                 let _ = tx.send(BuildMsg::Built(bin));
             }
@@ -143,15 +146,13 @@ fn valid_firmware_serial(serial: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'~'))
 }
 
-pub fn build(
-    revision: &str,
-    edits: &[KeyEdit],
-    dances: &[crate::keymap::DanceSpec],
-    new_layers: &[NewLayer],
-    firmware_serial: Option<&str>,
-    cancel: &Arc<AtomicBool>,
-    log: &dyn Fn(String),
-) -> Result<PathBuf> {
+pub fn build(spec: &BuildSpec, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -> Result<PathBuf> {
+    let revision = spec.revision.as_str();
+    let edits = spec.edits.as_slice();
+    let dances = spec.dances.as_slice();
+    let new_layers = spec.new_layers.as_slice();
+    let glow = spec.glow.as_slice();
+    let firmware_serial = spec.firmware_serial.as_deref();
     let env = detect_env();
     let firmware = env
         .firmware_dir
@@ -214,6 +215,21 @@ pub fn build(
     if !dances.is_empty() {
         log(format!("Generating {} tap dance(s)…", dances.len()));
         patched = keymap::apply_dances(&patched, dances)?;
+    }
+    if !glow.is_empty() {
+        log(format!(
+            "Applying {} persistent glow override(s)…",
+            glow.len()
+        ));
+        let glow_edits: Vec<keymap::GlowEdit> = glow
+            .iter()
+            .map(|g| keymap::GlowEdit {
+                layer: g.layer,
+                led: g.led,
+                rgb: g.rgb,
+            })
+            .collect();
+        patched = keymap::apply_glow(&patched, &glow_edits)?;
     }
     if let Some(serial) = firmware_serial {
         // Oryx returns SERIAL_NUMBER inside a fixed 32-byte raw-HID report:

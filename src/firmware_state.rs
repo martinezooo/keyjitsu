@@ -33,6 +33,13 @@ pub struct FirmwareDance {
     pub slots: [Option<String>; 4],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirmwareGlow {
+    pub layer: u8,
+    pub key: u16,
+    pub rgb: [u8; 3],
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FirmwareState {
     pub layout_hash: String,
@@ -40,6 +47,8 @@ pub struct FirmwareState {
     pub edits: Vec<FirmwareEdit>,
     pub dances: Vec<FirmwareDance>,
     pub custom_layers: Vec<CustomLayer>,
+    #[serde(default)]
+    pub glow: Vec<FirmwareGlow>,
 }
 
 impl FirmwareState {
@@ -49,18 +58,21 @@ impl FirmwareState {
         mut edits: Vec<FirmwareEdit>,
         mut dances: Vec<FirmwareDance>,
         mut custom_layers: Vec<CustomLayer>,
+        mut glow: Vec<FirmwareGlow>,
     ) -> Self {
         edits.sort_by_key(|e| (e.layer, e.key));
         dances.sort_by_key(|d| (d.layer, d.key));
         for layer in &mut custom_layers {
             layer.keys.sort_by_key(|k| k.key);
         }
+        glow.sort_by_key(|g| (g.layer, g.key));
         Self {
             layout_hash,
             revision,
             edits,
             dances,
             custom_layers,
+            glow,
         }
     }
 
@@ -223,6 +235,7 @@ mod tests {
                     },
                 ],
             }],
+            vec![],
         );
         let b = FirmwareState::new(
             "layout".into(),
@@ -243,6 +256,7 @@ mod tests {
                     },
                 ],
             }],
+            vec![],
         );
         assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
     }
@@ -266,6 +280,7 @@ mod tests {
             ],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let b = FirmwareState::new(
             "layout".into(),
@@ -284,8 +299,40 @@ mod tests {
             ],
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
         assert_eq!(a.state_id().unwrap().len(), STATE_ID_HEX_LEN);
+    }
+
+    #[test]
+    fn state_id_is_order_independent_for_glow_entries() {
+        let mk =
+            |glow| FirmwareState::new("layout".into(), "rev".into(), vec![], vec![], vec![], glow);
+        let a = mk(vec![
+            FirmwareGlow {
+                layer: 1,
+                key: 9,
+                rgb: [1, 2, 3],
+            },
+            FirmwareGlow {
+                layer: 0,
+                key: 2,
+                rgb: [4, 5, 6],
+            },
+        ]);
+        let b = mk(vec![
+            FirmwareGlow {
+                layer: 0,
+                key: 2,
+                rgb: [4, 5, 6],
+            },
+            FirmwareGlow {
+                layer: 1,
+                key: 9,
+                rgb: [1, 2, 3],
+            },
+        ]);
+        assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
     }
 }
