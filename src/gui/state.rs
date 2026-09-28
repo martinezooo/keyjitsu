@@ -7,6 +7,41 @@
 
 use super::*;
 
+fn key_assignment_is_transparent(key: &OryxKey) -> bool {
+    let no_actions = key.tap.is_none()
+        && key.hold.is_none()
+        && key.double_tap.is_none()
+        && key.tap_hold.is_none();
+    if no_actions {
+        return true;
+    }
+
+    key.hold.is_none()
+        && key.double_tap.is_none()
+        && key.tap_hold.is_none()
+        && key.tap.as_ref().is_some_and(|tap| {
+            matches!(
+                tap.qmk_code().as_deref(),
+                Some("KC_TRNS" | "KC_TRANSPARENT")
+            )
+        })
+}
+
+fn resolve_effective_key(
+    layer: u8,
+    key: usize,
+    mut raw_key: impl FnMut(u8, usize) -> Option<OryxKey>,
+) -> Option<OryxKey> {
+    let mut current = layer;
+    loop {
+        let candidate = raw_key(current, key)?;
+        if current == 0 || !key_assignment_is_transparent(&candidate) {
+            return Some(candidate);
+        }
+        current = current.saturating_sub(1);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DeviceStateKind {
     /// No keyboard is attached; the UI can only show the last cached snapshot.
@@ -75,13 +110,9 @@ impl App {
         }
     }
 
-    /// Best available runtime projection for a physical key.
-    ///
-    /// VerifiedFirmware applies the exact Keyjitsu-authored overlay. An
-    /// unmarked keyboard can only use its Oryx revision as an explicitly
-    /// unverified baseline. MissingFirmwareState returns "?" rather than
-    /// silently substituting Oryx.
-    pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+    /// Raw assignment stored on one layer, before QMK transparent-key
+    /// fall-through is applied.
+    fn raw_device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
         if matches!(
             self.device_state_kind(),
             DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
@@ -120,6 +151,15 @@ impl App {
             }
         }
         self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+    }
+
+    /// Effective key that the keyboard executes on this layer. QMK resolves a
+    /// transparent assignment by walking down through lower layers, so Live,
+    /// Peek and Heatmap must do the same instead of rendering an empty keycap.
+    pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        resolve_effective_key(layer, key, |candidate_layer, candidate_key| {
+            self.raw_device_key(candidate_layer, candidate_key)
+        })
     }
 
     pub(super) fn device_layer(&self, layer: u8) -> Option<Layer> {
@@ -217,7 +257,7 @@ impl App {
         ) {
             return false;
         }
-        self.device_key(layer, key)
+        self.raw_device_key(layer, key)
             .map(|key| key.assignment_roundtrip_safe())
             .unwrap_or(true)
     }
@@ -1039,5 +1079,48 @@ impl App {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod effective_key_tests {
+    use super::*;
+
+    fn key(code: &str) -> OryxKey {
+        synth_key(code)
+    }
+
+    #[test]
+    fn empty_and_explicit_transparent_keys_fall_through() {
+        let layers = [
+            vec![key("KC_A"), key("KC_B")],
+            vec![OryxKey::default(), key("KC_TRNS")],
+        ];
+        let resolved0 =
+            resolve_effective_key(1, 0, |layer, pos| layers[layer as usize].get(pos).cloned())
+                .expect("resolved key 0");
+        let resolved1 =
+            resolve_effective_key(1, 1, |layer, pos| layers[layer as usize].get(pos).cloned())
+                .expect("resolved key 1");
+        assert_eq!(
+            resolved0.tap.as_ref().and_then(|a| a.qmk_code()).as_deref(),
+            Some("KC_A")
+        );
+        assert_eq!(
+            resolved1.tap.as_ref().and_then(|a| a.qmk_code()).as_deref(),
+            Some("KC_B")
+        );
+    }
+
+    #[test]
+    fn explicit_disabled_key_does_not_fall_through() {
+        let layers = [vec![key("KC_A")], vec![key("KC_NO")]];
+        let resolved =
+            resolve_effective_key(1, 0, |layer, pos| layers[layer as usize].get(pos).cloned())
+                .expect("resolved key");
+        assert_eq!(
+            resolved.tap.as_ref().and_then(|a| a.qmk_code()).as_deref(),
+            Some("KC_NO")
+        );
     }
 }
