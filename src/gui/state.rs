@@ -1024,7 +1024,11 @@ impl App {
         }
     }
 
-    pub(super) fn persist_config(&mut self, context: &str, mutate: impl FnOnce(&mut config::Config)) -> bool {
+    pub(super) fn persist_config(
+        &mut self,
+        context: &str,
+        mutate: impl FnOnce(&mut config::Config),
+    ) -> bool {
         match config::update(mutate) {
             Ok(()) => {
                 self.persist_error = None;

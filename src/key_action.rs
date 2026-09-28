@@ -134,12 +134,15 @@ mod tests {
             hold_wrap("KC_LALT", "KC_TAB").as_deref(),
             Some("LALT_T(KC_TAB)")
         );
-        assert_eq!(
-            hold_wrap("MO(2)", "KC_A").as_deref(),
-            Some("LT(2,KC_A)")
-        );
+        assert_eq!(hold_wrap("MO(2)", "KC_A").as_deref(), Some("LT(2,KC_A)"));
         let lt = synth_key("LT(2,KC_A)");
-        assert_eq!(lt.tap.as_ref().and_then(KeyAction::qmk_code).as_deref(), Some("KC_A"));
-        assert_eq!(lt.hold.as_ref().and_then(KeyAction::qmk_code).as_deref(), Some("MO(2)"));
+        assert_eq!(
+            lt.tap.as_ref().and_then(KeyAction::qmk_code).as_deref(),
+            Some("KC_A")
+        );
+        assert_eq!(
+            lt.hold.as_ref().and_then(KeyAction::qmk_code).as_deref(),
+            Some("MO(2)")
+        );
     }
 }

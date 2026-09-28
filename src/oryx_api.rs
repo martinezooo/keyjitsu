@@ -34,9 +34,9 @@ where
     match value {
         serde_json::Value::Array(values) => {
             for value in values {
-                let token = value
-                    .as_str()
-                    .ok_or_else(|| serde::de::Error::custom("modifier list must contain strings"))?;
+                let token = value.as_str().ok_or_else(|| {
+                    serde::de::Error::custom("modifier list must contain strings")
+                })?;
                 if !out.apply_token(token) {
                     out.unknown_tokens.push(token.to_string());
                 }
@@ -645,8 +645,7 @@ mod tests {
         assert_eq!(prefixed.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
 
         let future_array: KeyAction =
-            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT","FUTURE_MOD"]}"#)
-                .unwrap();
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT","FUTURE_MOD"]}"#).unwrap();
         assert_eq!(future_array.qmk_code(), None);
         assert_eq!(future_array.fallback_kind(), Some("Oryx action"));
         assert!(!future_array.roundtrip_safe());

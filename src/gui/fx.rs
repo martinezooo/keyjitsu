@@ -572,6 +572,4 @@ impl App {
             ui.ctx().request_repaint();
         }
     }
-
-    /// Write the current heatmap view to ~/Downloads as a CSV.
 }
