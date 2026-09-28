@@ -118,6 +118,16 @@ impl App {
             return;
         }
 
+        if self.unsaved_glow_count() > 0 && !self.save_glow() {
+            self.build_open = true;
+            self.build_busy = false;
+            self.build_phase = "Save failed".into();
+            self.build_result = Some(Err(
+                "Could not save the glow draft before building firmware.".into(),
+            ));
+            return;
+        }
+
         self.build_state_id = None;
         self.expected_firmware_state = None;
         self.expected_firmware_generation = None;
@@ -176,6 +186,14 @@ impl App {
                 })
                 .collect(),
             self.custom_layers.clone(),
+            self.glow_work
+                .iter()
+                .map(|(&(layer, key), &rgb)| FirmwareGlow {
+                    layer,
+                    key: key as u16,
+                    rgb,
+                })
+                .collect(),
         );
         let state_id = match state.save() {
             Ok(id) => id,
@@ -239,6 +257,17 @@ impl App {
                     .collect(),
             })
             .collect();
+        let glow: Vec<localbuild::GlowEdit> = self
+            .glow_work
+            .iter()
+            .filter(|((layer, key), _)| *layer < oryx && *key < n_keys)
+            .map(|(&(layer, key), &rgb)| localbuild::GlowEdit {
+                layer,
+                // Oryx `ledmap` follows visual key/LED order, not LAYOUT order.
+                led: key,
+                rgb,
+            })
+            .collect();
         self.build_log.clear();
         if self.device_state_kind() == DeviceStateKind::OryxBaseline {
             self.build_log.push_str(
@@ -258,11 +287,14 @@ impl App {
         self.flash_rx = None;
         self.build_cancel = Arc::new(AtomicBool::new(false));
         self.build_rx = Some(localbuild::spawn_build(
-            id.revision.clone(),
-            edits,
-            dances,
-            new_layers,
-            Some(firmware_serial),
+            localbuild::BuildSpec {
+                revision: id.revision.clone(),
+                edits,
+                dances,
+                new_layers,
+                glow,
+                firmware_serial: Some(firmware_serial),
+            },
             self.build_cancel.clone(),
             self.egui_ctx.clone(),
         ));
@@ -320,10 +352,10 @@ impl App {
                         if glow_unsaved == 1 { "" } else { "s" }
                     ),
                 );
-                if ui.button("save glow").clicked() {
-                    self.save_glow();
+                if ui.button("save to profile").clicked() {
+                    let _ = self.save_glow();
                 }
-                if ui.button("discard glow").clicked() {
+                if ui.button("discard glow draft").clicked() {
                     self.discard_glow();
                 }
             }

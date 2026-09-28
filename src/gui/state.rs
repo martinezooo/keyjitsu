@@ -512,7 +512,7 @@ impl App {
         };
         let cl = &mut self.custom_layers[i];
         cl.keys.retain(|k| k.key != key as u16);
-        if !code.is_empty() && code != "KC_TRANSPARENT" && code != "KC_TRNS" {
+        if !code.is_empty() && code != "KC_NO" && code != "KC_TRANSPARENT" && code != "KC_TRNS" {
             cl.keys.push(config::CustomKey {
                 key: key as u16,
                 code: code.to_string(),
@@ -605,21 +605,51 @@ impl App {
         }
     }
 
-    /// Load saved glow overrides for a layout into the working + saved maps.
+    /// Load the firmware's confirmed glow plus an optional saved profile draft.
+    /// `glow_saved` is the last locally saved draft; device truth stays in
+    /// `firmware_state.glow` and is compared separately for build status.
     pub(super) fn hydrate_glow(&mut self, hash: &str) {
         let cfg = config::load();
-        let map: HashMap<(u8, usize), [u8; 3]> = cfg
+        let device: HashMap<(u8, usize), [u8; 3]> = self
+            .firmware_state
+            .as_ref()
+            .filter(|state| state.layout_hash == hash)
+            .map(|state| {
+                state
+                    .glow
+                    .iter()
+                    .map(|g| ((g.layer, g.key as usize), g.rgb))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let draft: HashMap<(u8, usize), [u8; 3]> = cfg
             .glow_overrides
             .iter()
             .filter(|o| o.layout == hash)
             .map(|o| ((o.layer, o.key as usize), o.rgb))
             .collect();
+        let has_explicit_draft = cfg.glow_draft_layouts.iter().any(|layout| layout == hash)
+            || cfg.glow_overrides.iter().any(|entry| entry.layout == hash);
+        let work = if has_explicit_draft { draft } else { device };
         self.layout_hash = Some(hash.to_string());
-        self.glow_saved = map.clone();
-        self.glow_work = map;
+        self.glow_saved = work.clone();
+        self.glow_work = work;
         if !self.glow_work.is_empty() && self.sync_glow {
             self.needs_push = true;
         }
+    }
+
+    pub(super) fn device_glow_map(&self) -> HashMap<(u8, usize), [u8; 3]> {
+        self.firmware_state
+            .as_ref()
+            .map(|state| {
+                state
+                    .glow
+                    .iter()
+                    .map(|g| ((g.layer, g.key as usize), g.rgb))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The layout's own glow color for a key: its explicit `glowColor`, or the
