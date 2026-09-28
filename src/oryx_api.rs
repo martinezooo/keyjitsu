@@ -1,17 +1,67 @@
 //! Client for the Oryx GraphQL API (layout definitions) with a disk cache.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://oryx.zsa.io/graphql";
+const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
+
+fn null_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn optional_modifiers<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<KeyModifiers>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let mut out = KeyModifiers::default();
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                let token = value.as_str().ok_or_else(|| {
+                    serde::de::Error::custom("modifier list must contain strings")
+                })?;
+                if !out.apply_token(token) {
+                    out.unknown_tokens.push(token.to_string());
+                }
+            }
+        }
+        serde_json::Value::Object(_) => {
+            out = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        }
+        other => {
+            return Err(serde::de::Error::custom(format!(
+                "unexpected Oryx modifiers shape: {other}"
+            )));
+        }
+    }
+    Ok(Some(out))
+}
 
 const LAYOUT_QUERY: &str = r#"query Layout($hashId: String!, $geometry: String!, $revisionId: String!) {
   layout(hashId: $hashId, geometry: $geometry, revisionId: $revisionId) {
     hashId title geometry
-    revision { hashId title model layers { title position color keys } }
+    revision {
+      hashId title model
+      layers { title position color keys }
+      combos { keyIndices layerIdx trigger }
+    }
   }
 }"#;
 
@@ -31,6 +81,44 @@ pub struct Revision {
     #[allow(dead_code)]
     pub title: Option<String>,
     pub layers: Vec<Layer>,
+    /// Oryx combos are revision-level chords, not properties of an individual
+    /// key. Keep them in the canonical layout model so every UI surface sees
+    /// the same relation between physical key positions and the emitted action.
+    #[serde(default, deserialize_with = "null_vec")]
+    pub combos: Vec<OryxCombo>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OryxCombo {
+    /// Physical key positions (same index space as Layer::keys / Voyager LAYOUT).
+    pub key_indices: Vec<usize>,
+    /// Layer index on which the chord is active.
+    pub layer_idx: u8,
+    /// Raw Oryx trigger. The server has used both a flat Action and a full
+    /// Key-shaped object whose action lives under `tap`.
+    pub trigger: serde_json::Value,
+}
+
+impl OryxCombo {
+    /// Normalize the wire-format variants of combo triggers into the same
+    /// KeyAction used by ordinary keys.
+    pub fn trigger_action(&self) -> Option<KeyAction> {
+        let value = &self.trigger;
+        if value.is_null() {
+            return None;
+        }
+        if let Some(obj) = value.as_object() {
+            for slot in ["tap", "hold", "doubleTap", "tapHold"] {
+                if let Some(candidate) = obj.get(slot).filter(|v| !v.is_null()) {
+                    if let Ok(action) = serde_json::from_value::<KeyAction>(candidate.clone()) {
+                        return Some(action);
+                    }
+                }
+            }
+        }
+        serde_json::from_value::<KeyAction>(value.clone()).ok()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,12 +147,195 @@ pub struct OryxKey {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
+pub struct KeyModifiers {
+    pub left_alt: bool,
+    pub left_ctrl: bool,
+    pub left_gui: bool,
+    pub left_shift: bool,
+    pub right_alt: bool,
+    pub right_ctrl: bool,
+    pub right_gui: bool,
+    pub right_shift: bool,
+    /// Unknown object fields from newer Oryx schemas. Keeping them makes the
+    /// action explicitly non-editable instead of silently dropping semantics.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+    /// Unknown tokens from the historical array form, e.g. ["LALT", "..."].
+    /// This is an internal safety marker; Keyjitsu never writes Oryx JSON.
+    #[serde(skip)]
+    pub unknown_tokens: Vec<String>,
+}
+
+impl KeyModifiers {
+    pub fn is_empty(&self) -> bool {
+        !self.left_alt
+            && !self.left_ctrl
+            && !self.left_gui
+            && !self.left_shift
+            && !self.right_alt
+            && !self.right_ctrl
+            && !self.right_gui
+            && !self.right_shift
+    }
+
+    pub fn semantics_supported(&self) -> bool {
+        self.extra.is_empty() && self.unknown_tokens.is_empty()
+    }
+
+    /// Oryx has used both a singular `modifier: "LALT"` field and the
+    /// newer `modifiers: { leftAlt: true }` mask. Normalize both into this
+    /// one mask before anything reaches the UI/editor.
+    pub fn apply_token(&mut self, token: &str) -> bool {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "LALT" | "KC_LALT" | "LEFT_ALT" | "KC_LEFT_ALT" => self.left_alt = true,
+            "RALT" | "KC_RALT" | "RIGHT_ALT" | "KC_RIGHT_ALT" => self.right_alt = true,
+            "LCTL" | "LCTRL" | "KC_LCTL" | "KC_LCTRL" | "LEFT_CTRL" | "KC_LEFT_CTRL" => {
+                self.left_ctrl = true
+            }
+            "RCTL" | "RCTRL" | "KC_RCTL" | "KC_RCTRL" | "RIGHT_CTRL" | "KC_RIGHT_CTRL" => {
+                self.right_ctrl = true
+            }
+            "LGUI" | "KC_LGUI" | "LEFT_GUI" | "KC_LEFT_GUI" => self.left_gui = true,
+            "RGUI" | "KC_RGUI" | "RIGHT_GUI" | "KC_RIGHT_GUI" => self.right_gui = true,
+            "LSFT" | "LSHIFT" | "KC_LSFT" | "KC_LSHIFT" | "LEFT_SHIFT" | "KC_LEFT_SHIFT" => {
+                self.left_shift = true
+            }
+            "RSFT" | "RSHIFT" | "KC_RSFT" | "KC_RSHIFT" | "RIGHT_SHIFT" | "KC_RIGHT_SHIFT" => {
+                self.right_shift = true
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Convert normalized Oryx modifier flags into the QMK wrapper form used
+    /// everywhere else in Keyjitsu. Modifier order does not change the chord.
+    pub fn wrap_qmk(&self, base: &str) -> String {
+        let mut code = base.to_string();
+        for (enabled, wrapper) in [
+            (self.left_gui, "LGUI"),
+            (self.right_gui, "RGUI"),
+            (self.left_alt, "LALT"),
+            (self.right_alt, "RALT"),
+            (self.left_shift, "LSFT"),
+            (self.right_shift, "RSFT"),
+            (self.left_ctrl, "LCTL"),
+            (self.right_ctrl, "RCTL"),
+        ] {
+            if enabled {
+                code = format!("{wrapper}({code})");
+            }
+        }
+        code
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct KeyAction {
     /// QMK keycode (`KC_A`) or a layer-switch family (`TO`, `MO`, `LT`, …).
     pub code: Option<String>,
     /// Target layer for layer-switch codes.
     pub layer: Option<u8>,
     pub description: Option<String>,
+    /// Oryx stores precomposed shortcuts (for example Option+Tab) as a base
+    /// keycode plus modifier flags instead of a wrapped QMK code.
+    #[serde(default, deserialize_with = "optional_modifiers")]
+    pub modifiers: Option<KeyModifiers>,
+    /// Older/current Oryx payloads may carry one modifier separately from
+    /// the boolean modifier mask. It is part of the action, not metadata.
+    pub modifier: Option<String>,
+    #[serde(rename = "macro")]
+    pub macro_action: Option<serde_json::Value>,
+    pub color: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl KeyAction {
+    /// Canonical editable QMK representation of this action.
+    pub fn qmk_code(&self) -> Option<String> {
+        if let Some(layer) = self.layer {
+            let family = self
+                .code
+                .as_deref()
+                .filter(|code| !code.trim().is_empty())
+                .unwrap_or("MO");
+            return Some(format!("{family}({layer})"));
+        }
+
+        let base = self.code.as_deref()?.trim();
+        if base.is_empty() {
+            return None;
+        }
+        let mut mods = self.modifiers.clone().unwrap_or_default();
+        if !mods.semantics_supported() {
+            return None;
+        }
+        if let Some(modifier) = self.modifier.as_deref() {
+            if !mods.apply_token(modifier) {
+                return None;
+            }
+        }
+        Some(if mods.is_empty() {
+            base.to_string()
+        } else {
+            mods.wrap_qmk(base)
+        })
+    }
+
+    /// False means editing this action as a plain QMK string could lose Oryx
+    /// semantics that Keyjitsu does not model yet.
+    pub fn roundtrip_safe(&self) -> bool {
+        let modifiers_supported = self
+            .modifiers
+            .as_ref()
+            .is_none_or(KeyModifiers::semantics_supported);
+        let singular_modifier_supported = self.modifier.as_deref().is_none_or(|token| {
+            let mut probe = KeyModifiers::default();
+            probe.apply_token(token)
+        });
+        self.macro_action.is_none()
+            && self.color.is_none()
+            && self.extra.is_empty()
+            && modifiers_supported
+            && singular_modifier_supported
+    }
+
+    pub fn fallback_kind(&self) -> Option<&'static str> {
+        if self.macro_action.is_some() {
+            Some("Macro")
+        } else if self.color.is_some() {
+            Some("RGB action")
+        } else if !self.extra.is_empty()
+            || self
+                .modifiers
+                .as_ref()
+                .is_some_and(|mods| !mods.semantics_supported())
+            || self.modifier.as_deref().is_some_and(|token| {
+                let mut probe = KeyModifiers::default();
+                !probe.apply_token(token)
+            })
+        {
+            Some("Oryx action")
+        } else {
+            None
+        }
+    }
+}
+
+impl OryxKey {
+    pub fn assignment_roundtrip_safe(&self) -> bool {
+        [
+            self.tap.as_ref(),
+            self.hold.as_ref(),
+            self.double_tap.as_ref(),
+            self.tap_hold.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(KeyAction::roundtrip_safe)
+    }
 }
 
 /// `hashId` / `revisionId` pair identifying a layout revision. The firmware's
@@ -76,18 +347,36 @@ pub struct LayoutId {
 }
 
 impl LayoutId {
+    fn validate_part(kind: &str, value: &str) -> Result<()> {
+        if value.is_empty()
+            || value.len() > 128
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            bail!("invalid Oryx {kind} {value:?}");
+        }
+        Ok(())
+    }
+
+    pub fn new(hash: String, revision: String) -> Result<LayoutId> {
+        Self::validate_part("layout hash", &hash)?;
+        Self::validate_part("revision", &revision)?;
+        Ok(LayoutId { hash, revision })
+    }
+
     pub fn from_serial(serial: &str) -> Result<LayoutId> {
         match serial.split_once('/') {
             Some((h, r)) if !h.is_empty() && !r.is_empty() => {
-                let revision = r.split_once(crate::firmware_state::SERIAL_MARKER).map(|(rev, _)| rev).unwrap_or(r);
+                let revision = r
+                    .split_once(crate::firmware_state::SERIAL_MARKER)
+                    .map(|(rev, _)| rev)
+                    .unwrap_or(r);
                 if revision.is_empty() {
                     bail!("keyboard serial {serial:?} has an empty revision before the Keyjitsu state marker");
                 }
-                Ok(LayoutId {
-                    hash: h.to_string(),
-                    revision: revision.to_string(),
-                })
-            },
+                Self::new(h.to_string(), revision.to_string())
+            }
             _ => bail!(
                 "keyboard serial {serial:?} does not look like an Oryx layout id \
                  (expected \"hash/revision\"). Pass --url or --hash instead"
@@ -107,10 +396,7 @@ impl LayoutId {
             .filter(|h| !h.is_empty())
             .ok_or_else(|| anyhow!("no layout hash after /layouts/ in {url:?}"))?;
         let revision = parts.get(i + 2).copied().unwrap_or("latest");
-        Ok(LayoutId {
-            hash: hash.to_string(),
-            revision: revision.to_string(),
-        })
+        Self::new(hash.to_string(), revision.to_string())
     }
 }
 
@@ -121,8 +407,47 @@ pub fn cache_dir() -> Result<PathBuf> {
 }
 
 fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
-    // v2: layer `color` added to the query - old caches lack it.
-    Ok(cache_dir()?.join(format!("layout-{geometry}-{}-{}-v2.json", id.hash, id.revision)))
+    // Defend the persistence boundary even if a future caller constructs
+    // LayoutId directly instead of going through the parsers.
+    LayoutId::validate_part("layout hash", &id.hash)?;
+    LayoutId::validate_part("revision", &id.revision)?;
+    LayoutId::validate_part("geometry", geometry)?;
+    Ok(cache_dir()?.join(format!(
+        "layout-{geometry}-{}-{}-v3.json",
+        id.hash, id.revision
+    )))
+}
+
+fn legacy_cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
+    LayoutId::validate_part("layout hash", &id.hash)?;
+    LayoutId::validate_part("revision", &id.revision)?;
+    LayoutId::validate_part("geometry", geometry)?;
+    Ok(cache_dir()?.join(format!(
+        "layout-{geometry}-{}-{}-v2.json",
+        id.hash, id.revision
+    )))
+}
+
+fn cached_layout_from_path(path: &Path) -> Option<Layout> {
+    let bytes = read_layout_cache(path).ok()?;
+    parse_layout(&bytes).ok()
+}
+
+fn read_layout_bytes(reader: impl Read, source: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_LAYOUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {source}"))?;
+    if bytes.len() as u64 > MAX_LAYOUT_BYTES {
+        bail!("{source} is larger than {MAX_LAYOUT_BYTES} bytes");
+    }
+    Ok(bytes)
+}
+
+fn read_layout_cache(path: &Path) -> Result<Vec<u8>> {
+    let file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    read_layout_bytes(file, &format!("layout cache {}", path.display()))
 }
 
 /// Read a layout from the on-disk cache only, never touching the network.
@@ -130,42 +455,55 @@ fn cache_path(id: &LayoutId, geometry: &str) -> Result<PathBuf> {
 /// show the last-seen layout when no keyboard is plugged in.
 pub fn cached_layout(id: &LayoutId, geometry: &str) -> Option<Layout> {
     let cache = cache_path(id, geometry).ok()?;
-    let bytes = fs::read(cache).ok()?;
-    parse_layout(&bytes).ok()
+    if let Some(layout) = cached_layout_from_path(&cache) {
+        return Some(layout);
+    }
+    let legacy = legacy_cache_path(id, geometry).ok()?;
+    cached_layout_from_path(&legacy)
 }
 
 /// Find any layout already in the cache (newest first). Lets the GUI show a
 /// real layout with no keyboard attached and no remembered serial yet (e.g.
 /// after upgrading). Cache-only, never networks.
 pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
+    LayoutId::validate_part("geometry", geometry).ok()?;
     let dir = cache_dir().ok()?;
     let prefix = format!("layout-{geometry}-");
-    let mut hits: Vec<(std::time::SystemTime, LayoutId)> = fs::read_dir(&dir)
+    let mut hits: Vec<(std::time::SystemTime, std::path::PathBuf)> = fs::read_dir(&dir)
         .ok()?
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            // layout-<geometry>-<hash>-<revision>-v2.json
-            let rest = name.strip_prefix(&prefix)?.strip_suffix("-v2.json")?;
-            let (hash, revision) = rest.rsplit_once('-')?;
+            if !name.starts_with(&prefix)
+                || !(name.ends_with("-v3.json") || name.ends_with("-v2.json"))
+            {
+                return None;
+            }
             let mtime = e.metadata().ok()?.modified().ok()?;
-            Some((mtime, LayoutId { hash: hash.to_string(), revision: revision.to_string() }))
+            Some((mtime, e.path()))
         })
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
-    hits.into_iter().find_map(|(_, id)| cached_layout(&id, geometry).map(|l| (id, l)))
+    hits.into_iter().find_map(|(_, path)| {
+        let bytes = read_layout_cache(&path).ok()?;
+        let layout = parse_layout(&bytes).ok()?;
+        if layout.geometry != geometry {
+            return None;
+        }
+        let id = LayoutId::new(layout.hash_id.clone(), layout.revision.hash_id.clone()).ok()?;
+        Some((id, layout))
+    })
 }
 
 /// Fetch a layout, using the on-disk cache unless `refresh` is set.
 /// `revision = "latest"` always goes to the network.
 pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layout> {
     let cache = cache_path(id, geometry)?;
+    let legacy_cache = legacy_cache_path(id, geometry)?;
     let cacheable = id.revision != "latest";
     if cacheable && !refresh {
-        if let Ok(bytes) = fs::read(&cache) {
-            if let Ok(layout) = parse_layout(&bytes) {
-                return Ok(layout);
-            }
+        if let Some(layout) = cached_layout_from_path(&cache) {
+            return Ok(layout);
         }
     }
 
@@ -173,38 +511,62 @@ pub fn fetch_layout(id: &LayoutId, geometry: &str, refresh: bool) -> Result<Layo
         "query": LAYOUT_QUERY,
         "variables": { "hashId": id.hash, "geometry": geometry, "revisionId": id.revision },
     });
-    let resp: serde_json::Value = ureq::post(ENDPOINT)
-        .set("Content-Type", "application/json")
-        .set("User-Agent", concat!("keyjitsu/", env!("CARGO_PKG_VERSION")))
-        .send_json(body)
-        .context("Oryx API request failed (offline? cached layouts still work)")?
-        .into_json()
-        .context("Oryx API returned malformed JSON")?;
+    let live = (|| -> Result<(Layout, Vec<u8>)> {
+        let response = ureq::post(ENDPOINT)
+            .timeout(Duration::from_secs(8))
+            .set("Content-Type", "application/json")
+            .set(
+                "User-Agent",
+                concat!("keyjitsu/", env!("CARGO_PKG_VERSION")),
+            )
+            .send_json(body)
+            .context("Oryx API request failed")?;
+        let bytes = read_layout_bytes(response.into_reader(), "Oryx API response")?;
+        let resp: serde_json::Value =
+            serde_json::from_slice(&bytes).context("Oryx API returned malformed JSON")?;
 
-    if let Some(errs) = resp.get("errors").and_then(|e| e.as_array()) {
-        let msgs: Vec<String> = errs
-            .iter()
-            .filter_map(|e| e.get("message").and_then(|m| m.as_str()).map(String::from))
-            .collect();
-        bail!("Oryx API error for layout {}: {}", id.hash, msgs.join("; "));
-    }
-
-    let raw = resp
-        .get("data")
-        .and_then(|d| d.get("layout"))
-        .filter(|l| !l.is_null())
-        .ok_or_else(|| anyhow!("layout {} not found on Oryx (is it private?)", id.hash))?
-        .clone();
-
-    let bytes = serde_json::to_vec(&raw)?;
-    let layout = parse_layout(&bytes)?;
-    if cacheable {
-        if let Some(parent) = cache.parent() {
-            let _ = fs::create_dir_all(parent);
+        if let Some(errs) = resp.get("errors").and_then(|e| e.as_array()) {
+            let msgs: Vec<String> = errs
+                .iter()
+                .filter_map(|e| e.get("message").and_then(|m| m.as_str()).map(String::from))
+                .collect();
+            bail!("Oryx API error for layout {}: {}", id.hash, msgs.join("; "));
         }
-        let _ = fs::write(&cache, &bytes);
+
+        let raw = resp
+            .get("data")
+            .and_then(|d| d.get("layout"))
+            .filter(|l| !l.is_null())
+            .ok_or_else(|| anyhow!("layout {} not found on Oryx (is it private?)", id.hash))?
+            .clone();
+
+        let bytes = serde_json::to_vec(&raw)?;
+        let layout = parse_layout(&bytes)?;
+        Ok((layout, bytes))
+    })();
+
+    match live {
+        Ok((layout, bytes)) => {
+            if cacheable {
+                if let Err(e) = crate::config::write_atomic(&cache, &bytes) {
+                    eprintln!("keyjitsu: could not cache Oryx layout {}: {e:#}", id.hash);
+                }
+            }
+            Ok(layout)
+        }
+        Err(live_err) if cacheable => {
+            if let Some(layout) = cached_layout_from_path(&legacy_cache) {
+                eprintln!(
+                    "keyjitsu: live Oryx layout failed, using v2 cache for {}: {live_err:#}",
+                    id.hash
+                );
+                Ok(layout)
+            } else {
+                Err(live_err.context("no matching cached Oryx layout available"))
+            }
+        }
+        Err(live_err) => Err(live_err),
     }
-    Ok(layout)
 }
 
 fn parse_layout(bytes: &[u8]) -> Result<Layout> {
@@ -224,6 +586,9 @@ mod tests {
         assert_eq!(keyed.hash, "xBrnx");
         assert_eq!(keyed.revision, "wODgzD");
         assert!(LayoutId::from_serial("garbage").is_err());
+        assert!(LayoutId::from_serial("layout/rev/../../escape").is_err());
+        assert!(LayoutId::from_serial("layout/..").is_err());
+        assert!(LayoutId::from_serial("layout/rev with spaces").is_err());
     }
 
     #[test]
@@ -234,6 +599,81 @@ mod tests {
         assert_eq!(id.revision, "latest");
         let id2 = LayoutId::from_url("https://configure.zsa.io/voyager/layouts/AbCdE").unwrap();
         assert_eq!(id2.revision, "latest");
+        assert!(
+            LayoutId::from_url("https://configure.zsa.io/voyager/layouts/../../escape").is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_layout_payloads() {
+        let bytes = vec![b'x'; MAX_LAYOUT_BYTES as usize + 1];
+        assert!(read_layout_bytes(std::io::Cursor::new(bytes), "test layout").is_err());
+    }
+
+    #[test]
+    fn combo_less_layout_accepts_null_combos() {
+        let json = br#"{
+          "hashId":"xBrnx","title":"Test","geometry":"voyager",
+          "revision":{"hashId":"wODgzD","title":"rev","layers":[],"combos":null}
+        }"#;
+        let layout = parse_layout(json).unwrap();
+        assert!(layout.revision.combos.is_empty());
+    }
+
+    #[test]
+    fn modifier_chords_have_one_canonical_qmk_form() {
+        let mask: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":{"leftAlt":true}}"#).unwrap();
+        assert_eq!(mask.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(mask.roundtrip_safe());
+
+        let singular: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"LALT"}"#).unwrap();
+        assert_eq!(singular.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+        assert!(singular.roundtrip_safe());
+
+        let long_form: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"left_alt"}"#).unwrap();
+        assert_eq!(long_form.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let list: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT"]}"#).unwrap();
+        assert_eq!(list.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let prefixed: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"KC_LALT"}"#).unwrap();
+        assert_eq!(prefixed.qmk_code().as_deref(), Some("LALT(KC_TAB)"));
+
+        let future_array: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifiers":["LALT","FUTURE_MOD"]}"#).unwrap();
+        assert_eq!(future_array.qmk_code(), None);
+        assert_eq!(future_array.fallback_kind(), Some("Oryx action"));
+        assert!(!future_array.roundtrip_safe());
+
+        let future_object: KeyAction = serde_json::from_str(
+            r#"{"code":"KC_TAB","modifiers":{"leftAlt":true,"futureMod":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(future_object.qmk_code(), None);
+        assert_eq!(future_object.fallback_kind(), Some("Oryx action"));
+        assert!(!future_object.roundtrip_safe());
+
+        let future_singular: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_TAB","modifier":"FUTURE_MOD"}"#).unwrap();
+        assert_eq!(future_singular.qmk_code(), None);
+        assert_eq!(future_singular.fallback_kind(), Some("Oryx action"));
+        assert!(!future_singular.roundtrip_safe());
+    }
+
+    #[test]
+    fn unknown_oryx_action_fields_are_preserved_and_not_editable() {
+        let action: KeyAction =
+            serde_json::from_str(r#"{"code":"KC_A","futureBehavior":{"kind":"new"}}"#).unwrap();
+        assert!(action.extra.contains_key("futureBehavior"));
+        assert!(!action.roundtrip_safe());
+
+        let encoded = serde_json::to_value(&action).unwrap();
+        assert!(encoded.get("futureBehavior").is_some());
     }
 
     #[test]
@@ -245,16 +685,60 @@ mod tests {
             "layers": [{ "title": "Main", "position": 0, "keys": [
               {"tap": {"code": "KC_ESCAPE", "layer": null}, "hold": {"code": "KC_GRAVE"},
                "glowColor": "#C30CFF", "customLabel": null},
+              {"tap": {"code": "KC_TAB", "modifiers": {"leftAlt": true}}},
               {"tap": {"code": "TO", "layer": 2}}
-            ]}]
+            ]}],
+            "combos": [
+              {"keyIndices": [1, 2], "layerIdx": 0,
+               "trigger": {"code": "KC_TAB", "modifier": "LALT"}}
+            ]
           }
         }"##;
         let l: Layout = serde_json::from_str(json).unwrap();
-        assert_eq!(l.revision.layers[0].keys.len(), 2);
+        assert_eq!(l.revision.layers[0].keys.len(), 3);
         assert_eq!(
-            l.revision.layers[0].keys[0].tap.as_ref().unwrap().code.as_deref(),
+            l.revision.layers[0].keys[0]
+                .tap
+                .as_ref()
+                .unwrap()
+                .code
+                .as_deref(),
             Some("KC_ESCAPE")
         );
-        assert_eq!(l.revision.layers[0].keys[1].tap.as_ref().unwrap().layer, Some(2));
+        assert_eq!(
+            l.revision.layers[0].keys[2].tap.as_ref().unwrap().layer,
+            Some(2)
+        );
+        assert_eq!(
+            l.revision.layers[0].keys[1]
+                .tap
+                .as_ref()
+                .and_then(|a| a.modifiers.as_ref())
+                .map(|m| m.left_alt),
+            Some(true)
+        );
+        assert_eq!(l.revision.combos.len(), 1);
+        assert_eq!(l.revision.combos[0].key_indices, vec![1, 2]);
+        assert_eq!(l.revision.combos[0].layer_idx, 0);
+        assert_eq!(
+            l.revision.combos[0]
+                .trigger_action()
+                .and_then(|action| action.qmk_code())
+                .as_deref(),
+            Some("LALT(KC_TAB)")
+        );
+
+        let nested: OryxCombo = serde_json::from_str(
+            r#"{"keyIndices":[1,2],"layerIdx":0,
+                "trigger":{"tap":{"code":"KC_TAB","modifier":"LALT"},"hold":null}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            nested
+                .trigger_action()
+                .and_then(|action| action.qmk_code())
+                .as_deref(),
+            Some("LALT(KC_TAB)")
+        );
     }
 }

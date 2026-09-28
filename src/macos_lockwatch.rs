@@ -26,13 +26,8 @@ type CFStringRef = *const c_void;
 
 /// `void (*)(CFNotificationCenterRef, void *observer, CFStringRef name,
 ///           const void *object, CFDictionaryRef userInfo)`
-type CFNotificationCallback = extern "C" fn(
-    CFNotificationCenterRef,
-    *mut c_void,
-    CFStringRef,
-    *const c_void,
-    *const c_void,
-);
+type CFNotificationCallback =
+    extern "C" fn(CFNotificationCenterRef, *mut c_void, CFStringRef, *const c_void, *const c_void);
 
 /// `CFNotificationSuspensionBehaviorDeliverImmediately` - don't coalesce/hold.
 const DELIVER_IMMEDIATELY: isize = 4;

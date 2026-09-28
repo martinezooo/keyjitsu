@@ -66,6 +66,12 @@ pub struct Keyboard {
     pub info: Found,
 }
 
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        let _ = self.send(Command::Disconnect);
+    }
+}
+
 impl Keyboard {
     /// Open the first ZSA keyboard, or the one whose USB serial contains
     /// `serial_filter`.
@@ -79,7 +85,10 @@ impl Keyboard {
             );
         }
         let info = match serial_filter {
-            None => all.into_iter().next().unwrap(),
+            None => all
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("keyboard disappeared during enumeration"))?,
             Some(f) => all
                 .into_iter()
                 .find(|k| k.serial.as_deref().is_some_and(|s| s.contains(f)))
@@ -97,8 +106,8 @@ impl Keyboard {
         let mut buf = [0u8; REPORT_SIZE + 1];
         buf[1..].copy_from_slice(&cmd.encode());
         let n = self.dev.write(&buf).context("HID write failed")?;
-        if n < REPORT_SIZE {
-            bail!("short HID write ({n} bytes)");
+        if n != buf.len() {
+            bail!("short HID write ({n}/{} bytes)", buf.len());
         }
         Ok(())
     }
@@ -149,43 +158,58 @@ impl Keyboard {
             |_| {},
         )? {
             Event::ProtocolVersion(v) => Ok(v),
-            _ => unreachable!(),
+            other => bail!("unexpected protocol-version response: {other:?}"),
         }
     }
 
-    /// Pair with the keyboard (required before it streams events). Returns
-    /// the active layer if the firmware announced it right after pairing.
-    pub fn pair(&self) -> Result<Option<u8>> {
+    pub fn pair_with_events(&self, mut on_other: impl FnMut(Event)) -> Result<Option<u8>> {
         self.request(
             Command::PairingInit,
             Duration::from_secs(2),
             |e| matches!(e, Event::PairingSuccess | Event::PairingFailed),
-            |_| {},
+            &mut on_other,
         )
         .and_then(|ev| match ev {
             Event::PairingSuccess => Ok(()),
             _ => bail!("keyboard refused pairing"),
         })?;
-        // Firmware follows success with a layer announcement; grab it if quick.
+
         let deadline = Instant::now() + Duration::from_millis(300);
         while Instant::now() < deadline {
-            if let Some(Event::Layer(n)) = self.read_event(Duration::from_millis(50))? { return Ok(Some(n)) }
+            if let Some(ev) = self.read_event(Duration::from_millis(50))? {
+                match ev {
+                    Event::Layer(n) => {
+                        on_other(Event::Layer(n));
+                        return Ok(Some(n));
+                    }
+                    other => on_other(other),
+                }
+            }
         }
         Ok(None)
+    }
+
+    /// Pair with the keyboard (required before it streams events).
+    pub fn pair(&self) -> Result<Option<u8>> {
+        self.pair_with_events(|_| {})
+    }
+
+    pub fn fw_version_with_events(&self, on_other: impl FnMut(Event)) -> Result<String> {
+        match self.request(
+            Command::GetFwVersion,
+            Duration::from_secs(2),
+            |e| matches!(e, Event::FwVersion(_)),
+            on_other,
+        )? {
+            Event::FwVersion(s) => Ok(s),
+            other => bail!("unexpected firmware-version response: {other:?}"),
+        }
     }
 
     /// Firmware "version" string (`SERIAL_NUMBER`), which for Oryx-built
     /// firmware embeds the layout id.
     pub fn fw_version(&self) -> Result<String> {
-        match self.request(
-            Command::GetFwVersion,
-            Duration::from_secs(2),
-            |e| matches!(e, Event::FwVersion(_)),
-            |_| {},
-        )? {
-            Event::FwVersion(s) => Ok(s),
-            _ => unreachable!(),
-        }
+        self.fw_version_with_events(|_| {})
     }
 
     /// Politely tell the firmware to stop streaming (clears paired state).

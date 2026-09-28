@@ -54,10 +54,17 @@ impl Effect {
         if self == Effect::Custom {
             return "Custom sequence";
         }
-        Self::ALL.iter().find(|(e, _)| *e == self).map(|(_, l)| *l).unwrap_or("Off")
+        Self::ALL
+            .iter()
+            .find(|(e, _)| *e == self)
+            .map(|(_, l)| *l)
+            .unwrap_or("Off")
     }
     pub fn uses_color(self) -> bool {
-        matches!(self, Effect::Reactive | Effect::Breathing | Effect::Heartbeat)
+        matches!(
+            self,
+            Effect::Reactive | Effect::Breathing | Effect::Heartbeat
+        )
     }
 }
 
@@ -85,10 +92,16 @@ pub enum FxTrigger {
 }
 
 impl FxTrigger {
-    pub const ALL: [(FxTrigger, &'static str); 2] =
-        [(FxTrigger::Press, "every press"), (FxTrigger::DoublePress, "double press (2×)")];
+    pub const ALL: [(FxTrigger, &'static str); 2] = [
+        (FxTrigger::Press, "every press"),
+        (FxTrigger::DoublePress, "double press (2×)"),
+    ];
     pub fn label(self) -> &'static str {
-        Self::ALL.iter().find(|(t, _)| *t == self).map(|(_, l)| *l).unwrap_or("every press")
+        Self::ALL
+            .iter()
+            .find(|(t, _)| *t == self)
+            .map(|(_, l)| *l)
+            .unwrap_or("every press")
     }
 }
 
@@ -134,7 +147,11 @@ impl PressEffect {
         (PressEffect::BoardMatrix, "Whole board - matrix burst"),
     ];
     pub fn label(self) -> &'static str {
-        Self::ALL.iter().find(|(e, _)| *e == self).map(|(_, l)| *l).unwrap_or("nothing")
+        Self::ALL
+            .iter()
+            .find(|(e, _)| *e == self)
+            .map(|(_, l)| *l)
+            .unwrap_or("nothing")
     }
     pub fn uses_color(self) -> bool {
         !matches!(self, PressEffect::None | PressEffect::BoardRainbow)
@@ -173,7 +190,9 @@ pub struct FxEvent {
 impl FxEvent {
     fn duration(&self) -> f32 {
         match &self.seq {
-            Some(steps) => (steps.iter().map(|st| st.ms.max(30)).sum::<u64>() as f32 / 1000.0).max(0.1),
+            Some(steps) => {
+                (steps.iter().map(|st| st.ms.max(30)).sum::<u64>() as f32 / 1000.0).max(0.1)
+            }
             None => self.effect.duration(),
         }
     }
@@ -233,11 +252,15 @@ impl Default for Anim {
 /// Stops the animation thread and releases the LEDs when dropped.
 pub struct AnimHandle {
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Drop for AnimHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -248,8 +271,11 @@ pub fn spawn(
 ) -> AnimHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
-    std::thread::spawn(move || run(shared, cmd_tx, ctx, stop_t));
-    AnimHandle { stop }
+    let thread = std::thread::spawn(move || run(shared, cmd_tx, ctx, stop_t));
+    AnimHandle {
+        stop,
+        thread: Some(thread),
+    }
 }
 
 fn run(
@@ -278,7 +304,8 @@ fn run(
         let (effect, color, speed, brightness, base, events, custom) = {
             let Some(mut a) = snapshot else { break };
             let now = Instant::now();
-            a.events.retain(|e| now.duration_since(e.at).as_secs_f32() < e.duration());
+            a.events
+                .retain(|e| now.duration_since(e.at).as_secs_f32() < e.duration());
             (
                 a.effect,
                 a.color,
@@ -294,7 +321,9 @@ fn run(
         if !busy {
             let idle = *idle_since.get_or_insert_with(Instant::now);
             if took_over && idle.elapsed() > IDLE_GRACE {
-                let _ = cmd_tx.send(KbCmd::RgbRelease);
+                if cmd_tx.send(KbCmd::RgbRelease).is_err() {
+                    return;
+                }
                 took_over = false;
                 if let Ok(mut a) = shared.lock() {
                     a.frame.clear(); // UI falls back to the static layout view
@@ -308,11 +337,18 @@ fn run(
         took_over = true;
 
         let t = start.elapsed().as_secs_f32();
-        let frame = compute(effect, color, speed, brightness, t, &base, &events, &custom, geo);
+        let frame = compute(
+            effect, color, speed, brightness, t, &base, &events, &custom, geo,
+        );
 
         // Send the whole frame as ONE coalescing command; the device loop keeps
         // only the newest, primes the takeover, and sends the per-key diff.
-        let _ = cmd_tx.send(KbCmd::SetFrame(Arc::new(frame.clone())));
+        if cmd_tx
+            .send(KbCmd::SetFrame(Arc::new(frame.clone())))
+            .is_err()
+        {
+            return;
+        }
         // Mirror the frame for the on-screen Live view and repaint it.
         if let Ok(mut a) = shared.lock() {
             a.frame = frame;
@@ -381,7 +417,11 @@ pub(crate) fn compute(
                 let seed = (col * 12.9898).sin().abs() * 6.0;
                 let head = (t * speed * 3.0 + seed).rem_euclid(rows + 3.0);
                 let d = head - k.y;
-                let b = if (0.0..3.0).contains(&d) { 1.0 - d / 3.0 } else { 0.0 };
+                let b = if (0.0..3.0).contains(&d) {
+                    1.0 - d / 3.0
+                } else {
+                    0.0
+                };
                 let g = (b * bright * 255.0) as u8;
                 f[i] = [0, g, g / 6];
             }
@@ -569,7 +609,11 @@ pub(crate) fn dominant(frame: &[[u8; 3]]) -> [u8; 3] {
 
 fn scale(c: [u8; 3], v: f32) -> [u8; 3] {
     let v = v.clamp(0.0, 1.0);
-    [(c[0] as f32 * v) as u8, (c[1] as f32 * v) as u8, (c[2] as f32 * v) as u8]
+    [
+        (c[0] as f32 * v) as u8,
+        (c[1] as f32 * v) as u8,
+        (c[2] as f32 * v) as u8,
+    ]
 }
 
 fn lerp(a: [u8; 3], b: [u8; 3], k: f32) -> [u8; 3] {
@@ -611,7 +655,14 @@ mod tests {
     use super::*;
 
     fn ev(key: usize, effect: PressEffect) -> FxEvent {
-        FxEvent { key, effect, color: [255, 255, 255], at: Instant::now(), seed: 7, seq: None }
+        FxEvent {
+            key,
+            effect,
+            color: [255, 255, 255],
+            at: Instant::now(),
+            seed: 7,
+            seq: None,
+        }
     }
 
     #[test]
@@ -654,9 +705,22 @@ mod tests {
     #[test]
     fn frame_is_full_length_and_colored() {
         let geo = geometry::voyager();
-        let f = compute(Effect::Rainbow, [80, 170, 255], 1.0, 1.0, 0.3, &[], &[], &[], geo);
+        let f = compute(
+            Effect::Rainbow,
+            [80, 170, 255],
+            1.0,
+            1.0,
+            0.3,
+            &[],
+            &[],
+            &[],
+            geo,
+        );
         assert_eq!(f.len(), geo.len());
-        assert!(f.iter().any(|c| *c != [0, 0, 0]), "rainbow should light keys");
+        assert!(
+            f.iter().any(|c| *c != [0, 0, 0]),
+            "rainbow should light keys"
+        );
     }
 
     #[test]
@@ -664,7 +728,17 @@ mod tests {
         let geo = geometry::voyager();
         let mut base = vec![[0u8, 0, 0]; geo.len()];
         base[3] = [10, 200, 30];
-        let f = compute(Effect::Layout, [0, 0, 0], 1.0, 1.0, 0.0, &base, &[], &[], geo);
+        let f = compute(
+            Effect::Layout,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.0,
+            &base,
+            &[],
+            &[],
+            geo,
+        );
         assert_eq!(f[3], [10, 200, 30]);
         assert_eq!(f[4], [0, 0, 0]);
     }
@@ -672,7 +746,17 @@ mod tests {
     #[test]
     fn flash_lights_only_the_pressed_key() {
         let geo = geometry::voyager();
-        let f = compute(Effect::Off, [0, 0, 0], 1.0, 1.0, 0.0, &[], &[ev(5, PressEffect::Flash)], &[], geo);
+        let f = compute(
+            Effect::Off,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.0,
+            &[],
+            &[ev(5, PressEffect::Flash)],
+            &[],
+            geo,
+        );
         let sum = |c: [u8; 3]| c[0] as u32 + c[1] as u32 + c[2] as u32;
         assert!(sum(f[5]) > sum(f[6]));
     }
@@ -680,8 +764,21 @@ mod tests {
     #[test]
     fn board_flash_lights_everything() {
         let geo = geometry::voyager();
-        let f = compute(Effect::Off, [0, 0, 0], 1.0, 1.0, 0.0, &[], &[ev(5, PressEffect::BoardFlash)], &[], geo);
-        assert!(f.iter().all(|c| *c != [0, 0, 0]), "whole board should light");
+        let f = compute(
+            Effect::Off,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.0,
+            &[],
+            &[ev(5, PressEffect::BoardFlash)],
+            &[],
+            geo,
+        );
+        assert!(
+            f.iter().all(|c| *c != [0, 0, 0]),
+            "whole board should light"
+        );
     }
 
     #[test]
@@ -694,8 +791,16 @@ mod tests {
     fn custom_sequence_steps_and_loops() {
         let geo = geometry::voyager();
         let prog = vec![
-            FxStep { keys: vec![0, 1], color: [255, 0, 0], ms: 100 },
-            FxStep { keys: vec![2], color: [0, 0, 255], ms: 100 },
+            FxStep {
+                keys: vec![0, 1],
+                color: [255, 0, 0],
+                ms: 100,
+            },
+            FxStep {
+                keys: vec![2],
+                color: [0, 0, 255],
+                ms: 100,
+            },
         ];
         let at = |t: f32| compute(Effect::Custom, [0, 0, 0], 1.0, 1.0, t, &[], &[], &prog, geo);
         // t=0.05s → step 1: keys 0,1 red, key 2 dark.
@@ -711,7 +816,17 @@ mod tests {
         let f = at(0.25);
         assert_eq!(f[0], [255, 0, 0]);
         // speed 2.0 halves the loop: t=0.52s → 1040ms → %200 = 40ms → step 1.
-        let f = compute(Effect::Custom, [0, 0, 0], 2.0, 1.0, 0.52, &[], &[], &prog, geo);
+        let f = compute(
+            Effect::Custom,
+            [0, 0, 0],
+            2.0,
+            1.0,
+            0.52,
+            &[],
+            &[],
+            &prog,
+            geo,
+        );
         assert_eq!(f[0], [255, 0, 0]);
     }
 

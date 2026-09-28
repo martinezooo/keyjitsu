@@ -29,14 +29,29 @@ impl<'a> KeyboardWidget<'a> {
         let (labels, glow) = match layer {
             Some(layer) => (
                 layer.keys.iter().map(labels_for).collect(),
-                layer.keys.iter().map(|k| k.glow_color.as_deref().and_then(parse_hex)).collect(),
+                layer
+                    .keys
+                    .iter()
+                    .map(|k| k.glow_color.as_deref().and_then(parse_hex))
+                    .collect(),
             ),
             None => (
-                (0..n).map(|_| KeyLabels { tap: String::new(), hold: None }).collect(),
+                (0..n)
+                    .map(|_| KeyLabels {
+                        tap: String::new(),
+                        hold: None,
+                    })
+                    .collect(),
                 vec![None; n],
             ),
         };
-        KeyboardWidget { geometry, labels, glow, pressed: vec![false; n], heat: None }
+        KeyboardWidget {
+            geometry,
+            labels,
+            glow,
+            pressed: vec![false; n],
+            heat: None,
+        }
     }
 
     /// Size (cols, rows) the widget needs.
@@ -89,7 +104,11 @@ impl Widget for &KeyboardWidget<'_> {
             }
 
             let pressed = self.pressed.get(i).copied().unwrap_or(false);
-            let heat = self.heat.as_ref().and_then(|h| h.get(i).copied()).unwrap_or(0.0);
+            let heat = self
+                .heat
+                .as_ref()
+                .and_then(|h| h.get(i).copied())
+                .unwrap_or(0.0);
 
             let mut style = Style::default();
             if let Some(h) = &self.heat {

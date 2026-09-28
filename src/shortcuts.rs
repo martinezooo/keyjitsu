@@ -28,7 +28,12 @@ fn parse_line(line: &str) -> Option<ShortcutDef> {
     if category.is_empty() || keys.is_empty() {
         return None;
     }
-    Some(ShortcutDef { category, keys, desc, high })
+    Some(ShortcutDef {
+        category,
+        keys,
+        desc,
+        high,
+    })
 }
 
 /// The embedded library, parsed once.
@@ -56,7 +61,11 @@ pub fn builtin() -> &'static [ShortcutDef] {
 /// one key press, so there is no code to generate - the entry is still
 /// readable in the cheatsheet, just not one-click assignable.
 pub fn to_qmk_code(keys: &str) -> Option<String> {
-    let parts: Vec<&str> = keys.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let parts: Vec<&str> = keys
+        .split('+')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
     let (base, mods) = parts.split_last()?;
     let base_code = base_key_code(base)?;
     let mut code = base_code.to_string();
@@ -154,23 +163,38 @@ mod tests {
     #[test]
     fn library_parses_completely() {
         let all = builtin();
-        assert!(all.len() > 140, "expected the full library, got {}", all.len());
+        assert!(
+            all.len() > 140,
+            "expected the full library, got {}",
+            all.len()
+        );
         // Every entry has a category and keys.
-        assert!(all.iter().all(|s| !s.category.is_empty() && !s.keys.is_empty()));
+        assert!(all
+            .iter()
+            .all(|s| !s.category.is_empty() && !s.keys.is_empty()));
     }
 
     #[test]
     fn comma_inside_shortcut_survives() {
         // "Cmd + ," (app preferences) must keep its comma.
-        let hit = builtin().iter().find(|s| s.desc.contains("settings/preferences")).unwrap();
+        let hit = builtin()
+            .iter()
+            .find(|s| s.desc.contains("settings/preferences"))
+            .unwrap();
         assert_eq!(hit.keys, "Cmd + ,");
         assert!(hit.high);
     }
 
     #[test]
     fn library_converts_to_qmk() {
-        assert_eq!(to_qmk_code("Cmd + Shift + 4").as_deref(), Some("LGUI(LSFT(KC_4))"));
-        assert_eq!(to_qmk_code("Ctrl + Cmd + Q").as_deref(), Some("LCTL(LGUI(KC_Q))"));
+        assert_eq!(
+            to_qmk_code("Cmd + Shift + 4").as_deref(),
+            Some("LGUI(LSFT(KC_4))")
+        );
+        assert_eq!(
+            to_qmk_code("Ctrl + Cmd + Q").as_deref(),
+            Some("LCTL(LGUI(KC_Q))")
+        );
         assert_eq!(to_qmk_code("Tab").as_deref(), Some("KC_TAB"));
         assert_eq!(to_qmk_code("Cmd + ,").as_deref(), Some("LGUI(KC_COMMA)"));
         assert_eq!(to_qmk_code("Cmd + Up").as_deref(), Some("LGUI(KC_UP)"));
@@ -189,8 +213,15 @@ mod tests {
         // but the large majority should be - this guards against an alias
         // regression silently breaking the whole conversion path.
         let all = builtin();
-        let ok = all.iter().filter(|s| to_qmk_code(&s.keys).is_some()).count();
-        assert!(ok * 100 / all.len() >= 75, "only {ok}/{} converted", all.len());
+        let ok = all
+            .iter()
+            .filter(|s| to_qmk_code(&s.keys).is_some())
+            .count();
+        assert!(
+            ok * 100 / all.len() >= 75,
+            "only {ok}/{} converted",
+            all.len()
+        );
     }
 
     #[test]
@@ -199,8 +230,14 @@ mod tests {
         // doesn't care which modifier wraps which - they're held
         // simultaneously, not sequenced - so this need not match
         // to_qmk_code's own (also valid) ordering byte-for-byte.
-        assert_eq!(compose(false, true, false, true, "KC_4"), "LGUI(LSFT(KC_4))");
-        assert_eq!(compose(true, false, false, true, "KC_Q"), "LGUI(LCTL(KC_Q))");
+        assert_eq!(
+            compose(false, true, false, true, "KC_4"),
+            "LGUI(LSFT(KC_4))"
+        );
+        assert_eq!(
+            compose(true, false, false, true, "KC_Q"),
+            "LGUI(LCTL(KC_Q))"
+        );
         assert_eq!(compose(false, false, false, false, "KC_TAB"), "KC_TAB");
     }
 
@@ -215,6 +252,10 @@ mod tests {
         let mut sorted = cats.clone();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(cats.len(), sorted.len(), "categories should be contiguous blocks");
+        assert_eq!(
+            cats.len(),
+            sorted.len(),
+            "categories should be contiguous blocks"
+        );
     }
 }

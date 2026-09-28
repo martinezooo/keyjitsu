@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config;
 use crate::oryx_api::cache_dir;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -22,14 +23,33 @@ pub struct HeatmapStore {
 
 impl HeatmapStore {
     fn path_for(layout_hash: &str) -> Result<PathBuf> {
+        if layout_hash.is_empty()
+            || layout_hash.len() > 128
+            || !layout_hash.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            bail!("invalid layout hash {layout_hash:?}");
+        }
         Ok(cache_dir()?.join(format!("heatmap-{layout_hash}.json")))
     }
 
     pub fn load(layout_hash: &str, key_count: usize) -> Result<HeatmapStore> {
         let path = Self::path_for(layout_hash)?;
         let mut store: HeatmapStore = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
-            Err(_) => HeatmapStore::default(),
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(store) => store,
+                Err(e) => {
+                    let backup = config::preserve_corrupt_bytes(&path, &bytes)
+                        .with_context(|| format!("heatmap is unreadable ({e}); failed to preserve the original bytes"))?;
+                    return Err(e).with_context(|| {
+                        format!(
+                            "heatmap is unreadable; preserved the original bytes in {}",
+                            backup.display()
+                        )
+                    });
+                }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HeatmapStore::default(),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
         for counts in store.layers.values_mut() {
             counts.resize(key_count, 0);
@@ -39,7 +59,10 @@ impl HeatmapStore {
     }
 
     pub fn record(&mut self, layer: u8, key_idx: usize, key_count: usize) {
-        let counts = self.layers.entry(layer).or_insert_with(|| vec![0; key_count]);
+        let counts = self
+            .layers
+            .entry(layer)
+            .or_insert_with(|| vec![0; key_count]);
         if key_idx < counts.len() {
             counts[key_idx] += 1;
             self.dirty += 1;
@@ -48,12 +71,12 @@ impl HeatmapStore {
 
     /// Persist now.
     pub fn save(&mut self) -> Result<()> {
-        let Some(path) = &self.path else { return Ok(()) };
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).ok();
-        }
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         let bytes = serde_json::to_vec(self)?;
-        fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
+        config::write_atomic(path, &bytes)
+            .with_context(|| format!("writing {}", path.display()))?;
         self.dirty = 0;
         Ok(())
     }
@@ -122,6 +145,14 @@ mod tests {
         assert_eq!(s.counts(Some(0), 52)[3], 2);
         assert_eq!(s.counts(None, 52)[3], 3);
         assert_eq!(s.total_presses(), 3);
+    }
+
+    #[test]
+    fn rejects_unsafe_layout_hashes_before_building_paths() {
+        assert!(HeatmapStore::path_for("../../escape").is_err());
+        assert!(HeatmapStore::path_for("layout/other").is_err());
+        assert!(HeatmapStore::path_for("layout ok").is_err());
+        assert!(HeatmapStore::path_for("xBrnx").is_ok());
     }
 
     #[test]

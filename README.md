@@ -60,7 +60,7 @@ losing anything.
 - **Peek.** A small, see-through overlay that shows the current layer's keys,
   so you can glance at what a layer does without leaving what you are doing. It
   appears when you switch layers (and can stay up the whole time you are on a
-  non-base layer), floats click-through over everything on any monitor, and can
+  non-base layer), floats click-through over everything; on macOS you can choose any monitor, and can
   be summoned by holding a key or chord on the Voyager.
 - **FX Studio** (experimental). Build and test RGB effects: built-in constant
   and press effects, plus a step sequencer for your own (paint keys, duplicate
@@ -100,13 +100,13 @@ shows your layout, all locally on macOS. This table compares the two desktop app
 | ⭐ **Rest the Voyager on top of the MacBook keyboard** (built-in ignored, no ghost presses) | ❌ | ✅ guard + a self-test to confirm it, cannot lock you out |
 | Autolayer (switch layers by app) | ❌ | ✅ |
 | CLI / scripting | Zapp CLI + API | ✅ built-in CLI |
-| Platforms | ✅ Windows, macOS, Linux | macOS only (tested) |
+| Platforms | ✅ Windows, macOS, Linux | macOS primary; Windows/Linux hardening in progress |
 | All ZSA boards | ✅ | Voyager only (tested) |
 | Signed download + support | ✅ | ❌ beta, build from source |
 
 ## CLI
 
-Every GUI feature also has a command. A few of them:
+The CLI covers the core device, layout, heatmap, RGB, build and flash workflows. A few commands:
 
 | Command | What it does |
 | --- | --- |
@@ -126,12 +126,14 @@ Add `--serial <substr>` to pick one of several keyboards.
 
 ## Local firmware builds
 
-One-time setup (about 2 GB, plus ARM GCC via Homebrew):
+One-time setup (about 2 GB, plus an ARM GCC toolchain):
 
 ```sh
 pipx install qmk
 qmk setup zsa/qmk_firmware -b firmware25
 ```
+
+Install the ARM GNU toolchain with your platform package manager or the official Arm distribution. Settings reports exactly which prerequisite is missing before enabling a local build.
 
 Settings shows a green "Ready" pill once the toolchain is in place. A build
 fetches your layout's generated source from Oryx once (cached, offline
@@ -146,6 +148,45 @@ reconstructs the exact Keyjitsu-authored state reported by the keyboard instead
 of treating the last saved app config as device truth. It never writes back to
 the portal. So remapping here does not carry over to Oryx, and re-flashing from
 Oryx later would overwrite your Keyjitsu changes.
+
+## Device state, Oryx, and mixing workflows
+
+There is an important limitation in ZSA's current Oryx raw-HID protocol:
+**stock Oryx firmware does not expose the complete keymap back to the desktop
+app**. The keyboard can report runtime information and its firmware identity
+(`layout-hash/revision-hash`), but there is no supported HID command that
+returns every key assignment, layer definition, combo, and persistent RGB
+setting from the compiled firmware.
+
+For stock Oryx firmware, keyjitsu can use the `hash/revision` reported by the
+physical keyboard to load the matching Oryx layout. That is a reconstruction
+from Oryx data selected by the device's own revision id; it is **not** a full
+keymap extracted from the firmware image itself.
+
+Keyjitsu-built firmware adds its own compact state id to the firmware serial.
+That lets keyjitsu reconstruct the exact Keyjitsu-authored additions from its
+matching local firmware-state record. It still does not make stock Oryx
+firmware suddenly readable as a complete keymap.
+
+### Practical rule: pick one source of authoring truth
+
+For the least surprising workflow, use **either Oryx or keyjitsu as the main
+place where you author a keyboard configuration**.
+
+- If you edit and flash in Oryx, treat that Oryx revision as the source of
+  truth. Keyjitsu can recognize the revision reported by the keyboard and load
+  the corresponding Oryx layout.
+- If you edit and flash in keyjitsu, treat the Keyjitsu firmware state as the
+  source of truth. Those local-only edits are not written back to Oryx.
+- Re-flashing from Oryx overwrites Keyjitsu-only firmware changes.
+- Re-flashing from keyjitsu does not update your Oryx layout.
+- Switching between the two workflows is possible, but save the configuration
+  you want to keep before flashing and expect the two representations to
+  diverge unless you deliberately synchronize them.
+
+Live/device status should always be driven by the **currently connected
+keyboard's identity**. A saved layout or restore point must never silently
+replace what Live claims is on the physical keyboard.
 
 ## How it works
 
@@ -169,58 +210,46 @@ Oryx later would overwrite your Keyjitsu changes.
   the keyboard's "Service" HID layer but not a separate raw "Device" layer
   that can still deliver key presses: run the test on your own Mac if you
   plan to rely on the guard, and don't treat it as absolute.
-- **Storage.** Everything lives under `~/Library/Application Support/keyjitsu/`:
-  `config.json` (app settings), `profiles/*.json` (named user snapshots),
-  `firmware-states/*.json` (automatic records keyed by the identity reported
-  by Keyjitsu-built firmware), heatmap stats, and cached layouts and sources.
+- **Storage.** State is kept in the platform data directory returned by the OS (`~/Library/Application Support/keyjitsu/` on macOS, the corresponding user data directory on Linux/Windows): `config.json`, `profiles/*.json`, `firmware-states/*.json`, heatmap stats, and cached layouts/sources.
 
 ## Install
 
-### Download (macOS, Apple Silicon)
+### Release downloads
 
-Every release ships a `Keyjitsu.app` zip and a CLI binary, built by GitHub
-Actions from the tagged source, with a `SHA256SUMS.txt` next to them. Get the
-latest from the [Releases](https://github.com/martinezooo/keyjitsu/releases)
-page, unzip, and drag `Keyjitsu.app` to `/Applications`.
+The release workflow builds:
+- macOS: `Keyjitsu.app` plus a CLI binary (artifact name records the runner architecture),
+- Linux x86_64: a tarball containing the `keyjitsu` binary,
+- Windows x86_64: a zip containing `keyjitsu.exe`.
 
-The app is not notarized (that needs a paid Apple developer account), so macOS
-blocks the first launch. Right-click the app and choose Open, or clear the
-quarantine flag once:
+Each release also includes `SHA256SUMS.txt`. Windows/Linux artifacts remain beta until their CI and smoke-test release gates are green.
+
+On macOS the app is not notarized, so the first launch may require right-click -> Open or:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Keyjitsu.app
 ```
 
-To verify a download, compare `shasum -a 256 <file>` with `SHA256SUMS.txt`.
-
 ### Build from source
 
-You need [Rust](https://rustup.rs). The QMK toolchain is only needed later, for
-local firmware builds (see above).
-
-Quick way, if Rust is on your PATH:
+You need [Rust](https://rustup.rs). The QMK toolchain is only needed for local firmware builds.
 
 ```sh
 cargo install --git https://github.com/martinezooo/keyjitsu
 ```
 
-That drops a `keyjitsu` binary in `~/.cargo/bin`. Run `keyjitsu` for the app, or
-`keyjitsu list` for the CLI.
+Run `keyjitsu` for the GUI or `keyjitsu list` for the CLI.
 
-For the full macOS app bundle (dock icon, launch-at-login), build from a clone:
+For the macOS app bundle:
 
 ```sh
 git clone https://github.com/martinezooo/keyjitsu
 cd keyjitsu
-scripts/bundle.sh --install   # builds release, installs Keyjitsu.app to /Applications
+scripts/bundle.sh --install
 ```
 
-Plain `cargo build --release` also works (binary in `target/release/keyjitsu`),
-and `cargo test` runs the suite.
+A plain `cargo build --release` builds the desktop/CLI binary on supported desktop targets. Linux needs the normal hidapi/udev development packages at build time and udev access to the Voyager HID device at runtime.
 
-macOS is the primary and only tested target. The guard, autolayer, and peek are
-macOS-only. The rest is portable Rust (hidapi with egui/ratatui) but unverified
-elsewhere.
+macOS remains the primary hardware-tested target. Guard and Autolayer are macOS-only. Peek works on all desktop targets, but multi-monitor enumeration is currently macOS-specific; Windows/Linux use the current-display fallback until native monitor enumeration is validated.
 
 ## Privacy and network
 
@@ -234,9 +263,7 @@ to exactly two places on the network, and both are easy to find in the source:
   that off) and when you click Check for updates. Nothing is downloaded or
   installed by itself.
 
-The keyboard guard uses the system `hidutil` tool and needs no special
-permission. Everything keyjitsu stores lives under
-`~/Library/Application Support/keyjitsu/`.
+On macOS, the keyboard guard uses the system `hidutil` tool. Persistent files live in the platform user data directory selected by the `directories` crate; the app does not write system-wide state.
 
 ## Uninstall
 

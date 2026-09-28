@@ -41,7 +41,8 @@ const CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 /// `kCGEventKeyDown`.
 const CG_EVENT_KEY_DOWN: u64 = 10;
 
-type CGEventTapCallBack = extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef;
+type CGEventTapCallBack =
+    extern "C" fn(CGEventTapProxy, u32, CGEventRef, *mut c_void) -> CGEventRef;
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -58,7 +59,11 @@ extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
-    fn CFMachPortCreateRunLoopSource(allocator: CFAllocatorRef, port: CFMachPortRef, order: isize) -> CFRunLoopSourceRef;
+    fn CFMachPortCreateRunLoopSource(
+        allocator: CFAllocatorRef,
+        port: CFMachPortRef,
+        order: isize,
+    ) -> CFRunLoopSourceRef;
     fn CFRunLoopGetCurrent() -> CFRunLoopRef;
     fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
     fn CFRunLoopRemoveSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
@@ -68,7 +73,12 @@ extern "C" {
 }
 
 /// Listen-only: just flags that a key-down arrived. Never touches `event`.
-extern "C" fn on_key_event(_proxy: CGEventTapProxy, _event_type: u32, event: CGEventRef, user_info: *mut c_void) -> CGEventRef {
+extern "C" fn on_key_event(
+    _proxy: CGEventTapProxy,
+    _event_type: u32,
+    event: CGEventRef,
+    user_info: *mut c_void,
+) -> CGEventRef {
     if !user_info.is_null() {
         unsafe { &*(user_info as *const AtomicBool) }.store(true, Ordering::SeqCst);
     }
