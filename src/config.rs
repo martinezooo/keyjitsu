@@ -211,7 +211,7 @@ pub struct Config {
     /// Chord (one or more matrix positions held together) that shows the
     /// minimap while held. Supersedes `overlay_trigger` in the GUI.
     pub overlay_chord: Vec<[u8; 2]>,
-    /// Name of the profile the app currently runs (None = default).
+    /// Selected firmware target profile. None means device state + local draft.
     pub active_profile: Option<String>,
     /// USB serial of the last keyboard seen (`hash/revision`), so the GUI can
     /// show that layout from cache when no keyboard is plugged in.
@@ -255,57 +255,6 @@ pub struct Config {
     pub guard_enabled: bool,
     /// Autolayer: re-enable the app→layer watcher on startup.
     pub autolayer_enabled: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Profile {
-    pub overlay_trigger: Option<[u8; 2]>,
-    pub overlay_chord: Vec<[u8; 2]>,
-    pub hidden_shortcuts: Vec<String>,
-    pub autolayer_rules: Vec<AutolayerRule>,
-    pub glow_overrides: Vec<GlowOverride>,
-    pub glow_draft_layouts: Vec<String>,
-    pub key_fx: Vec<KeyFx>,
-    pub custom_fx: Vec<crate::gui::CustomFx>,
-    pub custom_shortcuts: Vec<CustomShortcut>,
-    pub rgb: RgbState,
-    pub peek: PeekConfig,
-    pub autolayer_enabled: bool,
-}
-
-impl Profile {
-    pub fn from_config(c: &Config) -> Self {
-        Self {
-            overlay_trigger: c.overlay_trigger,
-            overlay_chord: c.overlay_chord.clone(),
-            hidden_shortcuts: c.hidden_shortcuts.clone(),
-            autolayer_rules: c.autolayer_rules.clone(),
-            glow_overrides: c.glow_overrides.clone(),
-            glow_draft_layouts: c.glow_draft_layouts.clone(),
-            key_fx: c.key_fx.clone(),
-            custom_fx: c.custom_fx.clone(),
-            custom_shortcuts: c.custom_shortcuts.clone(),
-            rgb: c.rgb.clone(),
-            peek: c.peek.clone(),
-            autolayer_enabled: c.autolayer_enabled,
-        }
-    }
-
-    pub fn apply_to(&self, c: &mut Config) {
-        c.overlay_trigger = self.overlay_trigger;
-        c.overlay_chord = self.overlay_chord.clone();
-        c.hidden_shortcuts = self.hidden_shortcuts.clone();
-        c.autolayer_rules = self.autolayer_rules.clone();
-        c.glow_overrides = self.glow_overrides.clone();
-        c.glow_draft_layouts = self.glow_draft_layouts.clone();
-        c.key_fx = self.key_fx.clone();
-        c.custom_fx = self.custom_fx.clone();
-        c.custom_shortcuts = self.custom_shortcuts.clone();
-        c.rgb = self.rgb.clone();
-        c.peek = self.peek.clone();
-        c.autolayer_enabled = self.autolayer_enabled;
-    }
 }
 
 fn path() -> Result<std::path::PathBuf> {
@@ -476,98 +425,6 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(std::fs::read(first).unwrap(), b"first".to_vec());
         assert_eq!(std::fs::read(second).unwrap(), b"second".to_vec());
-    }
-
-    #[test]
-    fn profile_does_not_overwrite_device_state() {
-        let mut cfg = Config {
-            last_layout: Some("layout/rev~kj0123456789".into()),
-            qmk_firmware_dir: Some("/qmk".into()),
-            ..Config::default()
-        };
-        cfg.staged_edits.push(StagedEdit {
-            layout: "layout".into(),
-            layer: 0,
-            key: 1,
-            code: "KC_A".into(),
-        });
-        cfg.custom_layers.push(CustomLayer {
-            layout: "layout".into(),
-            name: "Extra".into(),
-            keys: vec![CustomKey {
-                key: 2,
-                code: "KC_B".into(),
-            }],
-        });
-
-        let mut profile = Profile::from_config(&cfg);
-        profile.peek.enabled = false;
-
-        let mut target = cfg;
-        profile.apply_to(&mut target);
-        assert_eq!(
-            target.last_layout.as_deref(),
-            Some("layout/rev~kj0123456789")
-        );
-        assert_eq!(target.qmk_firmware_dir.as_deref(), Some("/qmk"));
-        assert_eq!(target.staged_edits.len(), 1);
-        assert_eq!(target.custom_layers.len(), 1);
-        assert!(!target.peek.enabled);
-    }
-
-    #[test]
-    fn profile_default_new_default_roundtrip_preserves_device_truth() {
-        let mut cfg = Config {
-            last_layout: Some("layout/rev~kj0123456789".into()),
-            qmk_firmware_dir: Some("/qmk".into()),
-            ..Config::default()
-        };
-        cfg.staged_edits.push(StagedEdit {
-            layout: "layout".into(),
-            layer: 0,
-            key: 1,
-            code: "KC_A".into(),
-        });
-        cfg.peek.enabled = true;
-        cfg.autolayer_enabled = false;
-
-        let default_profile = Profile::from_config(&cfg);
-        let mut new_profile = default_profile.clone();
-        new_profile.peek.enabled = false;
-        new_profile.autolayer_enabled = true;
-
-        new_profile.apply_to(&mut cfg);
-        cfg.active_profile = Some("work".into());
-        assert_eq!(cfg.active_profile.as_deref(), Some("work"));
-        assert!(!cfg.peek.enabled);
-        assert!(cfg.autolayer_enabled);
-        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
-        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
-        assert_eq!(cfg.staged_edits.len(), 1);
-
-        default_profile.apply_to(&mut cfg);
-        cfg.active_profile = None;
-        assert!(cfg.active_profile.is_none());
-        assert!(cfg.peek.enabled);
-        assert!(!cfg.autolayer_enabled);
-        assert_eq!(cfg.last_layout.as_deref(), Some("layout/rev~kj0123456789"));
-        assert_eq!(cfg.qmk_firmware_dir.as_deref(), Some("/qmk"));
-        assert_eq!(cfg.staged_edits.len(), 1);
-    }
-
-    #[test]
-    fn cloned_profile_changes_do_not_mutate_source() {
-        let mut cfg = Config::default();
-        cfg.peek.enabled = true;
-        let source = Profile::from_config(&cfg);
-        let mut clone = source.clone();
-        clone.peek.enabled = false;
-        clone.overlay_chord.push([1, 2]);
-
-        assert!(source.peek.enabled);
-        assert!(source.overlay_chord.is_empty());
-        assert!(!clone.peek.enabled);
-        assert_eq!(clone.overlay_chord, vec![[1, 2]]);
     }
 
     #[test]

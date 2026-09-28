@@ -143,45 +143,6 @@ impl App {
         });
     }
 
-    pub(super) fn apply_profile(&mut self, profile: &config::Profile) {
-        self.rules = profile.autolayer_rules.clone();
-        self.peek = profile.peek.clone();
-        self.autolayer_enabled = profile.autolayer_enabled;
-        self.overlay_chord = if profile.overlay_chord.is_empty() {
-            profile.overlay_trigger.map(|t| vec![t]).unwrap_or_default()
-        } else {
-            profile.overlay_chord.clone()
-        };
-        self.hidden_shortcuts = profile.hidden_shortcuts.clone();
-        self.custom_fx = profile.custom_fx.clone();
-        self.custom_shortcuts = profile.custom_shortcuts.clone();
-        if let Some(hash) = self.layout_hash.clone() {
-            self.hydrate_glow(&hash);
-            self.hydrate_key_fx(&hash);
-        }
-        if let Ok(mut a) = self.anim.lock() {
-            let r = &profile.rgb;
-            a.effect = r.effect;
-            a.color = r.color;
-            a.speed = r.speed;
-            a.brightness = r.brightness;
-            a.press_effect = r.press_effect;
-            a.press_color = r.press_color;
-            a.custom_name = r.custom_name.clone();
-            a.custom = profile
-                .custom_fx
-                .iter()
-                .find(|c| c.name == r.custom_name)
-                .map(|c| c.steps.clone())
-                .unwrap_or_default();
-            if a.effect == Effect::Custom && a.custom.is_empty() {
-                a.effect = Effect::Off;
-            }
-        }
-        self.autolayer = None;
-        self.needs_push = true;
-    }
-
     pub(super) fn ui_app_card(&mut self, ui: &mut egui::Ui) {
         #[cfg(target_os = "macos")]
         {

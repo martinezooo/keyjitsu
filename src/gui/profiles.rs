@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 
 use crate::config;
+use crate::firmware_state::FirmwareState;
 
 fn profiles_dir() -> Result<PathBuf> {
     Ok(crate::oryx_api::cache_dir()?.join("profiles"))
@@ -55,31 +56,31 @@ pub(super) fn list_profiles() -> Result<Vec<String>> {
     Ok(out)
 }
 
-pub(super) fn snapshot_profile(name: &str) -> Result<()> {
+pub(super) fn save_profile(name: &str, state: &FirmwareState) -> Result<()> {
     let path = profile_path(name)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let cfg = config::load_checked()?;
-    let profile = config::Profile::from_config(&cfg);
-    let json = serde_json::to_vec_pretty(&profile)?;
+    let json = serde_json::to_vec_pretty(state)?;
     config::write_atomic(&path, &json)?;
     Ok(())
 }
 
-pub(super) fn load_profile(name: &str) -> Result<config::Profile> {
-    let bytes = std::fs::read(profile_path(name)?)?;
-    Ok(serde_json::from_slice(&bytes)?)
+pub(super) fn load_profile(name: &str) -> Result<FirmwareState> {
+    let path = profile_path(name)?;
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("reading firmware profile {}", path.display()))
 }
 
-pub(super) fn create_profile(name: &str) -> Result<()> {
+pub(super) fn create_profile(name: &str, state: &FirmwareState) -> Result<()> {
     if list_profiles()?
         .iter()
         .any(|saved| saved.eq_ignore_ascii_case(name.trim()))
     {
         return Err(anyhow!("profile {name:?} already exists"));
     }
-    snapshot_profile(name)
+    save_profile(name, state)
 }
 
 pub(super) fn next_profile_copy_name(source: &str) -> Result<String> {

@@ -59,6 +59,20 @@ impl App {
                     }
                     self.layout_error = None;
                     self.layout = Some(*layout);
+                    if let Some(profile) = self.profile_state.as_ref() {
+                        if !self.profile_matches_layout(profile) {
+                            self.profile_error = Some(format!(
+                                "active firmware profile targets {}/{}, not this keyboard revision",
+                                profile.layout_hash, profile.revision
+                            ));
+                        } else if self
+                            .profile_error
+                            .as_deref()
+                            .is_some_and(|e| e.starts_with("active firmware profile targets "))
+                        {
+                            self.profile_error = None;
+                        }
+                    }
                     if self.firmware_state.is_some() {
                         self.rebuild_synth_layers();
                     } else if !matches!(
