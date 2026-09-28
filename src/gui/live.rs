@@ -1188,7 +1188,10 @@ impl App {
         }
         self.key_dances.remove(&(layer, key));
         let (code, _) = self.compose_slots();
-        self.key_edits.insert((layer, key), code);
+        self.key_edits.insert(
+            (layer, key),
+            crate::key_action::canonicalize_qmk_code(&code),
+        );
         self.save_staged();
     }
 

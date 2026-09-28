@@ -153,7 +153,15 @@ impl App {
 
         let n_keys = self.geometry().len();
         let oryx = self.oryx_layer_count();
-        let (full_edits, full_dances) = self.desired_firmware_maps();
+        let (mut full_edits, mut full_dances) = self.desired_firmware_maps();
+        for code in full_edits.values_mut() {
+            *code = crate::key_action::canonicalize_qmk_code(code);
+        }
+        for slots in full_dances.values_mut() {
+            for slot in slots.iter_mut().flatten() {
+                *slot = crate::key_action::canonicalize_qmk_code(slot);
+            }
+        }
 
         let invalid_edit = full_edits
             .keys()
@@ -266,7 +274,7 @@ impl App {
                     .map(|k| {
                         (
                             self.geometry().keys[k.key as usize].layout_pos as usize,
-                            k.code.clone(),
+                            crate::key_action::canonicalize_qmk_code(&k.code),
                         )
                     })
                     .collect(),
