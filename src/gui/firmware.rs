@@ -302,6 +302,8 @@ impl App {
                 );
             } else if self.firmware_state_verified() {
                 status_pill(ui, "firmware synced", pal::GREEN);
+            } else if self.device_state_kind() == DeviceStateKind::OryxBaseline {
+                status_pill(ui, "Oryx revision synced", pal::GREEN);
             } else if self.connected.is_some() {
                 status_pill(ui, "device state unverified", pal::AMBER);
             } else {
