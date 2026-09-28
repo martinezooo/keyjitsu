@@ -59,10 +59,10 @@ impl App {
                     if self.firmware_state.is_some() {
                         self.rebuild_synth_layers();
                     } else if !matches!(
-                            self.device_state_kind(),
-                            DeviceStateKind::MissingFirmwareState
-                                | DeviceStateKind::UnknownDeviceIdentity
-                        ) {
+                        self.device_state_kind(),
+                        DeviceStateKind::MissingFirmwareState
+                            | DeviceStateKind::UnknownDeviceIdentity
+                    ) {
                         if let Some(hash) = self.layout_hash.clone() {
                             self.hydrate_custom_layers(&hash);
                         }
@@ -389,17 +389,21 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.update_frame(ctx, frame);
+    }
+
     /// Clear to fully transparent so the peek viewport's low-alpha content
     /// shows the desktop through it. The main window stays opaque because its
     /// panels paint solid fills over every pixel.
-    pub(super) fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     }
 
     /// Clean shutdown: hand the LEDs back to the firmware and restore the
     /// built-in keyboard, before threads are torn down by process exit. The
     /// anim thread's own release is racy at exit; this makes it reliable.
-    pub(super) fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.cmd_tx.send(KbCmd::RgbRelease);
         #[cfg(target_os = "macos")]
         {

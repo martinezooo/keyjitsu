@@ -579,7 +579,4 @@ impl App {
             .unwrap_or(egui::vec2(1440.0, 900.0));
         (0.0, 0.0, mon.x, mon.y)
     }
-
-    /// A flash is actively downloading / waiting / writing (not a  Okprev);
-    }
 }

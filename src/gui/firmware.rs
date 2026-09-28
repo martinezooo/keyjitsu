@@ -287,9 +287,9 @@ impl App {
             ui.separator();
             let pending = self.pending_firmware_count();
             if matches!(
-            self.device_state_kind(),
-            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-        ) {
+                self.device_state_kind(),
+                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+            ) {
                 status_pill(ui, "⚠ device state unknown", pal::AMBER);
             } else if pending > 0 {
                 status_pill(
@@ -334,9 +334,10 @@ impl App {
                     let ready = self.env.is_ready()
                         && self.connected.is_some()
                         && !matches!(
-            self.device_state_kind(),
-            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-        )
+                            self.device_state_kind(),
+                            DeviceStateKind::MissingFirmwareState
+                                | DeviceStateKind::UnknownDeviceIdentity
+                        )
                         && !self.build_busy
                         && !self.flash_in_progress();
                     if ui
@@ -422,9 +423,9 @@ impl App {
         ui.add_space(4.0);
         let pending = self.pending_firmware_count();
         if matches!(
-                    self.device_state_kind(),
-                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-                ) {
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
             ui.colored_label(
                 pal::AMBER,
                 "⚠ The connected firmware state is unknown. Building is blocked to avoid losing working keyboard changes.",
@@ -442,7 +443,9 @@ impl App {
         }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let can = self.connected.is_some() && !self.build_busy && !matches!(
+            let can = self.connected.is_some()
+                && !self.build_busy
+                && !matches!(
                     self.device_state_kind(),
                     DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
                 );
@@ -624,5 +627,4 @@ impl App {
             }
         }
     }
-}
 }

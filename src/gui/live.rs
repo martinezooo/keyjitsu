@@ -956,11 +956,12 @@ impl App {
             return;
         }
 
-        let ready = self.env.is_ready() && self.connected.is_some() && !matches!(
-                            self.device_state_kind(),
-                            DeviceStateKind::MissingFirmwareState
-                                | DeviceStateKind::UnknownDeviceIdentity
-                        );
+        let ready = self.env.is_ready()
+            && self.connected.is_some()
+            && !matches!(
+                self.device_state_kind(),
+                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+            );
         if ui
             .add_enabled(
                 ready,
@@ -988,10 +989,9 @@ impl App {
 
         if !ready {
             let reason = if matches!(
-                            self.device_state_kind(),
-                            DeviceStateKind::MissingFirmwareState
-                                | DeviceStateKind::UnknownDeviceIdentity
-                        ) {
+                self.device_state_kind(),
+                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+            ) {
                 "Device state is unknown; rebuilding is blocked to protect working firmware changes."
             } else if self.connected.is_none() {
                 "Connect the keyboard to build firmware."
@@ -1494,6 +1494,4 @@ impl App {
         }
         self.picker_open = open;
     }
-
-    /// Arm the peek HUD for layer `n` if the config wants it.
 }

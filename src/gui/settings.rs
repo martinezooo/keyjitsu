@@ -791,7 +791,4 @@ impl App {
         #[cfg(not(target_os = "macos"))]
         ui.weak("(macOS only)");
     }
-
-    /// The Peek tab: a clean, vertically-stacked settings page for the layer
-    /// minimap. Changes preview live.
 }

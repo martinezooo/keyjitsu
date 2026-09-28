@@ -49,11 +49,11 @@ use crate::config::{
 use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
-use crate::keycodes;
 use crate::key_action::{hold_wrap, synth_key, synth_slots, unknown_device_key};
+use crate::keycodes;
 use crate::legend::{self, labels_for};
 use crate::localbuild::{self, BuildMsg, KeyEdit};
-use crate::oryx_api::{KeyAction, Layer, Layout, LayoutId, OryxKey};
+use crate::oryx_api::{Layer, Layout, LayoutId, OryxKey};
 use crate::perf;
 use crate::protocol::Event;
 use widget::{draw_keyboard, parse_hex};
@@ -1144,10 +1144,10 @@ impl App {
                 return false;
             }
         }
-           }
+        true
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    pub(super) fn update_frame(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_events();
         self.reconcile_background_jobs(ctx);
 
@@ -2075,7 +2075,6 @@ fn status_dot(ui: &mut egui::Ui, ok: bool) {
     ui.colored_label(c, s);
 }
 
-iwants it.
 impl Drop for App {
     fn drop(&mut self) {
         // Build/download/bootloader-wait phases are safe to cancel. A close
