@@ -331,13 +331,15 @@ impl App {
                 {
                     Ok(g) => {
                         self.guard_error = None;
+                        self.clear_guard_verification();
                         self.guard = Some(g);
-                        // seize_builtin() only returns Ok after verifying with
-                        // hidutil itself, so this is already ground-truthed.
+                        // hidutil verification only proves that the mapping is
+                        // present, not that the built-in keyboard cannot leak.
                         self.guard_hidutil_ok = true;
                         self.guard_checked = Instant::now();
                     }
                     Err(e) => {
+                        self.clear_guard_verification();
                         self.guard_error = Some(format!("{e:#}"));
                         self.guard_enabled = false;
                     }
@@ -345,6 +347,7 @@ impl App {
             } else if !want && self.guard.is_some() {
                 self.guard = None;
                 self.guard_hidutil_ok = false;
+                self.clear_guard_verification();
             }
 
             // Ground-truth recheck: hidutil can silently drop a remap (a
@@ -353,6 +356,9 @@ impl App {
             // before telling the UI it's broken.
             if self.guard.is_some() && self.guard_checked.elapsed() > Duration::from_secs(5) {
                 self.guard_hidutil_ok = crate::macos_kb::recheck();
+                if !self.guard_hidutil_ok {
+                    self.clear_guard_verification();
+                }
                 self.guard_checked = Instant::now();
             }
         }

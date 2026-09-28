@@ -508,25 +508,108 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    pub(super) fn clear_guard_verification(&mut self) {
+        self.guard_test_rx = None;
+        self.guard_test_result = None;
+        self.guard_test_started = None;
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn set_guard_enabled(&mut self, enabled: bool) {
+        if self.guard_enabled == enabled {
+            return;
+        }
+        self.guard_enabled = enabled;
+        self.guard_error = None;
+        self.clear_guard_verification();
+        if !enabled {
+            // Drop immediately so the built-in keyboard is restored on the
+            // same click instead of waiting for the next reconciliation tick.
+            self.guard = None;
+            self.guard_hidutil_ok = false;
+        }
+        self.persist_config("saving keyboard guard preference", move |cfg| {
+            cfg.guard_enabled = enabled;
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn guard_indicator(&self) -> (String, Color32, String) {
+        use crate::macos_guard_test::GuardTestOutcome;
+
+        if !self.guard_enabled {
+            return (
+                "guard off".into(),
+                pal::TEXT_DIM,
+                "Built-in keyboard guard is off.".into(),
+            );
+        }
+        if let Some(e) = &self.guard_error {
+            return ("⚠ guard".into(), pal::RED, format!("Guard failed: {e}"));
+        }
+        if self.guard.is_none() {
+            return if self.connected.is_some() {
+                (
+                    "guard starting".into(),
+                    pal::AMBER,
+                    "Guard is enabled and waiting for the remap to engage.".into(),
+                )
+            } else {
+                (
+                    "guard armed".into(),
+                    pal::TEXT_DIM,
+                    "Guard is enabled and will engage when the Voyager connects.".into(),
+                )
+            };
+        }
+        if !self.guard_hidutil_ok {
+            return (
+                "⚠ guard".into(),
+                pal::RED,
+                "hidutil no longer reports the remap as applied.".into(),
+            );
+        }
+
+        match self.guard_test_result {
+            Some(GuardTestOutcome::Blocked) => (
+                "🔒 guard verified".into(),
+                pal::GREEN,
+                "Functional test confirmed that no key press reached macOS during the test window.".into(),
+            ),
+            Some(GuardTestOutcome::Leaked) => (
+                "⚠ guard leaks".into(),
+                pal::RED,
+                "A functional test detected a key press getting through the built-in keyboard guard.".into(),
+            ),
+            Some(GuardTestOutcome::PermissionNeeded) => (
+                "guard unverified".into(),
+                pal::AMBER,
+                "The remap is applied, but Input Monitoring permission is needed for a functional test.".into(),
+            ),
+            None => (
+                "guard unverified".into(),
+                pal::AMBER,
+                "hidutil reports the remap as applied, but that does not prove the built-in keyboard is blocked. Run Test the guard in Settings.".into(),
+            ),
+        }
+    }
+
     pub(super) fn ui_guard(&mut self, ui: &mut egui::Ui) {
         #[cfg(target_os = "macos")]
         {
+            let mut enabled = self.guard_enabled;
             if toggle_row(
                 ui,
                 "Disable built-in keyboard while connected",
-                &mut self.guard_enabled,
+                &mut enabled,
             ) {
-                let enabled = self.guard_enabled;
-                self.persist_config("saving keyboard guard preference", move |cfg| {
-                    cfg.guard_enabled = enabled;
-                });
+                self.set_guard_enabled(enabled);
             }
+            let (label, color, hover) = self.guard_indicator();
+            ui.colored_label(color, label).on_hover_text(hover);
             if let Some(g) = &self.guard {
-                if self.guard_hidutil_ok {
-                    ui.colored_label(pal::GREEN, format!("🔒 remap applied: {}", g.describe()));
-                } else {
-                    ui.colored_label(pal::RED, format!("⚠ hidutil no longer reports the remap as applied on {} - reapply failed. Toggle the guard off and on.", g.describe()));
-                }
+                ui.weak(format!("target: {}", g.describe()));
             }
             if let Some(e) = &self.guard_error {
                 ui.colored_label(pal::RED, e);
