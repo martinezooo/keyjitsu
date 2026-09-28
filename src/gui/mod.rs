@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use profiles::{
     create_profile, list_profiles, load_profile, next_profile_copy_name, profile_file_name,
-    profile_path, snapshot_profile,
+    profile_path, save_profile,
 };
 use rgb_anim::{Anim, FxEvent};
 use state::DeviceStateKind;
@@ -415,8 +415,11 @@ struct App {
     binding_draft: Vec<[u8; 2]>,
     /// Hidden built-in cheatsheet entries ("category|keys|desc").
     hidden_shortcuts: Vec<String>,
-    /// Active profile name (None = default).
+    /// Active firmware profile name. None means the connected device state is
+    /// the desired baseline; selecting a profile creates a target that must be flashed.
     active_profile: Option<String>,
+    /// Full desired firmware target loaded from the active profile.
+    profile_state: Option<FirmwareState>,
     /// Inline "new profile" name field open in the sidebar.
     prof_new_open: bool,
 
@@ -660,6 +663,16 @@ impl App {
                 Some(format!("loading config: {e:#}")),
             ),
         };
+        let (profile_state, profile_load_error) = match cfg.active_profile.as_deref() {
+            Some(name) => match load_profile(name) {
+                Ok(state) => (Some(state), None),
+                Err(e) => (
+                    None,
+                    Some(format!("could not load firmware profile {name}: {e:#}")),
+                ),
+            },
+            None => (None, None),
+        };
         let key_count = geometry::voyager().len();
         // RGB animation engine: a background thread drives the LEDs when an
         // effect is active (Off by default, so it just idles).
@@ -735,13 +748,14 @@ impl App {
             binding_draft: Vec::new(),
             hidden_shortcuts: cfg.hidden_shortcuts.clone(),
             active_profile: cfg.active_profile.clone(),
+            profile_state,
             prof_new_open: false,
             keys_cat: None,
             keys_search: String::new(),
             custom_shortcuts: cfg.custom_shortcuts.clone(),
             keys_adding: false,
             profile_draft: String::new(),
-            profile_error: None,
+            profile_error: profile_load_error,
             persist_error: config_load_error,
             file_action_error: None,
             #[cfg(target_os = "macos")]
@@ -1081,14 +1095,27 @@ impl App {
             .count()
     }
 
+    fn pending_key_change_count(&self) -> usize {
+        let (actual_edits, actual_dances) = self.actual_firmware_maps();
+        let (desired_edits, desired_dances) = self.desired_firmware_maps();
+        firmware_map_diff_count(
+            &actual_edits,
+            &actual_dances,
+            &desired_edits,
+            &desired_dances,
+        )
+    }
+
     fn pending_firmware_count(&self) -> usize {
-        self.key_edits.len()
-            + self.key_dances.len()
+        self.pending_key_change_count()
             + self.pending_glow_count()
             + usize::from(self.custom_layers_pending())
     }
 
     fn save_glow(&mut self) -> bool {
+        if self.active_profile.is_some() {
+            return self.save_active_profile_target();
+        }
         let Some(hash) = self.layout_hash.clone() else {
             return false;
         };
@@ -2094,6 +2121,27 @@ fn merge_firmware_maps(
     (edits, dances)
 }
 
+fn firmware_map_diff_count(
+    actual_edits: &FirmwareEdits,
+    actual_dances: &FirmwareDances,
+    desired_edits: &FirmwareEdits,
+    desired_dances: &FirmwareDances,
+) -> usize {
+    let keys: std::collections::HashSet<(u8, usize)> = actual_edits
+        .keys()
+        .chain(actual_dances.keys())
+        .chain(desired_edits.keys())
+        .chain(desired_dances.keys())
+        .copied()
+        .collect();
+    keys.into_iter()
+        .filter(|pos| {
+            actual_edits.get(pos) != desired_edits.get(pos)
+                || actual_dances.get(pos) != desired_dances.get(pos)
+        })
+        .count()
+}
+
 fn status_dot(ui: &mut egui::Ui, ok: bool) {
     let (c, s) = if ok {
         (pal::GREEN, "●")
@@ -2219,9 +2267,9 @@ mod state_composition_tests {
     use std::collections::HashMap;
 
     use super::{
-        merge_firmware_maps, reconcile_confirmed_layout_config, replace_layout_scoped_state,
-        staged_dance_is_pending, staged_edit_is_pending, synth_key, FxTrigger, LayoutScopedState,
-        PressEffect,
+        firmware_map_diff_count, merge_firmware_maps, reconcile_confirmed_layout_config,
+        replace_layout_scoped_state, staged_dance_is_pending, staged_edit_is_pending, synth_key,
+        FxTrigger, LayoutScopedState, PressEffect,
     };
     use crate::config::{self, GlowOverride, StagedDance, StagedEdit};
     use crate::firmware_state::{FirmwareDance, FirmwareEdit, FirmwareState};
@@ -2359,6 +2407,45 @@ mod state_composition_tests {
             .staged_edits
             .iter()
             .any(|entry| entry.layout == "other" && entry.code == "KC_KEEP"));
+    }
+
+    #[test]
+    fn full_firmware_target_diff_detects_removal_and_action_type_changes() {
+        let actual_edits = HashMap::from([((1, 6), "LALT(KC_TAB)".to_string())]);
+        let empty_dances = HashMap::new();
+        assert_eq!(
+            firmware_map_diff_count(
+                &actual_edits,
+                &empty_dances,
+                &HashMap::new(),
+                &HashMap::new(),
+            ),
+            1,
+            "a profile that omits a device override must remove it"
+        );
+        assert_eq!(
+            firmware_map_diff_count(&actual_edits, &empty_dances, &actual_edits, &empty_dances,),
+            0
+        );
+        let desired_dances = HashMap::from([(
+            (1, 6),
+            [
+                Some("KC_TAB".into()),
+                Some("KC_LEFT_ALT".into()),
+                None,
+                None,
+            ],
+        )]);
+        assert_eq!(
+            firmware_map_diff_count(
+                &actual_edits,
+                &empty_dances,
+                &HashMap::new(),
+                &desired_dances,
+            ),
+            1,
+            "edit-vs-dance at one physical key is one pending firmware change"
+        );
     }
 
     #[test]

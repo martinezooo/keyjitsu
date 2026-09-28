@@ -79,22 +79,14 @@ impl App {
         }
     }
 
-    /// Best available runtime projection for a physical key.
-    ///
-    /// VerifiedFirmware and RecoveredLocalBuild apply the exact known
-    /// Keyjitsu-authored overlay. A plain unmarked keyboard uses only its Oryx
-    /// baseline. MissingFirmwareState returns "?" rather than silently guessing.
-    pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
-        if matches!(
-            self.device_state_kind(),
-            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-        ) {
-            return Some(unknown_device_key());
-        }
-
+    fn key_from_firmware_state(
+        &self,
+        state: &FirmwareState,
+        layer: u8,
+        key: usize,
+    ) -> Option<OryxKey> {
         let oryx = self.oryx_layer_count();
         if layer >= oryx {
-            let state = self.firmware_state.as_ref()?;
             let custom = state.custom_layers.get((layer - oryx) as usize)?;
             return Some(
                 custom
@@ -105,24 +97,58 @@ impl App {
                     .unwrap_or_default(),
             );
         }
-
-        if let Some(state) = &self.firmware_state {
-            if let Some(dance) = state
-                .dances
-                .iter()
-                .find(|dance| dance.layer == layer && dance.key as usize == key)
-            {
-                return Some(synth_slots(&dance.slots));
-            }
-            if let Some(edit) = state
-                .edits
-                .iter()
-                .find(|edit| edit.layer == layer && edit.key as usize == key)
-            {
-                return Some(synth_key(&edit.code));
-            }
+        if let Some(dance) = state
+            .dances
+            .iter()
+            .find(|dance| dance.layer == layer && dance.key as usize == key)
+        {
+            return Some(synth_slots(&dance.slots));
+        }
+        if let Some(edit) = state
+            .edits
+            .iter()
+            .find(|edit| edit.layer == layer && edit.key as usize == key)
+        {
+            return Some(synth_key(&edit.code));
         }
         self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+    }
+
+    /// Best available runtime projection for a physical key on the device.
+    pub(super) fn device_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
+            return Some(unknown_device_key());
+        }
+        match self.firmware_state.as_ref() {
+            Some(state) => self.key_from_firmware_state(state, layer, key),
+            None => self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned(),
+        }
+    }
+
+    pub(super) fn profile_matches_layout(&self, state: &FirmwareState) -> bool {
+        self.layout.as_ref().is_some_and(|layout| {
+            state.layout_hash == layout.hash_id && state.revision == layout.revision.hash_id
+        })
+    }
+
+    /// Base of the editable firmware draft. An active profile is a complete
+    /// target state, so omissions in that profile intentionally mean "use the
+    /// Oryx baseline" rather than "keep whatever override is on the device".
+    fn desired_base_key(&self, layer: u8, key: usize) -> Option<OryxKey> {
+        if let Some(profile) = self
+            .profile_state
+            .as_ref()
+            .filter(|state| self.profile_matches_layout(state))
+        {
+            if layer >= self.oryx_layer_count() {
+                return self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned();
+            }
+            return self.key_from_firmware_state(profile, layer, key);
+        }
+        self.device_key(layer, key)
     }
 
     pub(super) fn device_layer(&self, layer: u8) -> Option<Layer> {
@@ -191,7 +217,7 @@ impl App {
             out.custom_label = Some(self.slot_chip_label(code).replace('\n', " then "));
             return Some(out);
         }
-        self.device_key(layer, key)
+        self.desired_base_key(layer, key)
     }
 
     pub(super) fn editing_layer(&self, layer: u8) -> Option<Layer> {
@@ -220,7 +246,7 @@ impl App {
         ) {
             return false;
         }
-        self.device_key(layer, key)
+        self.desired_base_key(layer, key)
             .map(|key| key.assignment_roundtrip_safe())
             .unwrap_or(true)
     }
@@ -282,11 +308,93 @@ impl App {
     }
 
     pub(super) fn desired_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
+        let base = self
+            .profile_state
+            .as_ref()
+            .filter(|state| self.profile_matches_layout(state))
+            .or(self.firmware_state.as_ref());
+        merge_firmware_maps(base, &self.key_edits, &self.key_dances)
+    }
+
+    pub(super) fn actual_firmware_maps(&self) -> (FirmwareEdits, FirmwareDances) {
         merge_firmware_maps(
             self.firmware_state.as_ref(),
-            &self.key_edits,
-            &self.key_dances,
+            &FirmwareEdits::new(),
+            &FirmwareDances::new(),
         )
+    }
+
+    pub(super) fn desired_firmware_state(&self) -> Option<FirmwareState> {
+        let layout = self.layout.as_ref()?;
+        if self.active_profile.is_some()
+            && !self
+                .profile_state
+                .as_ref()
+                .is_some_and(|state| self.profile_matches_layout(state))
+        {
+            return None;
+        }
+        let (edits, dances) = self.desired_firmware_maps();
+        Some(FirmwareState::new(
+            layout.hash_id.clone(),
+            layout.revision.hash_id.clone(),
+            edits
+                .into_iter()
+                .map(|((layer, key), code)| FirmwareEdit {
+                    layer,
+                    key: key as u16,
+                    code,
+                })
+                .collect(),
+            dances
+                .into_iter()
+                .map(|((layer, key), slots)| FirmwareDance {
+                    layer,
+                    key: key as u16,
+                    slots,
+                })
+                .collect(),
+            self.custom_layers.clone(),
+            self.glow_work
+                .iter()
+                .map(|(&(layer, key), &rgb)| FirmwareGlow {
+                    layer,
+                    key: key as u16,
+                    rgb,
+                })
+                .collect(),
+        ))
+    }
+
+    pub(super) fn apply_firmware_profile_target(&mut self) {
+        self.key_edits.clear();
+        self.key_dances.clear();
+        if let Some(profile) = self
+            .profile_state
+            .as_ref()
+            .filter(|state| self.profile_matches_layout(state))
+        {
+            self.custom_layers = profile.custom_layers.clone();
+            self.glow_work = profile
+                .glow
+                .iter()
+                .map(|g| ((g.layer, g.key as usize), g.rgb))
+                .collect();
+        } else {
+            self.custom_layers = self
+                .firmware_state
+                .as_ref()
+                .map(|state| state.custom_layers.clone())
+                .unwrap_or_default();
+            self.glow_work = self.device_glow_map();
+        }
+        self.glow_saved = self.glow_work.clone();
+        self.rebuild_synth_layers();
+        self.edit_synced = None;
+        self.push_anim_base();
+        if self.sync_glow {
+            self.needs_push = true;
+        }
     }
 
     pub(super) fn layer_count(&self) -> u8 {
@@ -310,6 +418,15 @@ impl App {
     }
 
     pub(super) fn hydrate_custom_layers(&mut self, hash: &str) {
+        if let Some(profile) = self
+            .profile_state
+            .as_ref()
+            .filter(|state| state.layout_hash == hash && self.profile_matches_layout(state))
+        {
+            self.custom_layers = profile.custom_layers.clone();
+            self.rebuild_synth_layers();
+            return;
+        }
         let cfg = config::load();
         if let Some(set) = cfg.custom_layer_sets.iter().find(|s| s.layout == hash) {
             self.custom_layers = set.layers.clone();
@@ -333,6 +450,11 @@ impl App {
     }
 
     pub(super) fn save_custom_layers(&mut self) {
+        if self.active_profile.is_some() {
+            self.rebuild_synth_layers();
+            let _ = self.save_active_profile_target();
+            return;
+        }
         let Some(hash) = self.layout_hash.clone() else {
             return;
         };
@@ -609,6 +731,24 @@ impl App {
     /// `glow_saved` is the last locally saved draft; device truth stays in
     /// `firmware_state.glow` and is compared separately for build status.
     pub(super) fn hydrate_glow(&mut self, hash: &str) {
+        if let Some(profile) = self
+            .profile_state
+            .as_ref()
+            .filter(|state| state.layout_hash == hash && self.profile_matches_layout(state))
+        {
+            let work = profile
+                .glow
+                .iter()
+                .map(|g| ((g.layer, g.key as usize), g.rgb))
+                .collect::<HashMap<_, _>>();
+            self.layout_hash = Some(hash.to_string());
+            self.glow_saved = work.clone();
+            self.glow_work = work;
+            if !self.glow_work.is_empty() && self.sync_glow {
+                self.needs_push = true;
+            }
+            return;
+        }
         let cfg = config::load();
         let device: HashMap<(u8, usize), [u8; 3]> = self
             .firmware_state
@@ -810,6 +950,9 @@ impl App {
         self.persist_config("saving pending key changes", move |cfg| {
             replace_staged_config(cfg, &hash, edits, dances);
         });
+        if self.active_profile.is_some() {
+            let _ = self.save_active_profile_target();
+        }
     }
 
     /// Persist the current key_fx map for this layout.

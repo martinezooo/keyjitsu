@@ -105,6 +105,21 @@ impl App {
         let Ok(id) = LayoutId::from_serial(serial) else {
             return;
         };
+        if self.active_profile.is_some()
+            && !self
+                .profile_state
+                .as_ref()
+                .is_some_and(|state| self.profile_matches_layout(state))
+        {
+            self.build_open = true;
+            self.build_busy = false;
+            self.build_phase = "Profile mismatch".into();
+            self.build_result = Some(Err(
+                "The selected firmware profile targets a different Oryx layout/revision. Switch to device or choose a matching profile before building.".into(),
+            ));
+            return;
+        }
+
         if matches!(
             self.device_state_kind(),
             DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
@@ -352,7 +367,12 @@ impl App {
                         if glow_unsaved == 1 { "" } else { "s" }
                     ),
                 );
-                if ui.button("save to profile").clicked() {
+                let save_label = if self.active_profile.is_some() {
+                    "save profile"
+                } else {
+                    "save draft"
+                };
+                if ui.button(save_label).clicked() {
                     let _ = self.save_glow();
                 }
                 if ui.button("discard glow draft").clicked() {

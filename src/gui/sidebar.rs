@@ -3,49 +3,115 @@
 use super::*;
 
 impl App {
-    pub(super) fn switch_profile(&mut self, target: Option<String>) {
-        let current = self
-            .active_profile
-            .clone()
-            .unwrap_or_else(|| "default".into());
-        if let Err(e) = snapshot_profile(&current) {
-            self.profile_error = Some(format!("could not save {current}: {e:#}"));
-            return;
-        }
-
-        let target_name = target.clone().unwrap_or_else(|| "default".into());
-        let profile = match load_profile(&target_name) {
-            Ok(profile) => profile,
-            Err(e) => {
-                self.profile_error = Some(format!("could not load {target_name}: {e:#}"));
-                return;
-            }
+    pub(super) fn save_active_profile_target(&mut self) -> bool {
+        let Some(name) = self.active_profile.clone() else {
+            return true;
         };
-
-        let profile_for_config = profile.clone();
-        let active_profile = target.clone();
-        if let Err(e) = config::update(move |cfg| {
-            profile_for_config.apply_to(cfg);
-            cfg.active_profile = active_profile;
-        }) {
-            self.profile_error = Some(format!("could not activate {target_name}: {e:#}"));
-            return;
+        let Some(state) = self.desired_firmware_state() else {
+            self.profile_error =
+                Some("cannot save firmware profile without a matching loaded layout".into());
+            return false;
+        };
+        match save_profile(&name, &state) {
+            Ok(()) => {
+                self.profile_state = Some(state);
+                self.profile_error = None;
+                self.glow_saved = self.glow_work.clone();
+                true
+            }
+            Err(e) => {
+                self.profile_error = Some(format!("could not save firmware profile {name}: {e:#}"));
+                false
+            }
         }
-
-        self.active_profile = target;
-        self.profile_error = None;
-        self.apply_profile(&profile);
     }
 
-    /// Sidebar profile switcher: default + saved profiles, with new/clone/
-    /// delete actions. Switching snapshots the active profile first.
+    fn activate_profile_target(
+        &mut self,
+        target: Option<String>,
+        state: Option<FirmwareState>,
+    ) -> bool {
+        if let Some(candidate) = state.as_ref() {
+            if self.layout.is_some() && !self.profile_matches_layout(candidate) {
+                self.profile_error = Some(format!(
+                    "profile targets {}/{}, but the loaded keyboard layout is different",
+                    candidate.layout_hash, candidate.revision
+                ));
+                return false;
+            }
+        }
+        let active = target.clone();
+        let clear_device_draft = target.is_none().then(|| self.layout_hash.clone()).flatten();
+        if let Err(e) = config::update(move |cfg| {
+            cfg.active_profile = active;
+            if let Some(hash) = clear_device_draft.as_deref() {
+                cfg.staged_edits.retain(|entry| entry.layout != hash);
+                cfg.staged_dances.retain(|entry| entry.layout != hash);
+                cfg.glow_overrides.retain(|entry| entry.layout != hash);
+                cfg.glow_draft_layouts.retain(|layout| layout != hash);
+                cfg.custom_layers.retain(|layer| layer.layout != hash);
+                cfg.custom_layer_sets.retain(|set| set.layout != hash);
+            }
+        }) {
+            self.profile_error = Some(format!("could not activate firmware profile: {e:#}"));
+            return false;
+        }
+        self.active_profile = target;
+        self.profile_state = state;
+        self.key_edits.clear();
+        self.key_dances.clear();
+        // Load the complete new target before persisting empty scratch state;
+        // otherwise profile autosave could copy glow/custom layers from the
+        // previously selected target into the new profile.
+        self.apply_firmware_profile_target();
+        self.save_staged();
+        self.profile_error = None;
+        true
+    }
+
+    pub(super) fn switch_profile(&mut self, target: Option<String>) {
+        if target == self.active_profile {
+            return;
+        }
+        if self.active_profile.is_none() && target.is_some() && self.pending_firmware_count() > 0 {
+            self.profile_error = Some(
+                "current device draft has pending firmware changes; save it as a firmware profile, flash it, or discard it before switching profiles".into(),
+            );
+            return;
+        }
+        if self.active_profile.is_some() && !self.save_active_profile_target() {
+            return;
+        }
+        let state = match target.as_deref() {
+            Some(name) => match load_profile(name) {
+                Ok(state) => Some(state),
+                Err(e) => {
+                    self.profile_error =
+                        Some(format!("could not load firmware profile {name}: {e:#}"));
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.activate_profile_target(target, state);
+    }
+
+    /// Firmware target selector. "device" means the currently confirmed
+    /// firmware state; a named profile is a draft target and must be flashed to
+    /// become device truth.
     pub(super) fn profile_bar(&mut self, ui: &mut egui::Ui) {
         let active = self.active_profile.clone();
-        let active_label = active.clone().unwrap_or_else(|| "default".into());
+        let active_label = active.clone().unwrap_or_else(|| {
+            if self.pending_firmware_count() > 0 {
+                "device + draft".into()
+            } else {
+                "device".into()
+            }
+        });
         let saved_profiles = match list_profiles() {
             Ok(saved) => saved,
             Err(e) => {
-                self.profile_error = Some(format!("could not list profiles: {e:#}"));
+                self.profile_error = Some(format!("could not list firmware profiles: {e:#}"));
                 Vec::new()
             }
         };
@@ -53,19 +119,24 @@ impl App {
             let mut switch: Option<Option<String>> = None;
             egui::ComboBox::from_id_salt("profile_sel")
                 .width(112.0)
-                .selected_text(RichText::new(format!("💾 {active_label}")).size(11.5))
+                .selected_text(RichText::new(format!("⚙ {active_label}")).size(11.5))
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(active.is_none(), "default").clicked()
+                    if ui
+                        .selectable_label(active.is_none(), "device (current)")
+                        .on_hover_text("Use the firmware state currently confirmed on the keyboard as the target.")
+                        .clicked()
                         && active.is_some()
                     {
                         switch = Some(None);
                     }
                     for name in &saved_profiles {
-                        if name == "default" {
-                            continue;
-                        }
                         let is = active.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(is, name).clicked() && !is {
+                        if ui
+                            .selectable_label(is, name)
+                            .on_hover_text("Firmware target; Build & flash is required to apply it to the keyboard.")
+                            .clicked()
+                            && !is
+                        {
                             switch = Some(Some(name.clone()));
                         }
                     }
@@ -74,25 +145,31 @@ impl App {
                 self.switch_profile(t);
             }
             ui.menu_button(RichText::new("＋").size(12.0), |ui| {
-                if ui.button("New profile from current…").clicked() {
+                if ui.button("New firmware profile from current target…").clicked() {
                     self.prof_new_open = true;
                     self.profile_draft.clear();
                     ui.close();
                 }
                 if ui.button(format!("Clone '{active_label}'")).clicked() {
-                    let current = self
-                        .active_profile
-                        .clone()
-                        .unwrap_or_else(|| "default".into());
-                    let result = next_profile_copy_name(&active_label).and_then(|clone| {
-                        snapshot_profile(&current).and_then(|_| create_profile(&clone))
-                    });
-                    self.profile_error = result
-                        .err()
-                        .map(|e| format!("could not clone profile: {e:#}"));
+                    let result = self
+                        .desired_firmware_state()
+                        .ok_or_else(|| anyhow!("no matching firmware target to clone"))
+                        .and_then(|state| {
+                            next_profile_copy_name(&active_label)
+                                .and_then(|clone| create_profile(&clone, &state).map(|_| (clone, state)))
+                        });
+                    match result {
+                        Ok((clone, state)) => {
+                            self.activate_profile_target(Some(clone), Some(state));
+                        }
+                        Err(e) => {
+                            self.profile_error = Some(format!("could not clone firmware profile: {e:#}"));
+                        }
+                    }
                     ui.close();
                 }
-                if active.is_some() && ui.button(format!("🗑 Delete '{active_label}'")).clicked()
+                if active.is_some()
+                    && ui.button(format!("🗑 Delete '{active_label}'")).clicked()
                 {
                     let deleted = active_label.clone();
                     self.switch_profile(None);
@@ -116,6 +193,13 @@ impl App {
                 }
             });
         });
+        if self.active_profile.is_some() {
+            ui.label(
+                RichText::new("profile = firmware target · flash to apply")
+                    .size(9.5)
+                    .color(pal::TEXT_DIM),
+            );
+        }
         if let Some(e) = &self.profile_error {
             ui.colored_label(pal::RED, RichText::new(e).size(10.5));
         }
@@ -127,38 +211,30 @@ impl App {
                         .desired_width(96.0),
                 );
                 let draft = self.profile_draft.trim();
-                let ok = !draft.eq_ignore_ascii_case("default")
-                    && profile_file_name(draft).is_ok()
+                let ok = profile_file_name(draft).is_ok()
                     && !saved_profiles
                         .iter()
                         .any(|name| name.eq_ignore_ascii_case(draft));
                 if ui
                     .add_enabled(ok, egui::Button::new("✓"))
-                    .on_disabled_hover_text(
-                        "Use 1-64 letters, numbers, spaces, '-' or '_'; 'default' is reserved.",
-                    )
+                    .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'.")
                     .clicked()
                 {
                     let name = self.profile_draft.trim().to_string();
-                    let current = self
-                        .active_profile
-                        .clone()
-                        .unwrap_or_else(|| "default".into());
-                    let result = snapshot_profile(&current)
-                        .and_then(|_| create_profile(&name))
-                        .and_then(|_| {
-                            let active = name.clone();
-                            config::update(move |cfg| cfg.active_profile = Some(active))
-                        });
+                    let result = self
+                        .desired_firmware_state()
+                        .ok_or_else(|| anyhow!("no matching firmware target to save"))
+                        .and_then(|state| create_profile(&name, &state).map(|_| state));
                     match result {
-                        Ok(()) => {
-                            self.active_profile = Some(name);
-                            self.profile_error = None;
-                            self.prof_new_open = false;
-                            self.profile_draft.clear();
+                        Ok(state) => {
+                            if self.activate_profile_target(Some(name), Some(state)) {
+                                self.prof_new_open = false;
+                                self.profile_draft.clear();
+                            }
                         }
                         Err(e) => {
-                            self.profile_error = Some(format!("could not create profile: {e:#}"))
+                            self.profile_error =
+                                Some(format!("could not create firmware profile: {e:#}"));
                         }
                     }
                 }
