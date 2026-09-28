@@ -1797,6 +1797,7 @@ dependencies = [
  "core-foundation-sys",
  "mach2",
 ]
+
 [[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
@@ -4496,6 +4497,7 @@ dependencies = [
  "rustix 1.1.4",
  "x11rb-protocol",
 ]
+
 [[package]]
 name = "x11rb-protocol"
 version = "0.13.2"
