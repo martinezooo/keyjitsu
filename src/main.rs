@@ -34,6 +34,7 @@ mod protocol;
 mod shortcuts;
 mod ui;
 
+use crate::firmware_state::FirmwareState;
 use std::io::Write as _;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -537,7 +538,29 @@ fn cmd_status(serial: Option<&str>) -> Result<()> {
         }
         println!();
         let layer = kb.pair()?;
-        println!("Firmware : {}", kb.fw_version()?);
+        let fw = kb.fw_version()?;
+        println!("Firmware : {fw}");
+        if let Some(marker) = firmware_state::state_id_from_serial(&fw) {
+            let state = FirmwareState::load(marker);
+            println!(
+                "State    : {}",
+                if state.is_some() {
+                    "firmware marker verified"
+                } else {
+                    "firmware marker present, local state missing"
+                }
+            );
+        } else if let Some(state) = FirmwareState::load_legacy_for_serial(&fw) {
+            println!(
+                "State    : local build restored ({} edit{}, {} dance{})",
+                state.edits.len(),
+                if state.edits.len() == 1 { "" } else { "s" },
+                state.dances.len(),
+                if state.dances.len() == 1 { "" } else { "s" }
+            );
+        } else {
+            println!("State    : Oryx baseline only");
+        }
         match layer {
             Some(n) => println!("Layer    : {n}"),
             None => println!("Layer    : (not reported)"),

@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, CustomLayer};
-use crate::oryx_api::cache_dir;
+use crate::oryx_api::{cache_dir, LayoutId};
 
 pub const STATE_ID_HEX_LEN: usize = 10;
 pub const SERIAL_MARKER: &str = "~kj";
@@ -141,6 +141,50 @@ impl FirmwareState {
             }
         }
     }
+
+    pub fn load_legacy_for_serial(serial: &str) -> Option<Self> {
+        match Self::load_legacy_checked(serial) {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("keyjitsu: {e:#}");
+                None
+            }
+        }
+    }
+
+    fn load_legacy_checked(serial: &str) -> Result<Option<Self>> {
+        if state_id_from_serial(serial).is_some() {
+            return Ok(None);
+        }
+        let id = LayoutId::from_serial(serial)?;
+        let path = legacy_state_path(serial)?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let state: FirmwareState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("reading legacy firmware state {}", path.display()))?;
+        if state.layout_hash != id.hash || state.revision != id.revision {
+            bail!(
+                "legacy firmware state {} does not match connected layout {}/{}",
+                path.display(),
+                id.hash,
+                id.revision
+            );
+        }
+        Ok(Some(state))
+    }
+}
+
+fn legacy_state_path(serial: &str) -> Result<std::path::PathBuf> {
+    let id = LayoutId::from_serial(serial)?;
+    if state_id_from_serial(serial).is_some() {
+        bail!("marked firmware does not use legacy state");
+    }
+    let dir = cache_dir()?.join("legacy-firmware-states");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    Ok(dir.join(format!("{}-{}.json", id.hash, id.revision)))
 }
 
 #[cfg(test)]

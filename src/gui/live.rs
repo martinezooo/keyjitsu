@@ -15,17 +15,26 @@ impl App {
                 format!("{model} · state unknown"),
                 "The keyboard reports a Keyjitsu firmware marker, but the matching local firmware-state is unavailable.".to_string(),
             ),
-            (Some((model, serial)), DeviceStateKind::OryxBaseline) => {
+            (Some((model, _)), DeviceStateKind::OryxBaseline) => {
                 let text = match &self.layout {
-                    Some(layout) => format!("{model} · {} · Oryx", layout.title),
-                    None => format!("{model} · Oryx"),
+                    Some(layout) => format!("{model} · {} · Oryx baseline", layout.title),
+                    None => format!("{model} · Oryx baseline"),
+                };
+                (
+                    pal::AMBER,
+                    text,
+                    "The device serial identifies this Oryx revision, but no Keyjitsu state marker proves that local/custom firmware changes are represented.".to_string(),
+                )
+            }
+            (Some((model, _)), DeviceStateKind::RecoveredLocalBuild) => {
+                let text = match &self.layout {
+                    Some(layout) => format!("{model} · {} · local build", layout.title),
+                    None => format!("{model} · local build"),
                 };
                 (
                     pal::GREEN,
                     text,
-                    format!(
-                        "The keyboard reports exact Oryx revision {serial}. Live resolves transparent keys through lower layers. Keyjitsu-only firmware changes are verified separately when a ~kj marker is present."
-                    ),
+                    "Recovered from the confirmed local Keyjitsu build for this exact pre-marker Oryx revision. A future Keyjitsu flash will embed a state marker so the keyboard can identify this state directly.".to_string(),
                 )
             }
             (Some((model, serial)), DeviceStateKind::VerifiedFirmware) => {
