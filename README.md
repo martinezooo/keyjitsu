@@ -149,6 +149,45 @@ of treating the last saved app config as device truth. It never writes back to
 the portal. So remapping here does not carry over to Oryx, and re-flashing from
 Oryx later would overwrite your Keyjitsu changes.
 
+## Device state, Oryx, and mixing workflows
+
+There is an important limitation in ZSA's current Oryx raw-HID protocol:
+**stock Oryx firmware does not expose the complete keymap back to the desktop
+app**. The keyboard can report runtime information and its firmware identity
+(`layout-hash/revision-hash`), but there is no supported HID command that
+returns every key assignment, layer definition, combo, and persistent RGB
+setting from the compiled firmware.
+
+For stock Oryx firmware, keyjitsu can use the `hash/revision` reported by the
+physical keyboard to load the matching Oryx layout. That is a reconstruction
+from Oryx data selected by the device's own revision id; it is **not** a full
+keymap extracted from the firmware image itself.
+
+Keyjitsu-built firmware adds its own compact state id to the firmware serial.
+That lets keyjitsu reconstruct the exact Keyjitsu-authored additions from its
+matching local firmware-state record. It still does not make stock Oryx
+firmware suddenly readable as a complete keymap.
+
+### Practical rule: pick one source of authoring truth
+
+For the least surprising workflow, use **either Oryx or keyjitsu as the main
+place where you author a keyboard configuration**.
+
+- If you edit and flash in Oryx, treat that Oryx revision as the source of
+  truth. Keyjitsu can recognize the revision reported by the keyboard and load
+  the corresponding Oryx layout.
+- If you edit and flash in keyjitsu, treat the Keyjitsu firmware state as the
+  source of truth. Those local-only edits are not written back to Oryx.
+- Re-flashing from Oryx overwrites Keyjitsu-only firmware changes.
+- Re-flashing from keyjitsu does not update your Oryx layout.
+- Switching between the two workflows is possible, but save the configuration
+  you want to keep before flashing and expect the two representations to
+  diverge unless you deliberately synchronize them.
+
+Live/device status should always be driven by the **currently connected
+keyboard's identity**. A saved layout or restore point must never silently
+replace what Live claims is on the physical keyboard.
+
 ## How it works
 
 - **Protocol.** ZSA's open Oryx raw-HID protocol v4 (32-byte reports, usage
