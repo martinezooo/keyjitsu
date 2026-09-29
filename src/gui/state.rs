@@ -1067,7 +1067,9 @@ impl App {
             }
         }
         // Keep the HUD up so the just-finalized chip (⇩ / ×2) stays visible.
-        if self.peek.show_combo && self.peek.enabled {
+        if self.minimap_settings(self.active_layer).show_combo
+            && self.minimap_settings(self.active_layer).enabled
+        {
             self.peek_layer = self.active_layer;
             self.peek_until = Some(now + Duration::from_millis(1600));
         }

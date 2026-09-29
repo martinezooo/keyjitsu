@@ -305,7 +305,7 @@ impl App {
                 }
                 if ui
                     .button("⚖ Compare modes")
-                    .on_hover_text("cycles idle → layout RGB → rainbow → rainbow+peek (~12s each) and measures CPU in each")
+                    .on_hover_text("cycles idle → layout RGB → rainbow → rainbow+minimap (~12s each) and measures CPU in each")
                     .clicked()
                 {
                     self.start_perf_compare();

@@ -102,6 +102,35 @@ impl Default for PeekConfig {
     }
 }
 
+/// One compact user-authored hint shown beside a layer minimap.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MinimapInstruction {
+    pub keys: String,
+    pub desc: String,
+}
+
+/// Per-layer minimap presentation. Missing layers fall back to the legacy
+/// global minimap settings, so older configs keep their exact behaviour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MinimapLayerConfig {
+    pub layer: u8,
+    pub settings: PeekConfig,
+    pub show_instructions: bool,
+    pub instructions: Vec<MinimapInstruction>,
+}
+
+impl Default for MinimapLayerConfig {
+    fn default() -> Self {
+        Self {
+            layer: 0,
+            settings: PeekConfig::default(),
+            show_instructions: false,
+            instructions: Vec::new(),
+        }
+    }
+}
+
 /// The board-level RGB state (constant effect + global press reaction) so it
 /// survives restarts and rides along in saved profiles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -244,8 +273,11 @@ pub struct Config {
     pub rgb: RgbState,
     /// Path to a local `qmk_firmware` checkout for offline builds.
     pub qmk_firmware_dir: Option<String>,
-    /// Layer-peek HUD settings.
+    /// Legacy/global minimap settings used as the fallback for layers that do
+    /// not yet have an explicit per-layer configuration.
     pub peek: PeekConfig,
+    /// Independent minimap presentation and hints for individual layers.
+    pub minimap_layers: Vec<MinimapLayerConfig>,
     /// Show a live CPU pill in the app header.
     pub show_cpu_header: bool,
     /// Skip the once-per-launch check for a newer release (on by default so a
@@ -459,6 +491,7 @@ mod tests {
         assert_eq!(old.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
         assert!(old.custom_layer_sets.is_empty());
+        assert!(old.minimap_layers.is_empty());
     }
 
     #[test]

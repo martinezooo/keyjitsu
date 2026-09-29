@@ -1,19 +1,56 @@
-//! Peek HUD settings and preview rendering.
+//! Minimap HUD settings and preview rendering.
 
 use super::*;
 
 impl App {
+    pub(super) fn minimap_layer_config(&self, layer: u8) -> config::MinimapLayerConfig {
+        self.minimap_layers
+            .iter()
+            .find(|c| c.layer == layer)
+            .cloned()
+            .unwrap_or_else(|| config::MinimapLayerConfig {
+                layer,
+                settings: self.peek.clone(),
+                ..config::MinimapLayerConfig::default()
+            })
+    }
+
+    pub(super) fn minimap_settings(&self, layer: u8) -> PeekConfig {
+        self.minimap_layer_config(layer).settings
+    }
+
+    fn store_minimap_layer(&mut self, layer_cfg: config::MinimapLayerConfig) {
+        if let Some(existing) = self
+            .minimap_layers
+            .iter_mut()
+            .find(|c| c.layer == layer_cfg.layer)
+        {
+            *existing = layer_cfg;
+        } else {
+            self.minimap_layers.push(layer_cfg);
+            self.minimap_layers.sort_by_key(|c| c.layer);
+        }
+        let saved = self.minimap_layers.clone();
+        self.persist_config("saving minimap layer", move |cfg| {
+            cfg.minimap_layers = saved;
+        });
+    }
+
     pub(super) fn ui_peek_page(&mut self, ui: &mut egui::Ui) {
         page_header(
             ui,
-            "Peek",
-            "A transparent, click-through minimap that flashes when a layer activates.",
+            "Minimap",
+            "A transparent, click-through map for each layer, with optional shortcut hints.",
         );
 
-        let mut c = self.peek.clone();
+        let mut layer_cfg = self.minimap_layer_config(self.peek_layer);
+        let original_layer_cfg = layer_cfg.clone();
+        let mut c = layer_cfg.settings.clone();
         // Preview stays full width. Use two columns only when there is enough
         // room for both setting groups without squeezing their controls.
-        self.peek_preview_card(ui, &mut c);
+        self.peek_preview_card(ui, &mut c, &layer_cfg);
+        ui.add_space(8.0);
+        self.minimap_instructions_card(ui, &mut layer_cfg);
         ui.add_space(8.0);
         if ui.available_width() >= 760.0 {
             ui.columns(2, |cols| {
@@ -30,16 +67,14 @@ impl App {
             self.peek_position_card(ui, &mut c);
         }
 
-        if c != self.peek {
-            self.peek = c.clone();
+        layer_cfg.settings = c.clone();
+        if layer_cfg != original_layer_cfg {
+            self.store_minimap_layer(layer_cfg);
             if c.enabled {
                 self.arm_preview(&c, 2500);
             } else {
                 self.peek_until = None;
             }
-            self.persist_config("saving peek settings", move |cfg| {
-                cfg.peek = c;
-            });
         }
     }
 
@@ -50,7 +85,7 @@ impl App {
             group_header(ui, "Shortcut", "");
             self.peek_shortcut_row(ui);
             ui.add_space(6.0);
-            toggle_row(ui, "Enable layer peek", &mut c.enabled);
+            toggle_row(ui, "Enable minimap for this layer", &mut c.enabled);
             ui.add_enabled_ui(c.enabled, |ui| {
                 toggle_row(ui, "Only outside the base layer", &mut c.only_non_base);
                 toggle_row(ui, "Show background panel", &mut c.show_background);
@@ -62,6 +97,51 @@ impl App {
                     toggle_row(ui, "Show combo timings (ms)", &mut c.show_combo_ms);
                 });
             });
+        });
+    }
+
+    pub(super) fn minimap_instructions_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        c: &mut config::MinimapLayerConfig,
+    ) {
+        card(ui, "Layer hints", |ui| {
+            toggle_row(
+                ui,
+                "Show shortcut/instruction panel beside this layer",
+                &mut c.show_instructions,
+            );
+            if !c.show_instructions {
+                return;
+            }
+            ui.add_space(4.0);
+            let mut remove = None;
+            for (i, row) in c.instructions.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut row.keys)
+                            .hint_text("e.g. H / J / K / L")
+                            .desired_width(150.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut row.desc)
+                            .hint_text("what it does")
+                            .desired_width(300.0),
+                    );
+                    if ui.small_button("✕").on_hover_text("remove hint").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                c.instructions.remove(i);
+            }
+            if ui.button("＋ add hint").clicked() {
+                c.instructions.push(config::MinimapInstruction {
+                    keys: String::new(),
+                    desc: String::new(),
+                });
+            }
         });
     }
 
@@ -187,14 +267,19 @@ impl App {
     }
 
     /// Right column: a live preview of the peek over a transparency checkerboard.
-    pub(super) fn peek_preview_card(&mut self, ui: &mut egui::Ui, c: &mut PeekConfig) {
+    pub(super) fn peek_preview_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        c: &mut PeekConfig,
+        layer_cfg: &config::MinimapLayerConfig,
+    ) {
         card(ui, "Preview", |ui| {
             let (rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), 185.0),
                 egui::Sense::hover(),
             );
             draw_checkerboard(ui.painter(), rect);
-            self.render_peek_into(ui, rect.shrink(14.0), c);
+            self.render_peek_into(ui, rect.shrink(14.0), c, layer_cfg);
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.button("📌 Keep preview visible").clicked() {
@@ -215,10 +300,14 @@ impl App {
     }
 
     /// Draw the peek's card + minimap inside `rect` (for the inline preview).
-    pub(super) fn render_peek_into(&self, ui: &mut egui::Ui, rect: egui::Rect, c: &PeekConfig) {
-        let layer = self
-            .active_layer
-            .max(if self.layer_count() > 1 { 1 } else { 0 });
+    pub(super) fn render_peek_into(
+        &self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        c: &PeekConfig,
+        layer_cfg: &config::MinimapLayerConfig,
+    ) {
+        let layer = self.peek_layer.min(self.layer_count().saturating_sub(1));
         let geo = self.geometry();
         let glow = self.glow_colors(layer);
         let device_layer = self.device_layer(layer);
@@ -242,8 +331,13 @@ impl App {
         // Fit the minimap into the rect: unit from the HEIGHT budget (the board
         // is PEEK_BOARD_UNITS_TALL units tall incl. the rotated thumbs), width follows.
         let header_h = if c.show_layer_name { 32.0 } else { 0.0 };
+        let hint_w = if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
+            240.0
+        } else {
+            0.0
+        };
         let unit_fit = ((rect.height() - 24.0 - header_h) / PEEK_BOARD_UNITS_TALL)
-            .min((rect.width() - 44.0) / PEEK_BOARD_UNITS_WIDE);
+            .min((rect.width() - 44.0 - hint_w) / PEEK_BOARD_UNITS_WIDE);
         let kb_w = (unit_fit * PEEK_BOARD_UNITS_WIDE + 24.0).max(120.0);
         let card_fill = if c.show_background {
             Color32::from_rgba_unmultiplied(17, 18, 24, a)
@@ -299,31 +393,43 @@ impl App {
                     vec![false; geo.len()]
                 };
                 let combo_keys = self.combo_member_mask(layer);
-                ui.set_max_width(kb_w);
-                draw_keyboard(
-                    ui,
-                    geo,
-                    legends,
-                    &glow,
-                    &press,
-                    None,
-                    Some(&combo_keys),
-                    c.opacity.clamp(0.08, 1.0),
-                    c.monochrome,
-                );
-                if c.show_combo {
-                    ui.add_space(6.0);
-                    let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
-                    // In the settings preview the log may be empty - show a hint.
-                    let entries = self.combo_recent();
-                    combo_strip(
-                        ui,
-                        &entries,
-                        c.opacity.clamp(0.08, 1.0),
-                        accent,
-                        c.show_combo_ms,
-                    );
-                }
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_max_width(kb_w);
+                        draw_keyboard(
+                            ui,
+                            geo,
+                            legends,
+                            &glow,
+                            &press,
+                            None,
+                            Some(&combo_keys),
+                            c.opacity.clamp(0.08, 1.0),
+                            c.monochrome,
+                        );
+                        if c.show_combo {
+                            ui.add_space(6.0);
+                            let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
+                            let entries = self.combo_recent();
+                            combo_strip(
+                                ui,
+                                &entries,
+                                c.opacity.clamp(0.08, 1.0),
+                                accent,
+                                c.show_combo_ms,
+                            );
+                        }
+                    });
+                    if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
+                        ui.add_space(10.0);
+                        minimap_instruction_panel(
+                            ui,
+                            &layer_cfg.instructions,
+                            c.opacity.clamp(0.08, 1.0),
+                            accent,
+                        );
+                    }
+                });
             });
     }
 
@@ -356,20 +462,16 @@ impl App {
 
     /// Show a sample layer's peek for `ms`, so settings changes are visible.
     pub(super) fn arm_preview(&mut self, c: &PeekConfig, ms: u64) {
-        let sample = if self.active_layer > 0 {
-            self.active_layer
-        } else {
-            self.layer_count().saturating_sub(1).max(1)
-        };
-        self.peek_layer = sample;
+        self.peek_layer = self.peek_layer.min(self.layer_count().saturating_sub(1));
         self.peek_until = Some(Instant::now() + Duration::from_millis(ms.max(c.duration_ms)));
     }
 
     pub(super) fn maybe_peek(&mut self, n: u8) {
-        if !self.peek.enabled {
+        let c = self.minimap_settings(n);
+        if !c.enabled {
             return;
         }
-        if self.peek.only_non_base && n == 0 {
+        if c.only_non_base && n == 0 {
             // Returning to base: dismiss any active peek immediately.
             self.peek_until = None;
             return;
@@ -378,46 +480,53 @@ impl App {
         // "Only outside the base layer" = the minimap stays up for the whole
         // stay on the layer (dismissed by the return to base above); otherwise
         // it's a timed flash.
-        self.peek_until = Some(if self.peek.only_non_base {
+        self.peek_until = Some(if c.only_non_base {
             Instant::now() + Duration::from_secs(3600)
         } else {
-            Instant::now() + Duration::from_millis(self.peek.duration_ms)
+            Instant::now() + Duration::from_millis(c.duration_ms)
         });
     }
 
     /// Draw the transparent, click-through layer peek as its own polished,
     /// card-like viewport, positioned on the chosen monitor.
     pub(super) fn show_peek(&self, ctx: &egui::Context) {
+        let layer_cfg = self.minimap_layer_config(self.peek_layer);
+        let c = &layer_cfg.settings;
         let geo = self.geometry();
-        let scale = self.peek.scale.clamp(0.5, 1.6);
+        let scale = c.scale.clamp(0.5, 1.6);
         // Card padding + header add to the raw keyboard size.
         let pad = 16.0;
-        let header = if self.peek.show_layer_name { 40.0 } else { 0.0 };
+        let header = if c.show_layer_name { 40.0 } else { 0.0 };
         let kb_w = 620.0 * scale;
         // draw_keyboard sizes by width, so derive the unit from it.
         let unit = kb_w / PEEK_BOARD_UNITS_WIDE;
-        let width = kb_w + pad * 2.0;
-        let combo_h = if self.peek.show_combo { 42.0 } else { 0.0 };
+        let hint_w = if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
+            260.0 * scale
+        } else {
+            0.0
+        };
+        let width = kb_w + hint_w + pad * 2.0;
+        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
         let height = unit * PEEK_BOARD_UNITS_TALL + header + combo_h + pad * 2.0;
 
         // Position on the selected monitor (falls back to the main display).
-        let (mx, my, mw, mh) = self.peek_monitor_rect(ctx);
+        let (mx, my, mw, mh) = self.peek_monitor_rect(ctx, c.monitor);
         let edge = 48.0;
         let x =
-            mx + match self.peek.halign {
+            mx + match c.halign {
                 HAlign::Left => edge,
                 HAlign::Center => (mw - width) / 2.0,
                 HAlign::Right => mw - width - edge,
-            } + self.peek.offset[0];
+            } + c.offset[0];
         let y =
-            my + match self.peek.valign {
+            my + match c.valign {
                 VAlign::Top => edge,
                 VAlign::Middle => (mh - height) / 2.0,
                 VAlign::Bottom => mh - height - edge - 24.0,
-            } + self.peek.offset[1];
+            } + c.offset[1];
 
         let builder = egui::ViewportBuilder::default()
-            .with_title("keyjitsu peek")
+            .with_title("keyjitsu minimap")
             .with_inner_size([width, height])
             .with_position([x, y])
             .with_decorations(false)
@@ -429,7 +538,7 @@ impl App {
 
         let device_layer = self.device_layer(self.peek_layer);
         let glow = self.glow_colors(self.peek_layer);
-        let legends = if self.peek.show_legends {
+        let legends = if c.show_legends {
             device_layer.as_ref()
         } else {
             None
@@ -441,31 +550,29 @@ impl App {
         // Overall translucency, applied to the whole overlay so it reads like
         // frosted glass (panel + keys + text fade together) rather than a solid
         // panel with opaque keys.
-        let opacity = self.peek.opacity.clamp(0.08, 1.0);
-        let accent = Color32::from_rgb(
-            self.peek.accent[0],
-            self.peek.accent[1],
-            self.peek.accent[2],
-        );
+        let opacity = c.opacity.clamp(0.08, 1.0);
+        let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
         // With the combo HUD on, mirror physically-held keys so a hold lights
         // up live on the minimap; otherwise no press highlight.
-        let no_press = if self.peek.show_combo {
+        let no_press = if c.show_combo {
             self.pressed.clone()
         } else {
             vec![false; geo.len()]
         };
         let peek_layer = self.peek_layer;
         let combo_keys = self.combo_member_mask(peek_layer);
-        let show_name = self.peek.show_layer_name;
-        let show_bg = self.peek.show_background;
-        let mono = self.peek.monochrome;
-        let show_combo = self.peek.show_combo;
-        let show_combo_ms = self.peek.show_combo_ms;
+        let show_name = c.show_layer_name;
+        let show_bg = c.show_background;
+        let mono = c.monochrome;
+        let show_combo = c.show_combo;
+        let show_combo_ms = c.show_combo_ms;
         let combo = if show_combo {
             self.combo_recent()
         } else {
             Vec::new()
         };
+        let show_instructions = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
+        let instructions = layer_cfg.instructions.clone();
 
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("keyjitsu_peek"),
@@ -541,21 +648,29 @@ impl App {
                             });
                             ui.add_space(8.0);
                         }
-                        draw_keyboard(
-                            ui,
-                            geo,
-                            legends,
-                            &glow,
-                            &no_press,
-                            None,
-                            Some(&combo_keys),
-                            opacity,
-                            mono,
-                        );
-                        if show_combo {
-                            ui.add_space(6.0);
-                            combo_strip(ui, &combo, opacity, accent, show_combo_ms);
-                        }
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                draw_keyboard(
+                                    ui,
+                                    geo,
+                                    legends,
+                                    &glow,
+                                    &no_press,
+                                    None,
+                                    Some(&combo_keys),
+                                    opacity,
+                                    mono,
+                                );
+                                if show_combo {
+                                    ui.add_space(6.0);
+                                    combo_strip(ui, &combo, opacity, accent, show_combo_ms);
+                                }
+                            });
+                            if show_instructions {
+                                ui.add_space(12.0);
+                                minimap_instruction_panel(ui, &instructions, opacity, accent);
+                            }
+                        });
                     });
                 });
             },
@@ -563,10 +678,14 @@ impl App {
     }
 
     /// (x, y, w, h) of the monitor to show the peek on, in egui point space.
-    pub(super) fn peek_monitor_rect(&self, ctx: &egui::Context) -> (f32, f32, f32, f32) {
+    pub(super) fn peek_monitor_rect(
+        &self,
+        ctx: &egui::Context,
+        monitor: usize,
+    ) -> (f32, f32, f32, f32) {
         if let Some(m) = self
             .monitors_cache
-            .get(self.peek.monitor)
+            .get(monitor)
             .or_else(|| self.monitors_cache.first())
         {
             return (m.x, m.y, m.w, m.h);
@@ -579,4 +698,58 @@ impl App {
             .unwrap_or(egui::vec2(1440.0, 900.0));
         (0.0, 0.0, mon.x, mon.y)
     }
+}
+
+fn minimap_instruction_panel(
+    ui: &mut egui::Ui,
+    rows: &[config::MinimapInstruction],
+    opacity: f32,
+    accent: Color32,
+) {
+    let a = (opacity.clamp(0.08, 1.0) * 255.0) as u8;
+    egui::Frame::new()
+        .fill(Color32::from_rgba_unmultiplied(
+            20,
+            21,
+            28,
+            (a as f32 * 0.82) as u8,
+        ))
+        .stroke(egui::Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(
+                accent.r(),
+                accent.g(),
+                accent.b(),
+                (a as f32 * 0.55) as u8,
+            ),
+        ))
+        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_min_width(210.0);
+            for row in rows
+                .iter()
+                .filter(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
+            {
+                ui.horizontal(|ui| {
+                    egui::Frame::new()
+                        .fill(Color32::from_rgba_unmultiplied(36, 38, 49, a))
+                        .corner_radius(egui::CornerRadius::same(5))
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(&row.keys)
+                                    .monospace()
+                                    .size(11.5)
+                                    .color(Color32::from_rgba_unmultiplied(245, 245, 250, a)),
+                            );
+                        });
+                    ui.label(
+                        RichText::new(&row.desc)
+                            .size(11.5)
+                            .color(Color32::from_rgba_unmultiplied(215, 216, 225, a)),
+                    );
+                });
+            }
+        });
 }

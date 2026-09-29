@@ -2,6 +2,7 @@
 //! (macOS, editors, terminals, pentest tools, QMK patterns…) shown in the
 //! GUI's Shortcuts tab. User-added entries live in the config instead.
 
+use std::path::Path;
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +47,103 @@ pub fn builtin() -> &'static [ShortcutDef] {
             .filter_map(parse_line)
             .collect()
     })
+}
+
+/// Import straightforward key bindings from terminal configs found under a
+/// user's home directory. Only line-oriented formats are supported.
+pub fn import_terminal_shortcuts(home: &Path) -> Vec<ShortcutDef> {
+    let mut out = Vec::new();
+    for path in [
+        home.join(".config/ghostty/config"),
+        home.join("Library/Application Support/com.mitchellh.ghostty/config"),
+    ] {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            parse_ghostty_bindings(&text, &mut out);
+        }
+    }
+    if let Ok(text) = std::fs::read_to_string(home.join(".config/kitty/kitty.conf")) {
+        parse_kitty_bindings(&text, &mut out);
+    }
+    out.sort_by(|a, b| (&a.category, &a.keys, &a.desc).cmp(&(&b.category, &b.keys, &b.desc)));
+    out.dedup_by(|a, b| a.category == b.category && a.keys == b.keys && a.desc == b.desc);
+    out
+}
+
+fn parse_ghostty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let Some(rest) = line.strip_prefix("keybind") else {
+            continue;
+        };
+        let Some(rest) = rest.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let Some((keys, action)) = rest.trim().split_once('=') else {
+            continue;
+        };
+        push_terminal_binding(out, "Ghostty import", keys, action);
+    }
+}
+
+fn parse_kitty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let Some(rest) = line.strip_prefix("map ") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace().peekable();
+        while parts.peek().is_some_and(|p| p.starts_with("--")) {
+            parts.next();
+        }
+        let Some(keys) = parts.next() else { continue };
+        let action = parts.collect::<Vec<_>>().join(" ");
+        if action.is_empty() {
+            continue;
+        }
+        push_terminal_binding(out, "Kitty import", keys, &action);
+    }
+}
+
+fn push_terminal_binding(out: &mut Vec<ShortcutDef>, category: &str, keys: &str, action: &str) {
+    let keys = humanize_terminal_keys(keys);
+    let action = action.trim();
+    if keys.is_empty() || action.is_empty() || action == "no_op" {
+        return;
+    }
+    out.push(ShortcutDef {
+        category: category.to_string(),
+        keys,
+        desc: action.replace('_', " "),
+        high: true,
+    });
+}
+
+fn humanize_terminal_keys(keys: &str) -> String {
+    let keys = keys
+        .rsplit_once(':')
+        .map(|(_, trigger)| trigger)
+        .unwrap_or(keys);
+    keys.split('+')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "shift" => "Shift".to_string(),
+            "alt" | "opt" | "option" => "Opt".to_string(),
+            "cmd" | "command" | "super" => "Cmd".to_string(),
+            "enter" | "return" => "Enter".to_string(),
+            "escape" | "esc" => "Esc".to_string(),
+            "space" => "Space".to_string(),
+            _ => {
+                let mut chars = p.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => c.to_ascii_uppercase().to_string(),
+                    _ => p.to_string(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
 }
 
 /// Best-effort conversion of a human shortcut string ("Cmd + Shift + 4") into
@@ -222,6 +320,29 @@ mod tests {
             "only {ok}/{} converted",
             all.len()
         );
+    }
+
+    #[test]
+    fn imports_ghostty_and_kitty_line_bindings() {
+        let mut got = Vec::new();
+        parse_ghostty_bindings(
+            "keybind = ctrl+shift+t=new_tab\n# nope\nkeybind = super+k=clear_screen\n",
+            &mut got,
+        );
+        parse_kitty_bindings(
+            "map ctrl+shift+w close_window\nmap alt+1 goto_tab 1\nmap --allow-fallback=shifted,ascii ctrl+shift+k scroll_line_up smooth\n",
+            &mut got,
+        );
+        assert!(got.iter().any(|s| s.category == "Ghostty import"
+            && s.keys == "Ctrl + Shift + T"
+            && s.desc == "new tab"));
+        assert!(got.iter().any(|s| s.category == "Kitty import"
+            && s.keys == "Ctrl + Shift + W"
+            && s.desc == "close window"));
+        assert!(got.iter().any(|s| s.keys == "Cmd + K"));
+        assert!(got
+            .iter()
+            .any(|s| s.keys == "Ctrl + Shift + K" && s.desc == "scroll line up smooth"));
     }
 
     #[test]

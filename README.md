@@ -38,10 +38,10 @@ The **Heatmap**: press counts across the board, with a ranking and CSV export.
 
 ![Heatmap](docs/heatmap.png)
 
-The **Peek** overlay: a see-through minimap of the current layer that floats,
+The **Minimap** overlay: a see-through map of the current layer that floats,
 click-through, over whatever you are doing (here, a media and navigation layer).
 
-![Peek layer overlay](docs/peek.png)
+![Minimap layer overlay](docs/peek.png)
 
 ## What's in the app
 

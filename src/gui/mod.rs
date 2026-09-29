@@ -339,8 +339,9 @@ struct App {
 
     // Key behavior (tap/hold/one-shot)
 
-    // Layer-peek HUD
+    // Minimap HUD (global fallback + per-layer overrides)
     peek: PeekConfig,
+    minimap_layers: Vec<config::MinimapLayerConfig>,
     peek_until: Option<Instant>,
     peek_layer: u8,
 
@@ -429,6 +430,7 @@ struct App {
     keys_search: String,
     custom_shortcuts: Vec<config::CustomShortcut>,
     keys_adding: bool,
+    shortcut_import_status: Option<String>,
     /// Draft name for "save current as profile" (Settings).
     profile_draft: String,
     profile_error: Option<String>,
@@ -717,7 +719,7 @@ impl App {
             // KEYJITSU_TAB lets tooling/screenshots open straight on a tab.
             tab: match std::env::var("KEYJITSU_TAB").as_deref() {
                 Ok("heatmap") => Tab::Heatmap,
-                Ok("peek") => Tab::Peek,
+                Ok("peek") | Ok("minimap") => Tab::Peek,
                 Ok("layers") => Tab::Layers,
                 Ok("fx") => Tab::Fx,
                 Ok("keys") | Ok("library") => Tab::Tools,
@@ -754,6 +756,7 @@ impl App {
             keys_search: String::new(),
             custom_shortcuts: cfg.custom_shortcuts.clone(),
             keys_adding: false,
+            shortcut_import_status: None,
             profile_draft: String::new(),
             profile_error: profile_load_error,
             persist_error: config_load_error,
@@ -823,6 +826,7 @@ impl App {
             picker_search: String::new(),
             picker_layer_arg: 1,
             peek: cfg.peek.clone(),
+            minimap_layers: cfg.minimap_layers.clone(),
             peek_until: None,
             peek_layer: 0,
             anim,
@@ -1226,7 +1230,10 @@ impl App {
         }
         // Combo HUD: keep the minimap up while any key is physically held, so
         // long holds don\'t vanish before release.
-        if self.peek.show_combo && self.peek.enabled && self.pressed.iter().any(|&p| p) {
+        if self.minimap_settings(self.active_layer).show_combo
+            && self.minimap_settings(self.active_layer).enabled
+            && self.pressed.iter().any(|&p| p)
+        {
             self.peek_layer = self.active_layer;
             self.peek_until = Some(Instant::now() + Duration::from_millis(1200));
         }
@@ -1287,7 +1294,7 @@ impl App {
                         (Tab::Live, "Live", "⌨", true),
                         (Tab::Layers, "Layers", "▤", true),
                         (Tab::Heatmap, "Heatmap", "🔥", true),
-                        (Tab::Peek, "Peek", "👁", true),
+                        (Tab::Peek, "Minimap", "⌨", true),
                         (Tab::Fx, "FX Studio (exp)", "✨", true),
                         (Tab::Perf, "Performance (exp)", "📈", perf::CPU_SUPPORTED),
                         (Tab::Auto, "Autolayer", "⇆", cfg!(target_os = "macos")),

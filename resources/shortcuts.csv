@@ -112,6 +112,12 @@ iTerm2,Cmd + [,Previous pane,Medium
 iTerm2,Cmd + ],Next pane,Medium
 iTerm2,Cmd + Shift + Enter,Maximize current pane,High
 iTerm2,Cmd + F,Find in terminal output,Medium
+Kitty,Ctrl + Shift + Up,Scroll back one line,High
+Kitty,Ctrl + Shift + Down,Scroll forward one line,High
+Kitty,Ctrl + Shift + Page Up,Scroll back one page,High
+Kitty,Ctrl + Shift + Page Down,Scroll forward one page,High
+Kitty,Ctrl + Shift + Home,Jump to top of scrollback,Medium
+Kitty,Ctrl + Shift + End,Jump to bottom of scrollback,Medium
 Shell,Ctrl + A,Move to beginning of shell line,High
 Shell,Ctrl + E,Move to end of shell line,High
 Shell,Ctrl + U,Delete before cursor,High

@@ -2,7 +2,7 @@
 //!
 //! Reads this process's own CPU time (via `getrusage`) and derives the CPU
 //! percentage used between calls (100% = one full core). Samples are tagged
-//! with a mode label so different app states (RGB, animation, peek, mini,
+//! with a mode label so different app states (RGB, animation, minimap, mini,
 //! HID mode) can be compared.
 
 use std::time::Instant;
@@ -82,7 +82,7 @@ impl PerfState {
             p.push("glow-sync");
         }
         if self.peek {
-            p.push("peek");
+            p.push("minimap");
         }
         if p.is_empty() {
             if self.connected {
@@ -189,6 +189,6 @@ mod tests {
         assert_eq!(st.label(), "idle");
         st.anim = true;
         st.peek = true;
-        assert_eq!(st.label(), "anim+peek");
+        assert_eq!(st.label(), "anim+minimap");
     }
 }

@@ -155,7 +155,9 @@ impl App {
                         self.combo_down.insert(idx, Instant::now());
                         // Keystroke HUD: surface the minimap the moment a key
                         // goes down (independent of only-non-base).
-                        if self.peek.show_combo && self.peek.enabled {
+                        if self.minimap_settings(self.active_layer).show_combo
+                            && self.minimap_settings(self.active_layer).enabled
+                        {
                             self.peek_layer = self.active_layer;
                             self.peek_until = Some(Instant::now() + Duration::from_millis(1600));
                         }

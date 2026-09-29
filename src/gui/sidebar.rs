@@ -306,7 +306,7 @@ impl App {
                     let n = n as u8;
                     if sub_item(ui, self.peek_layer == n, n == active, name) {
                         self.peek_layer = n;
-                        let c = self.peek.clone();
+                        let c = self.minimap_settings(n);
                         self.arm_preview(&c, 2000);
                     }
                 }
@@ -335,6 +335,37 @@ impl App {
         });
     }
 
+    pub(super) fn import_terminal_shortcuts_into_library(&mut self) {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            self.shortcut_import_status = Some("HOME is unavailable".into());
+            return;
+        };
+        let found = crate::shortcuts::import_terminal_shortcuts(&home);
+        let mut added = 0usize;
+        for d in found {
+            let duplicate = self
+                .custom_shortcuts
+                .iter()
+                .any(|c| c.category == d.category && c.keys == d.keys && c.desc == d.desc);
+            if !duplicate {
+                self.custom_shortcuts.push(config::CustomShortcut {
+                    category: d.category,
+                    keys: d.keys,
+                    desc: d.desc,
+                    high: d.high,
+                });
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.save_custom_shortcuts();
+            self.shortcut_import_status = Some(format!("Imported {added} terminal shortcuts"));
+        } else {
+            self.shortcut_import_status =
+                Some("No new Ghostty/Kitty keybinds found in default config paths".into());
+        }
+    }
+
     /// The Shortcuts tab: a searchable cheatsheet of ready-made shortcuts
     /// (category chips in the panel) plus the user's own entries.
     pub(super) fn ui_shortcuts(&mut self, ui: &mut egui::Ui) {
@@ -350,6 +381,15 @@ impl App {
                 self.keys_search.clear();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .button("⇩ import terminal keybinds")
+                    .on_hover_text(
+                        "Import simple keybinds from Ghostty or Kitty default config paths",
+                    )
+                    .clicked()
+                {
+                    self.import_terminal_shortcuts_into_library();
+                }
                 if ui
                     .add(
                         egui::Button::new(RichText::new("＋ add shortcut").color(Color32::WHITE))
@@ -378,6 +418,9 @@ impl App {
                 }
             });
         });
+        if let Some(status) = &self.shortcut_import_status {
+            ui.label(RichText::new(status).size(11.0).color(pal::TEXT_DIM));
+        }
         ui.add_space(6.0);
 
         // Category chips (all + every category present).
