@@ -15,6 +15,177 @@ pub(super) fn shift_minimap_layers_after_delete(
     layers.sort_by_key(|c| c.layer);
 }
 
+fn hint_placement_label(p: config::MinimapHintPlacement) -> &'static str {
+    match p {
+        config::MinimapHintPlacement::Left => "Left",
+        config::MinimapHintPlacement::Right => "Right",
+        config::MinimapHintPlacement::Top => "Top",
+        config::MinimapHintPlacement::Bottom => "Bottom",
+        config::MinimapHintPlacement::Inline => "Inside",
+    }
+}
+
+fn minimap_has_hints(layer_cfg: &config::MinimapLayerConfig) -> bool {
+    layer_cfg.show_instructions
+        && layer_cfg
+            .instructions
+            .iter()
+            .any(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
+}
+
+fn minimap_hint_scale(board_scale: f32, layer_cfg: &config::MinimapLayerConfig) -> f32 {
+    (board_scale * layer_cfg.instruction_scale.clamp(0.5, 1.8)).clamp(0.30, 2.40)
+}
+
+fn minimap_hint_dimensions(
+    layer_cfg: &config::MinimapLayerConfig,
+    board_scale: f32,
+) -> (f32, f32) {
+    let count = layer_cfg
+        .instructions
+        .iter()
+        .filter(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
+        .count();
+    if !minimap_has_hints(layer_cfg) || count == 0 {
+        return (0.0, 0.0);
+    }
+    let s = minimap_hint_scale(board_scale, layer_cfg);
+    match layer_cfg.instruction_flow {
+        config::MinimapHintFlow::Column => (220.0 * s, (18.0 + count as f32 * 28.0) * s),
+        config::MinimapHintFlow::Row => {
+            let cols = count.min(4).max(1);
+            let rows = (count + cols - 1) / cols;
+            (
+                cols as f32 * 150.0 * s + cols.saturating_sub(1) as f32 * 6.0 * s,
+                (18.0 + rows as f32 * 32.0) * s,
+            )
+        }
+    }
+}
+
+fn minimap_content_size(
+    c: &PeekConfig,
+    layer_cfg: &config::MinimapLayerConfig,
+    scale: f32,
+) -> (f32, f32) {
+    let kb_w = 620.0 * scale;
+    let keyboard_h = 620.0 / PEEK_BOARD_UNITS_WIDE * PEEK_BOARD_UNITS_TALL * scale
+        + if c.show_combo { 42.0 * scale } else { 0.0 };
+    let header_h = if c.show_layer_name { 40.0 * scale } else { 0.0 };
+    if !minimap_has_hints(layer_cfg) {
+        return (kb_w, header_h + keyboard_h);
+    }
+    let (hint_w, hint_h) = minimap_hint_dimensions(layer_cfg, scale);
+    let gap = 12.0 * scale;
+    match layer_cfg.instruction_placement {
+        config::MinimapHintPlacement::Left | config::MinimapHintPlacement::Right => {
+            (kb_w + gap + hint_w, header_h + keyboard_h.max(hint_h))
+        }
+        config::MinimapHintPlacement::Top
+        | config::MinimapHintPlacement::Bottom
+        | config::MinimapHintPlacement::Inline => {
+            (kb_w.max(hint_w), header_h + keyboard_h + gap + hint_h)
+        }
+    }
+}
+
+fn scaled_i8(value: f32, scale: f32) -> i8 {
+    (value * scale).round().clamp(1.0, i8::MAX as f32) as i8
+}
+
+fn scaled_u8(value: f32, scale: f32) -> u8 {
+    (value * scale).round().clamp(1.0, u8::MAX as f32) as u8
+}
+
+fn minimap_layer_header(
+    ui: &mut egui::Ui,
+    layer: u8,
+    title: &str,
+    accent: Color32,
+    alpha: u8,
+    scale: f32,
+) {
+    let s = scale.clamp(0.30, 2.40);
+    ui.horizontal(|ui| {
+        egui::Frame::new()
+            .fill(Color32::from_rgba_unmultiplied(
+                accent.r(), accent.g(), accent.b(), alpha,
+            ))
+            .corner_radius(egui::CornerRadius::same(scaled_u8(7.0, s)))
+            .inner_margin(egui::Margin::symmetric(
+                scaled_i8(8.0, s),
+                scaled_i8(4.0, s),
+            ))
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new(format!("L{layer}"))
+                        .strong()
+                        .size((13.0 * s).clamp(7.0, 28.0))
+                        .color(Color32::from_rgba_unmultiplied(255, 255, 255, alpha)),
+                );
+            });
+        ui.add_space(6.0 * s);
+        ui.label(
+            RichText::new(title)
+                .size((16.0 * s).clamp(8.0, 32.0))
+                .color(Color32::from_rgba_unmultiplied(235, 236, 242, alpha)),
+        );
+    });
+    ui.add_space(7.0 * s);
+}
+
+fn minimap_content_layout(
+    ui: &mut egui::Ui,
+    placement: config::MinimapHintPlacement,
+    show_hints: bool,
+    gap: f32,
+    mut header: impl FnMut(&mut egui::Ui),
+    mut board: impl FnMut(&mut egui::Ui),
+    mut hints: impl FnMut(&mut egui::Ui),
+) {
+    if !show_hints {
+        header(ui);
+        board(ui);
+        return;
+    }
+    match placement {
+        config::MinimapHintPlacement::Top => {
+            hints(ui);
+            ui.add_space(gap);
+            header(ui);
+            board(ui);
+        }
+        config::MinimapHintPlacement::Inline => {
+            header(ui);
+            hints(ui);
+            ui.add_space(gap);
+            board(ui);
+        }
+        config::MinimapHintPlacement::Bottom => {
+            header(ui);
+            board(ui);
+            ui.add_space(gap);
+            hints(ui);
+        }
+        config::MinimapHintPlacement::Left => {
+            header(ui);
+            ui.horizontal(|ui| {
+                hints(ui);
+                ui.add_space(gap);
+                board(ui);
+            });
+        }
+        config::MinimapHintPlacement::Right => {
+            header(ui);
+            ui.horizontal(|ui| {
+                board(ui);
+                ui.add_space(gap);
+                hints(ui);
+            });
+        }
+    }
+}
+
 impl App {
     pub(super) fn minimap_layer_config(&self, layer: u8) -> config::MinimapLayerConfig {
         self.minimap_layers
@@ -119,14 +290,47 @@ impl App {
         c: &mut config::MinimapLayerConfig,
     ) {
         card(ui, "Layer hints", |ui| {
-            toggle_row(
-                ui,
-                "Show shortcut/instruction panel beside this layer",
-                &mut c.show_instructions,
-            );
+            toggle_row(ui, "Show layer hints", &mut c.show_instructions);
             if !c.show_instructions {
                 return;
             }
+            ui.add_space(4.0);
+            labeled(ui, "Position", |ui| {
+                egui::ComboBox::from_id_salt(("minimap_hint_position", c.layer))
+                    .width(150.0)
+                    .selected_text(hint_placement_label(c.instruction_placement))
+                    .show_ui(ui, |ui| {
+                        for (value, label) in [
+                            (config::MinimapHintPlacement::Left, "Left"),
+                            (config::MinimapHintPlacement::Right, "Right"),
+                            (config::MinimapHintPlacement::Top, "Top"),
+                            (config::MinimapHintPlacement::Bottom, "Bottom"),
+                            (config::MinimapHintPlacement::Inline, "Inside"),
+                        ] {
+                            ui.selectable_value(&mut c.instruction_placement, value, label);
+                        }
+                    });
+            });
+            labeled(ui, "Layout", |ui| {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(
+                        &mut c.instruction_flow,
+                        config::MinimapHintFlow::Column,
+                        "Column",
+                    );
+                    ui.selectable_value(
+                        &mut c.instruction_flow,
+                        config::MinimapHintFlow::Row,
+                        "Row",
+                    );
+                });
+            });
+            labeled(ui, "Hint size", |ui| {
+                ui.add_sized(
+                    [180.0, 20.0],
+                    egui::Slider::new(&mut c.instruction_scale, 0.5..=1.8).suffix("×"),
+                );
+            });
             ui.add_space(4.0);
             let mut remove = None;
             for (i, row) in c.instructions.iter_mut().enumerate() {
@@ -283,30 +487,16 @@ impl App {
         width: f32,
         c: &PeekConfig,
         layer_cfg: &config::MinimapLayerConfig,
-    ) -> (f32, f32, bool) {
-        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
-        let side_by_side = show_hints && width >= 760.0;
-        let hint_w = if side_by_side { 230.0 } else { 0.0 };
-        let keyboard_budget =
-            (width - 48.0 - hint_w - if side_by_side { 12.0 } else { 0.0 }).max(300.0);
-        let unit = (keyboard_budget / PEEK_BOARD_UNITS_WIDE).clamp(20.0, 42.0);
-        let keyboard_w = unit * PEEK_BOARD_UNITS_WIDE;
-        let header_h = if c.show_layer_name { 34.0 } else { 0.0 };
-        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
-        let keyboard_h = unit * PEEK_BOARD_UNITS_TALL + header_h + combo_h + 32.0;
-        let hint_h = if show_hints {
-            26.0 + layer_cfg.instructions.len().min(8) as f32 * 28.0
-        } else {
-            0.0
-        };
-        let content_h = if side_by_side {
-            keyboard_h.max(hint_h + header_h + 18.0)
-        } else if show_hints {
-            keyboard_h + hint_h + 10.0
-        } else {
-            keyboard_h
-        };
-        (content_h.clamp(235.0, 520.0), keyboard_w, side_by_side)
+    ) -> (f32, f32, f32) {
+        let requested = c.scale.clamp(0.5, 1.6);
+        let available_w = (width - 44.0).max(180.0);
+        let (requested_w, requested_h) = minimap_content_size(c, layer_cfg, requested);
+        let fit_w = (available_w / requested_w.max(1.0)).min(1.0);
+        let fit_h = (480.0 / requested_h.max(1.0)).min(1.0);
+        let scale = (requested * fit_w.min(fit_h)).max(0.24);
+        let (_, content_h) = minimap_content_size(c, layer_cfg, scale);
+        let keyboard_w = 620.0 * scale;
+        ((content_h + 28.0).clamp(140.0, 520.0), keyboard_w, scale)
     }
 
     /// Live in-app preview of the selected layer minimap.
@@ -354,25 +544,21 @@ impl App {
         let geo = self.geometry();
         let glow = self.glow_colors(layer);
         let device_layer = self.device_layer(layer);
-        let legends = if c.show_legends {
-            device_layer.as_ref()
-        } else {
-            None
-        };
+        let legends = if c.show_legends { device_layer.as_ref() } else { None };
         let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {layer}"));
         let a = (c.opacity.clamp(0.08, 1.0) * 255.0) as u8;
         let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
-
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(rect)
                 .layout(egui::Layout::top_down(egui::Align::Center)),
         );
-        let (_, kb_w, side_by_side) = Self::minimap_preview_layout(rect.width(), c, layer_cfg);
-        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
+        let (_, kb_w, preview_scale) = Self::minimap_preview_layout(rect.width(), c, layer_cfg);
+        let hint_scale = minimap_hint_scale(preview_scale, layer_cfg);
+        let show_hints = minimap_has_hints(layer_cfg);
         let card_fill = if c.show_background {
             Color32::from_rgba_unmultiplied(17, 18, 24, a)
         } else {
@@ -384,101 +570,56 @@ impl App {
                 egui::Stroke::new(
                     1.0,
                     Color32::from_rgba_unmultiplied(
-                        accent.r(),
-                        accent.g(),
-                        accent.b(),
-                        (a as f32 * 0.6) as u8,
+                        accent.r(), accent.g(), accent.b(), (a as f32 * 0.6) as u8,
                     ),
                 )
             } else {
                 egui::Stroke::NONE
             })
-            .corner_radius(egui::CornerRadius::same(12))
-            .inner_margin(egui::Margin::same(10))
+            .corner_radius(egui::CornerRadius::same(scaled_u8(12.0, preview_scale)))
+            .inner_margin(egui::Margin::same(scaled_i8(10.0, preview_scale)))
             .show(&mut child, |ui| {
-                if c.show_layer_name {
-                    ui.horizontal(|ui| {
-                        egui::Frame::new()
-                            .fill(Color32::from_rgba_unmultiplied(
-                                accent.r(),
-                                accent.g(),
-                                accent.b(),
-                                a,
-                            ))
-                            .corner_radius(egui::CornerRadius::same(6))
-                            .inner_margin(egui::Margin::symmetric(7, 3))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(format!("L{layer}"))
-                                        .strong()
-                                        .color(Color32::from_rgba_unmultiplied(255, 255, 255, a)),
-                                );
-                            });
-                        ui.label(
-                            RichText::new(&title)
-                                .color(Color32::from_rgba_unmultiplied(235, 236, 242, a)),
-                        );
-                    });
-                    ui.add_space(4.0);
-                }
                 let press = if c.show_combo {
                     self.pressed.clone()
                 } else {
                     vec![false; geo.len()]
                 };
                 let combo_keys = self.combo_member_mask(layer);
-                let draw_board = |ui: &mut egui::Ui| {
-                    ui.set_width(kb_w);
-                    draw_keyboard(
-                        ui,
-                        geo,
-                        legends,
-                        &glow,
-                        &press,
-                        None,
-                        Some(&combo_keys),
-                        c.opacity.clamp(0.08, 1.0),
-                        c.monochrome,
-                    );
-                    if c.show_combo {
-                        ui.add_space(6.0);
-                        let entries = self.combo_recent();
-                        combo_strip(
+                minimap_content_layout(
+                    ui,
+                    layer_cfg.instruction_placement,
+                    show_hints,
+                    10.0 * preview_scale,
+                    |ui| {
+                        if c.show_layer_name {
+                            minimap_layer_header(ui, layer, &title, accent, a, preview_scale);
+                        }
+                    },
+                    |ui| {
+                        ui.set_width(kb_w);
+                        draw_keyboard(
+                            ui, geo, legends, &glow, &press, None, Some(&combo_keys),
+                            c.opacity.clamp(0.08, 1.0), c.monochrome,
+                        );
+                        if c.show_combo {
+                            ui.add_space(6.0 * preview_scale);
+                            let entries = self.combo_recent();
+                            combo_strip(
+                                ui, &entries, c.opacity.clamp(0.08, 1.0), accent, c.show_combo_ms,
+                            );
+                        }
+                    },
+                    |ui| {
+                        minimap_instruction_panel(
                             ui,
-                            &entries,
+                            &layer_cfg.instructions,
                             c.opacity.clamp(0.08, 1.0),
                             accent,
-                            c.show_combo_ms,
+                            hint_scale,
+                            layer_cfg.instruction_flow,
                         );
-                    }
-                };
-                if side_by_side {
-                    ui.horizontal(|ui| {
-                        ui.vertical(draw_board);
-                        if show_hints {
-                            ui.add_space(10.0);
-                            minimap_instruction_panel(
-                                ui,
-                                &layer_cfg.instructions,
-                                c.opacity.clamp(0.08, 1.0),
-                                accent,
-                            );
-                        }
-                    });
-                } else {
-                    ui.vertical(|ui| {
-                        draw_board(ui);
-                        if show_hints {
-                            ui.add_space(8.0);
-                            minimap_instruction_panel(
-                                ui,
-                                &layer_cfg.instructions,
-                                c.opacity.clamp(0.08, 1.0),
-                                accent,
-                            );
-                        }
-                    });
-                }
+                    },
+                );
             });
     }
 
@@ -543,48 +684,38 @@ impl App {
         let layer_cfg = self.minimap_layer_config(self.peek_layer);
         let c = &layer_cfg.settings;
         let geo = self.geometry();
-        let pad = 16.0;
         let edge = 48.0;
-        let header = if c.show_layer_name { 40.0 } else { 0.0 };
-        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
-        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
-
-        // Fit the requested size to the selected monitor before creating the
-        // native viewport. Large scales + a hint panel must never open wider
-        // than the display and clip half of the minimap off-screen.
+        let show_hints = minimap_has_hints(&layer_cfg);
         let (mx, my, mw, mh) = self.peek_monitor_rect(ctx, c.monitor);
         let requested_scale = c.scale.clamp(0.5, 1.6);
-        let base_width = 620.0 + if show_hints { 260.0 } else { 0.0 };
-        let base_keyboard_h = 620.0 / PEEK_BOARD_UNITS_WIDE * PEEK_BOARD_UNITS_TALL;
-        let max_scale_w = ((mw - edge * 2.0 - pad * 2.0) / base_width).clamp(0.5, 1.6);
-        let max_scale_h =
-            ((mh - edge * 2.0 - header - combo_h - pad * 2.0) / base_keyboard_h).clamp(0.5, 1.6);
-        let scale = requested_scale.min(max_scale_w).min(max_scale_h);
+        let requested_pad = (16.0 * requested_scale).clamp(8.0, 26.0);
+        let (requested_w, requested_h) = minimap_content_size(c, &layer_cfg, requested_scale);
+        let available_w = (mw - edge * 2.0 - requested_pad * 2.0).max(180.0);
+        let available_h = (mh - edge * 2.0 - requested_pad * 2.0 - 24.0).max(160.0);
+        let fit = (available_w / requested_w.max(1.0))
+            .min(available_h / requested_h.max(1.0))
+            .min(1.0);
+        let scale = (requested_scale * fit).max(0.24);
+        let pad = (16.0 * scale).clamp(6.0, 26.0);
+        let (content_w, content_h) = minimap_content_size(c, &layer_cfg, scale);
         let kb_w = 620.0 * scale;
-        let unit = kb_w / PEEK_BOARD_UNITS_WIDE;
-        let hint_w = if show_hints { 260.0 * scale } else { 0.0 };
-        let width = kb_w + hint_w + pad * 2.0;
-        let keyboard_h = unit * PEEK_BOARD_UNITS_TALL + combo_h;
-        let hint_h = if show_hints {
-            28.0 + layer_cfg.instructions.len().min(12) as f32 * 30.0
-        } else {
-            0.0
-        };
-        let height = header + keyboard_h.max(hint_h) + pad * 2.0;
+        let width = content_w + pad * 2.0;
+        let height = content_h + pad * 2.0;
 
-        // Position on the selected monitor (falls back to the main display).
-        let x =
-            mx + match c.halign {
+        let x = mx
+            + match c.halign {
                 HAlign::Left => edge,
                 HAlign::Center => (mw - width) / 2.0,
                 HAlign::Right => mw - width - edge,
-            } + c.offset[0];
-        let y =
-            my + match c.valign {
+            }
+            + c.offset[0];
+        let y = my
+            + match c.valign {
                 VAlign::Top => edge,
                 VAlign::Middle => (mh - height) / 2.0,
                 VAlign::Bottom => mh - height - edge - 24.0,
-            } + c.offset[1];
+            }
+            + c.offset[1];
 
         let builder = egui::ViewportBuilder::default()
             .with_title("keyjitsu minimap")
@@ -599,22 +730,13 @@ impl App {
 
         let device_layer = self.device_layer(self.peek_layer);
         let glow = self.glow_colors(self.peek_layer);
-        let legends = if c.show_legends {
-            device_layer.as_ref()
-        } else {
-            None
-        };
+        let legends = if c.show_legends { device_layer.as_ref() } else { None };
         let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
             .unwrap_or_else(|| format!("Layer {}", self.peek_layer));
-        // Overall translucency, applied to the whole overlay so it reads like
-        // frosted glass (panel + keys + text fade together) rather than a solid
-        // panel with opaque keys.
         let opacity = c.opacity.clamp(0.08, 1.0);
         let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
-        // With the combo HUD on, mirror physically-held keys so a hold lights
-        // up live on the minimap; otherwise no press highlight.
         let no_press = if c.show_combo {
             self.pressed.clone()
         } else {
@@ -627,25 +749,17 @@ impl App {
         let mono = c.monochrome;
         let show_combo = c.show_combo;
         let show_combo_ms = c.show_combo_ms;
-        let combo = if show_combo {
-            self.combo_recent()
-        } else {
-            Vec::new()
-        };
-        let show_instructions = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
+        let combo = if show_combo { self.combo_recent() } else { Vec::new() };
         let instructions = layer_cfg.instructions.clone();
+        let hint_placement = layer_cfg.instruction_placement;
+        let hint_flow = layer_cfg.instruction_flow;
+        let hint_scale = minimap_hint_scale(scale, &layer_cfg);
 
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("keyjitsu_peek"),
             builder,
             move |ctx, _class| {
-                // The window is transparent; the opacity is baked directly into
-                // every color's alpha (card, keys, text), so the whole overlay
-                // genuinely becomes see-through as the slider goes down - the
-                // desktop shows through more, not a fade-to-black.
                 let a = (opacity * 255.0) as u8;
-                // Background (dark card) is optional - off = keys float on pure
-                // transparency. Colors are optional too (monochrome high-contrast).
                 let card_fill = if show_bg {
                     Color32::from_rgba_unmultiplied(17, 18, 24, a)
                 } else {
@@ -655,10 +769,7 @@ impl App {
                     egui::Stroke::new(
                         1.0,
                         Color32::from_rgba_unmultiplied(
-                            accent.r(),
-                            accent.g(),
-                            accent.b(),
-                            (a as f32 * 0.6) as u8,
+                            accent.r(), accent.g(), accent.b(), (a as f32 * 0.6) as u8,
                         ),
                     )
                 } else {
@@ -669,12 +780,12 @@ impl App {
                     let card = egui::Frame::new()
                         .fill(card_fill)
                         .stroke(card_stroke)
-                        .inner_margin(egui::Margin::same(pad as i8))
-                        .corner_radius(egui::CornerRadius::same(16))
+                        .inner_margin(egui::Margin::same(scaled_i8(16.0, scale)))
+                        .corner_radius(egui::CornerRadius::same(scaled_u8(16.0, scale)))
                         .shadow(if show_bg {
                             egui::epaint::Shadow {
-                                offset: [0, 6],
-                                blur: 22,
+                                offset: [0, scaled_i8(6.0, scale)],
+                                blur: scaled_u8(22.0, scale),
                                 spread: 0,
                                 color: Color32::from_black_alpha((90.0 * opacity) as u8),
                             }
@@ -682,57 +793,33 @@ impl App {
                             egui::epaint::Shadow::NONE
                         });
                     card.show(ui, |ui| {
-                        if show_name {
-                            ui.horizontal(|ui| {
-                                egui::Frame::new()
-                                    .fill(Color32::from_rgba_unmultiplied(
-                                        accent.r(),
-                                        accent.g(),
-                                        accent.b(),
-                                        a,
-                                    ))
-                                    .corner_radius(egui::CornerRadius::same(8))
-                                    .inner_margin(egui::Margin::symmetric(9, 4))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(format!("L{peek_layer}")).strong().color(
-                                                Color32::from_rgba_unmultiplied(255, 255, 255, a),
-                                            ),
-                                        );
-                                    });
-                                ui.add_space(6.0);
-                                ui.label(
-                                    RichText::new(&title)
-                                        .size(16.0)
-                                        .color(Color32::from_rgba_unmultiplied(235, 236, 242, a)),
-                                );
-                            });
-                            ui.add_space(8.0);
-                        }
-                        ui.horizontal(|ui| {
-                            ui.vertical(|ui| {
+                        minimap_content_layout(
+                            ui,
+                            hint_placement,
+                            show_hints,
+                            12.0 * scale,
+                            |ui| {
+                                if show_name {
+                                    minimap_layer_header(ui, peek_layer, &title, accent, a, scale);
+                                }
+                            },
+                            |ui| {
                                 ui.set_width(kb_w);
                                 draw_keyboard(
-                                    ui,
-                                    geo,
-                                    legends,
-                                    &glow,
-                                    &no_press,
-                                    None,
-                                    Some(&combo_keys),
-                                    opacity,
-                                    mono,
+                                    ui, geo, legends, &glow, &no_press, None, Some(&combo_keys),
+                                    opacity, mono,
                                 );
                                 if show_combo {
-                                    ui.add_space(6.0);
+                                    ui.add_space(6.0 * scale);
                                     combo_strip(ui, &combo, opacity, accent, show_combo_ms);
                                 }
-                            });
-                            if show_instructions {
-                                ui.add_space(12.0);
-                                minimap_instruction_panel(ui, &instructions, opacity, accent);
-                            }
-                        });
+                            },
+                            |ui| {
+                                minimap_instruction_panel(
+                                    ui, &instructions, opacity, accent, hint_scale, hint_flow,
+                                );
+                            },
+                        );
                     });
                 });
             },
@@ -767,50 +854,77 @@ fn minimap_instruction_panel(
     rows: &[config::MinimapInstruction],
     opacity: f32,
     accent: Color32,
+    scale: f32,
+    flow: config::MinimapHintFlow,
 ) {
+    let s = scale.clamp(0.30, 2.40);
     let a = (opacity.clamp(0.08, 1.0) * 255.0) as u8;
+    let font = (11.5 * s).clamp(7.0, 24.0);
+    let key_fill = Color32::from_rgba_unmultiplied(36, 38, 49, a);
+    let text = Color32::from_rgba_unmultiplied(215, 216, 225, a);
+    let key_text = Color32::from_rgba_unmultiplied(245, 245, 250, a);
+    let visible = rows
+        .iter()
+        .filter(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
+        .collect::<Vec<_>>();
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(
-            20,
-            21,
-            28,
-            (a as f32 * 0.82) as u8,
-        ))
+        .fill(Color32::from_rgba_unmultiplied(20, 21, 28, (a as f32 * 0.82) as u8))
         .stroke(egui::Stroke::new(
             1.0,
             Color32::from_rgba_unmultiplied(
-                accent.r(),
-                accent.g(),
-                accent.b(),
-                (a as f32 * 0.55) as u8,
+                accent.r(), accent.g(), accent.b(), (a as f32 * 0.55) as u8,
             ),
         ))
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, |ui| {
-            ui.set_min_width(210.0);
-            for row in rows
-                .iter()
-                .filter(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
-            {
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(Color32::from_rgba_unmultiplied(36, 38, 49, a))
-                        .corner_radius(egui::CornerRadius::same(5))
-                        .inner_margin(egui::Margin::symmetric(6, 3))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(&row.keys)
-                                    .monospace()
-                                    .size(11.5)
-                                    .color(Color32::from_rgba_unmultiplied(245, 245, 250, a)),
-                            );
-                        });
-                    ui.label(
-                        RichText::new(&row.desc)
-                            .size(11.5)
-                            .color(Color32::from_rgba_unmultiplied(215, 216, 225, a)),
-                    );
+        .corner_radius(egui::CornerRadius::same(scaled_u8(10.0, s)))
+        .inner_margin(egui::Margin::same(scaled_i8(10.0, s)))
+        .show(ui, |ui| match flow {
+            config::MinimapHintFlow::Column => {
+                ui.set_min_width(210.0 * s);
+                for row in &visible {
+                    ui.horizontal(|ui| {
+                        egui::Frame::new()
+                            .fill(key_fill)
+                            .corner_radius(egui::CornerRadius::same(scaled_u8(5.0, s)))
+                            .inner_margin(egui::Margin::symmetric(
+                                scaled_i8(6.0, s), scaled_i8(3.0, s),
+                            ))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(&row.keys)
+                                        .monospace()
+                                        .size(font)
+                                        .color(key_text),
+                                );
+                            });
+                        ui.label(RichText::new(&row.desc).size(font).color(text));
+                    });
+                }
+            }
+            config::MinimapHintFlow::Row => {
+                ui.horizontal_wrapped(|ui| {
+                    for row in &visible {
+                        egui::Frame::new()
+                            .fill(key_fill)
+                            .corner_radius(egui::CornerRadius::same(scaled_u8(6.0, s)))
+                            .inner_margin(egui::Margin::symmetric(
+                                scaled_i8(7.0, s), scaled_i8(4.0, s),
+                            ))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&row.keys)
+                                            .monospace()
+                                            .strong()
+                                            .size(font)
+                                            .color(key_text),
+                                    );
+                                    if !row.desc.trim().is_empty() {
+                                        ui.label(RichText::new(&row.desc).size(font).color(text));
+                                    }
+                                });
+                            });
+                        ui.add_space(4.0 * s);
+                    }
                 });
             }
         });
@@ -835,47 +949,49 @@ mod minimap_layout_tests {
     }
 
     #[test]
-    fn inline_preview_no_longer_collapses_to_legacy_fixed_height() {
-        let c = PeekConfig::default();
+    fn inline_preview_tracks_the_requested_minimap_scale() {
+        let mut large = PeekConfig::default();
+        large.scale = 1.0;
+        let mut small = large.clone();
+        small.scale = 0.5;
         let layer = config::MinimapLayerConfig::default();
-        let (height, keyboard_w, side_by_side) = App::minimap_preview_layout(720.0, &c, &layer);
-        assert!(!side_by_side);
-        assert!(height > 235.0);
-        assert!(keyboard_w >= 300.0);
+        let (_, large_w, large_scale) = App::minimap_preview_layout(1100.0, &large, &layer);
+        let (_, small_w, small_scale) = App::minimap_preview_layout(1100.0, &small, &layer);
+        assert!(small_w < large_w);
+        assert!(small_scale < large_scale);
     }
 
     #[test]
     fn layer_delete_drops_deleted_minimap_and_shifts_higher_layers() {
         let mut layers = vec![
-            config::MinimapLayerConfig {
-                layer: 1,
-                ..Default::default()
-            },
-            config::MinimapLayerConfig {
-                layer: 3,
-                ..Default::default()
-            },
-            config::MinimapLayerConfig {
-                layer: 4,
-                ..Default::default()
-            },
+            config::MinimapLayerConfig { layer: 1, ..Default::default() },
+            config::MinimapLayerConfig { layer: 3, ..Default::default() },
+            config::MinimapLayerConfig { layer: 4, ..Default::default() },
         ];
         shift_minimap_layers_after_delete(&mut layers, 3);
-        assert_eq!(
-            layers.iter().map(|c| c.layer).collect::<Vec<_>>(),
-            vec![1, 3]
-        );
+        assert_eq!(layers.iter().map(|c| c.layer).collect::<Vec<_>>(), vec![1, 3]);
     }
 
     #[test]
-    fn hints_stack_on_narrow_preview_and_move_beside_on_wide_preview() {
-        let c = PeekConfig::default();
-        let layer = hints(4);
-        let (narrow_h, narrow_w, narrow_side) = App::minimap_preview_layout(620.0, &c, &layer);
-        let (wide_h, wide_w, wide_side) = App::minimap_preview_layout(1000.0, &c, &layer);
-        assert!(!narrow_side);
-        assert!(wide_side);
-        assert!(narrow_h > wide_h);
-        assert!(narrow_w >= 300.0 && wide_w > narrow_w);
+    fn hint_scale_follows_the_minimap_and_keeps_a_user_multiplier() {
+        let mut layer = hints(3);
+        layer.instruction_scale = 1.25;
+        let small = minimap_hint_scale(0.5, &layer);
+        let large = minimap_hint_scale(1.0, &layer);
+        assert!(small < large);
+        assert!((large - 1.25).abs() < 0.001);
     }
+
+    #[test]
+    fn top_hints_preserve_more_keyboard_width_than_side_hints() {
+        let c = PeekConfig::default();
+        let mut side = hints(4);
+        side.instruction_placement = config::MinimapHintPlacement::Right;
+        let mut top = side.clone();
+        top.instruction_placement = config::MinimapHintPlacement::Top;
+        let (_, side_w, _) = App::minimap_preview_layout(760.0, &c, &side);
+        let (_, top_w, _) = App::minimap_preview_layout(760.0, &c, &top);
+        assert!(top_w >= side_w);
+    }
+
 }

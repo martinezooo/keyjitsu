@@ -109,6 +109,39 @@ pub struct MinimapInstruction {
     pub desc: String,
 }
 
+/// Position of the layer-hint panel relative to the minimap keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MinimapHintPlacement {
+    Left,
+    Top,
+    Bottom,
+    Inline,
+    /// Also the fallback for an unknown value from a newer config.
+    #[serde(other)]
+    Right,
+}
+
+impl Default for MinimapHintPlacement {
+    fn default() -> Self {
+        Self::Right
+    }
+}
+
+/// How multiple hints are arranged inside their panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MinimapHintFlow {
+    Row,
+    /// Also the fallback for an unknown value from a newer config.
+    #[serde(other)]
+    Column,
+}
+
+impl Default for MinimapHintFlow {
+    fn default() -> Self {
+        Self::Column
+    }
+}
+
 /// Per-layer minimap presentation. Missing layers fall back to the legacy
 /// global minimap settings, so older configs keep their exact behaviour.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,6 +150,10 @@ pub struct MinimapLayerConfig {
     pub layer: u8,
     pub settings: PeekConfig,
     pub show_instructions: bool,
+    /// Multiplier applied on top of the minimap scale. 1.0 follows the map.
+    pub instruction_scale: f32,
+    pub instruction_placement: MinimapHintPlacement,
+    pub instruction_flow: MinimapHintFlow,
     pub instructions: Vec<MinimapInstruction>,
 }
 
@@ -126,6 +163,9 @@ impl Default for MinimapLayerConfig {
             layer: 0,
             settings: PeekConfig::default(),
             show_instructions: false,
+            instruction_scale: 1.0,
+            instruction_placement: MinimapHintPlacement::Right,
+            instruction_flow: MinimapHintFlow::Column,
             instructions: Vec::new(),
         }
     }
@@ -492,6 +532,14 @@ mod tests {
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
         assert!(old.custom_layer_sets.is_empty());
         assert!(old.minimap_layers.is_empty());
+
+        let old_layer: MinimapLayerConfig = serde_json::from_str(
+            r#"{"layer":2,"show_instructions":true,"instructions":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(old_layer.instruction_scale, 1.0);
+        assert_eq!(old_layer.instruction_placement, MinimapHintPlacement::Right);
+        assert_eq!(old_layer.instruction_flow, MinimapHintFlow::Column);
     }
 
     #[test]
