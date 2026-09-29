@@ -14,6 +14,18 @@ use crate::oryx_api::{cache_dir, LayoutId};
 pub const STATE_ID_HEX_LEN: usize = 10;
 pub const SERIAL_MARKER: &str = "~kj";
 
+fn durable_state_dir() -> Result<std::path::PathBuf> {
+    let home = directories::UserDirs::new()
+        .context("cannot determine home directory for firmware state backup")?
+        .home_dir()
+        .to_path_buf();
+    Ok(home.join(".keyjitsu/firmware-states"))
+}
+
+fn durable_state_path(id: &str) -> Result<std::path::PathBuf> {
+    Ok(durable_state_dir()?.join(format!("{id}.json")))
+}
+
 /// Extract the Keyjitsu firmware-state marker from the USB serial, if present.
 pub fn state_id_from_serial(serial: &str) -> Option<&str> {
     let (_, tail) = serial.rsplit_once(SERIAL_MARKER)?;
@@ -123,6 +135,35 @@ impl FirmwareState {
         Ok(format!("{:010x}", hash & 0xffffffffff))
     }
 
+    fn read_exact_state(path: &std::path::Path, id: &str) -> Result<Option<Self>> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let state: FirmwareState = serde_json::from_slice(&bytes)
+            .with_context(|| format!("reading firmware state {}", path.display()))?;
+        let actual = state.state_id()?;
+        if actual != id {
+            bail!(
+                "firmware state {} has identity {actual}, expected {id}",
+                path.display()
+            );
+        }
+        Ok(Some(state))
+    }
+
+    fn mirror_durable_backup(&self, id: &str, bytes: &[u8]) {
+        let result = (|| -> Result<()> {
+            let path = durable_state_path(id)?;
+            config::write_atomic(&path, bytes)
+                .with_context(|| format!("persisting durable firmware state {}", path.display()))
+        })();
+        if let Err(e) = result {
+            eprintln!("keyjitsu: durable firmware-state backup failed: {e:#}");
+        }
+    }
+
     pub fn save(&self) -> Result<String> {
         let id = self.state_id()?;
         let dir = cache_dir()?.join("firmware-states");
@@ -137,6 +178,9 @@ impl FirmwareState {
                 if existing != *self {
                     bail!("firmware state identity collision for {id}; refusing to overwrite");
                 }
+                if let Ok(bytes) = serde_json::to_vec_pretty(self) {
+                    self.mirror_durable_backup(&id, &bytes);
+                }
                 return Ok(id);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -146,6 +190,7 @@ impl FirmwareState {
         let bytes = serde_json::to_vec_pretty(self)?;
         config::write_atomic(&path, &bytes)
             .with_context(|| format!("persisting {}", path.display()))?;
+        self.mirror_durable_backup(&id, &bytes);
         Ok(id)
     }
 
@@ -158,11 +203,29 @@ impl FirmwareState {
             .join(format!("{id}.json"));
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let backup_path = durable_state_path(id)?;
+                let Some(state) = Self::read_exact_state(&backup_path, id)? else {
+                    return Ok(None);
+                };
+                // Self-heal the primary cache after an exact-ID recovery.
+                let recovered_id = state.save()?;
+                debug_assert_eq!(recovered_id, id);
+                return Ok(Some(state));
+            }
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         };
-        match serde_json::from_slice(&bytes) {
-            Ok(state) => Ok(Some(state)),
+        match serde_json::from_slice::<FirmwareState>(&bytes) {
+            Ok(state) => {
+                let actual = state.state_id()?;
+                if actual != id {
+                    bail!(
+                        "firmware state {} has identity {actual}, expected {id}",
+                        path.display()
+                    );
+                }
+                Ok(Some(state))
+            }
             Err(e) => {
                 let backup = config::preserve_corrupt_bytes(&path, &bytes).with_context(|| {
                     format!(
@@ -400,6 +463,31 @@ mod tests {
         assert_eq!(state.dances[0].slots[0].as_deref(), Some("LGUI(KC_A)"));
         assert_eq!(state.custom_layers[0].keys[0].code, "LSFT(KC_B)");
         assert!(!state.needs_action_normalization());
+    }
+
+    #[test]
+    fn exact_state_reader_rejects_wrong_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = FirmwareState::new(
+            "hash".into(),
+            "rev".into(),
+            vec![FirmwareEdit {
+                layer: 1,
+                key: 2,
+                code: "KC_A".into(),
+            }],
+            vec![],
+            vec![],
+            vec![],
+        );
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+        let id = state.state_id().unwrap();
+        assert_eq!(
+            FirmwareState::read_exact_state(&path, &id).unwrap(),
+            Some(state)
+        );
+        assert!(FirmwareState::read_exact_state(&path, "0000000000").is_err());
     }
 
     #[test]
