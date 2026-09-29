@@ -240,8 +240,7 @@ impl App {
         });
     }
 
-    /// Sub-items rendered in the sidebar under the active tab.
-    /// Layout/Heatmap/Minimap show layers; FX Studio shows effect categories.
+    /// Task-local navigation under the active top-level destination.
     pub(super) fn nav_children(&mut self, ui: &mut egui::Ui, tab: Tab) {
         let names: Vec<String> = (0..self.layer_count())
             .map(|n| self.layer_name(n))
@@ -253,7 +252,6 @@ impl App {
                 let oryx = self.oryx_layer_count();
                 for (n, name) in names.iter().enumerate() {
                     let n = n as u8;
-                    // Custom layers get a ★ marker (only meaningful with a layout).
                     let label = if has_layout && n >= oryx {
                         format!("★ {name}")
                     } else {
@@ -264,7 +262,115 @@ impl App {
                         self.follow = false;
                     }
                 }
-                // Authoring (add/rename/delete) lives in the Layers tab.
+
+                if self.view_layer >= oryx && self.view_layer < self.layer_count() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        if ui.small_button("rename").clicked() {
+                            self.rename_layer_target = Some(self.view_layer);
+                            self.rename_layer_name = self.layer_name(self.view_layer);
+                            self.delete_layer_confirm = None;
+                        }
+                        let deleting = self.delete_layer_confirm == Some(self.view_layer);
+                        if ui
+                            .small_button(if deleting { "confirm delete" } else { "delete" })
+                            .clicked()
+                        {
+                            if deleting {
+                                let deleted = self.view_layer;
+                                self.remove_custom_layer(deleted);
+                                self.delete_layer_confirm = None;
+                                self.rename_layer_target = None;
+                            } else {
+                                self.delete_layer_confirm = Some(self.view_layer);
+                            }
+                        }
+                    });
+                }
+                if let Some(target) = self.rename_layer_target {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_layer_name)
+                                .desired_width(105.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        let ok = !self.rename_layer_name.trim().is_empty();
+                        if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                            self.rename_custom_layer(
+                                target,
+                                self.rename_layer_name.trim().to_string(),
+                            );
+                            self.rename_layer_target = None;
+                            self.rename_layer_name.clear();
+                        }
+                        if ui.small_button("cancel").clicked() {
+                            self.rename_layer_target = None;
+                            self.rename_layer_name.clear();
+                        }
+                    });
+                }
+
+                // Layer creation belongs to Layout: choose a blank layer or
+                // duplicate an existing effective layer, then name the result.
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.menu_button("＋ Add layer", |ui| {
+                        if ui.button("Blank layer").clicked() {
+                            self.new_layer_open = true;
+                            self.new_layer_source = None;
+                            self.new_layer_name = format!("Layer {}", self.layer_count());
+                            ui.close();
+                        }
+                        if !names.is_empty() {
+                            ui.separator();
+                            ui.weak("Duplicate from");
+                            for (n, name) in names.iter().enumerate() {
+                                if ui.button(name).clicked() {
+                                    self.new_layer_open = true;
+                                    self.new_layer_source = Some(n as u8);
+                                    self.new_layer_name = format!("{} copy", name);
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
+                });
+                if self.new_layer_open {
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.new_layer_name)
+                                .hint_text("layer name")
+                                .desired_width(105.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        let can_create = !self.new_layer_name.trim().is_empty();
+                        if ui
+                            .add_enabled(can_create, egui::Button::new("Create"))
+                            .clicked()
+                        {
+                            let name = self.new_layer_name.trim().to_string();
+                            let source = self.new_layer_source;
+                            self.add_custom_layer_from(name, source);
+                            self.new_layer_open = false;
+                            self.new_layer_name.clear();
+                            self.new_layer_source = None;
+                        }
+                        if ui.small_button("cancel").clicked() {
+                            self.new_layer_open = false;
+                            self.new_layer_name.clear();
+                            self.new_layer_source = None;
+                        }
+                    });
+                }
+
                 ui.horizontal(|ui| {
                     ui.add_space(22.0);
                     let mut f = self.follow;
@@ -283,7 +389,6 @@ impl App {
                             .color(pal::TEXT_DIM),
                     );
                 });
-                ui.add_space(2.0);
             }
             Tab::Heatmap => {
                 if sub_item(ui, self.heat_layer.is_none(), false, "all layers") {
@@ -297,28 +402,31 @@ impl App {
                 }
             }
             Tab::Peek => {
-                for (n, name) in names.iter().enumerate() {
-                    let n = n as u8;
-                    if sub_item(ui, self.peek_layer == n, n == active, name) {
-                        self.peek_layer = n;
-                        let c = self.minimap_settings(n);
+                if sub_item(ui, self.minimap_edit_global, false, "Global · all layers") {
+                    self.minimap_edit_global = true;
+                    if self.minimap_global_enabled {
+                        let c = self.minimap_global.settings.clone();
                         self.arm_minimap_overlay(&c, 2000);
                     }
                 }
-            }
-            Tab::Fx => {
-                for (lib, label) in [
-                    (FxLib::Const, "constant"),
-                    (FxLib::Press, "on press"),
-                    (FxLib::Custom, "custom"),
-                    (FxLib::Apply, "▶ board RGB"),
-                ] {
-                    if sub_item(ui, self.fx_lib == lib, false, label) {
-                        self.fx_lib = lib;
+                for (n, name) in names.iter().enumerate() {
+                    let n = n as u8;
+                    if sub_item(
+                        ui,
+                        !self.minimap_edit_global && self.peek_layer == n,
+                        n == active,
+                        name,
+                    ) {
+                        self.minimap_edit_global = false;
+                        self.peek_layer = n;
+                        if !self.minimap_global_enabled {
+                            let c = self.minimap_settings(n);
+                            self.arm_minimap_overlay(&c, 2000);
+                        }
                     }
                 }
             }
-            Tab::Layers | Tab::Perf | Tab::Auto | Tab::Tools => {}
+            Tab::Fx | Tab::Perf | Tab::Auto | Tab::Tools => {}
         }
         ui.add_space(4.0);
     }

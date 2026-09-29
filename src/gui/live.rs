@@ -30,131 +30,6 @@ impl App {
         }
     }
 
-    /// The Layers tab:    /// The Layers tab: overview + management of every layer (Oryx + custom).
-    pub(super) fn ui_layers(&mut self, ui: &mut egui::Ui) {
-        // Centered column.
-        let full = ui.available_width();
-        let w = full.min(920.0);
-        let pad = ((full - w) / 2.0).max(12.0);
-        ui.add_space(14.0);
-        let mut go_live: Option<u8> = None;
-        let mut do_add: Option<String> = None;
-        let mut do_remove: Option<u8> = None;
-        let mut do_rename: Option<(u8, String)> = None;
-
-        ui.horizontal(|ui| {
-            ui.add_space(pad);
-            ui.vertical(|ui| {
-                ui.set_width(w - 24.0);
-                page_header(ui, "Layers", "Oryx layers are the base. ★ layers are yours, built locally.");
-
-                if self.layout.is_none() {
-                    card(ui, "No layout", |ui| {
-                        ui.label(RichText::new("Connect the Voyager (and quit Keymapp) so keyjitsu can read your layout - then you can add and edit layers here.").size(12.5).color(pal::TEXT_MUTED));
-                    });
-                    return;
-                }
-
-                let oryx = self.oryx_layer_count();
-                let active = self.active_layer;
-                let count = self.layer_count();
-                for n in 0..count {
-                    let custom = n >= oryx;
-                    let name = self.layer_name(n);
-                    let keycount = self
-                        .editing_layer(n)
-                        .map(|l| l.keys.into_iter().filter(|k| {
-                            k.tap.as_ref().and_then(|a| a.code.as_deref()).is_some_and(|c| c != "KC_NO" && c != "KC_TRANSPARENT" && c != "KC_TRNS")
-                                || k.hold.is_some()
-                        }).count())
-                        .unwrap_or(0);
-                    egui::Frame::new()
-                        .fill(pal::CARD)
-                        .stroke(egui::Stroke::new(1.0, if n == self.view_layer { pal::VIOLET } else { pal::BORDER }))
-                        .corner_radius(egui::CornerRadius::same(10))
-                        .inner_margin(egui::Margin::symmetric(14, 10))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                // Index badge.
-                                egui::Frame::new()
-                                    .fill(pal::INPUT)
-                                    .corner_radius(egui::CornerRadius::same(7))
-                                    .inner_margin(egui::Margin::symmetric(10, 5))
-                                    .show(ui, |ui| {
-                                        ui.label(RichText::new(format!("{n}")).strong().size(15.0).color(pal::TEXT));
-                                    });
-                                ui.add_space(6.0);
-                                if custom {
-                                    // Editable name for custom layers.
-                                    let mut nm = name.clone();
-                                    if ui.add(egui::TextEdit::singleline(&mut nm).desired_width(150.0)).changed() {
-                                        do_rename = Some((n, nm));
-                                    }
-                                    status_pill(ui, "★ custom", pal::VIOLET_HI);
-                                } else {
-                                    ui.label(RichText::new(&name).strong().size(15.0).color(pal::TEXT));
-                                    status_pill(ui, "Oryx", pal::TEXT_DIM);
-                                }
-                                ui.label(RichText::new(format!("{keycount} keys")).size(11.5).color(pal::TEXT_DIM));
-                                if n == active {
-                                    ui.colored_label(pal::GREEN, RichText::new("● on board").size(11.0));
-                                }
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if custom && ui.button("🗑").on_hover_text("delete this layer").clicked() {
-                                        do_remove = Some(n);
-                                    }
-                                    if ui.button("View & edit").clicked() {
-                                        go_live = Some(n);
-                                    }
-                                });
-                            });
-                        });
-                    ui.add_space(6.0);
-                }
-
-                ui.add_space(4.0);
-                // Add a new custom layer.
-                if self.new_layer_open {
-                    card(ui, "New layer", |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(egui::TextEdit::singleline(&mut self.new_layer_name).hint_text("layer name (e.g. Symbols)").desired_width(220.0));
-                            let ok = !self.new_layer_name.trim().is_empty();
-                            if ui.add_enabled(ok, egui::Button::new(RichText::new("Create").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
-                                do_add = Some(self.new_layer_name.trim().to_string());
-                            }
-                            if ui.button("Cancel").clicked() {
-                                self.new_layer_open = false;
-                            }
-                        });
-                        ui.label(RichText::new("Starts empty (all transparent). Fill its keys in Layout, then add a switch key (Hold → this layer) somewhere.").size(11.5).color(pal::TEXT_DIM));
-                    });
-                } else if ui.add(egui::Button::new(RichText::new("＋ Add layer").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
-                    self.new_layer_open = true;
-                    self.new_layer_name.clear();
-                }
-            });
-        });
-
-        if let Some(name) = do_add {
-            self.add_custom_layer(name);
-            self.new_layer_open = false;
-            self.new_layer_name.clear();
-            self.tab = Tab::Live; // jump to edit the fresh layer
-        }
-        if let Some((n, name)) = do_rename {
-            self.rename_custom_layer(n, name);
-        }
-        if let Some(n) = do_remove {
-            self.remove_custom_layer(n);
-        }
-        if let Some(n) = go_live {
-            self.view_layer = n;
-            self.follow = false;
-            self.tab = Tab::Live;
-        }
-    }
-
     pub(super) fn ui_live(&mut self, ui: &mut egui::Ui, avail_h: f32) {
         self.ui_edit_bar(ui);
         ui.add_space(4.0);
@@ -629,8 +504,22 @@ impl App {
                                 None,
                             ));
                             let mut changed = false;
-                            let custom_names: Vec<String> =
-                                self.custom_fx.iter().map(|c| c.name.clone()).collect();
+                            let custom_names: Vec<String> = self
+                                .custom_fx
+                                .iter()
+                                .filter(|c| c.preset.is_none())
+                                .map(|c| c.name.clone())
+                                .collect();
+                            let saved_press: Vec<(String, PressEffect, [u8; 3])> = self
+                                .custom_fx
+                                .iter()
+                                .filter_map(|c| match c.preset {
+                                    Some(FxPresetSource::Press { effect, color }) => {
+                                        Some((c.name.clone(), effect, color))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
                             let sel_text = match &fx.3 {
                                 Some(n) => format!("★ {n}"),
                                 None => fx.1.label().to_string(),
@@ -647,8 +536,17 @@ impl App {
                                             changed = true;
                                         }
                                     }
-                                    if !custom_names.is_empty() {
+                                    if !saved_press.is_empty() || !custom_names.is_empty() {
                                         ui.separator();
+                                    }
+                                    for (name, effect, color) in &saved_press {
+                                        if ui.selectable_label(false, format!("★ {name}")).clicked()
+                                        {
+                                            fx.1 = *effect;
+                                            fx.2 = *color;
+                                            fx.3 = None;
+                                            changed = true;
+                                        }
                                     }
                                     for name in &custom_names {
                                         let is = fx.3.as_deref() == Some(name.as_str());

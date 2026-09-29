@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(super) fn ui_tools(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1000.0, |ui| {
+        centered_page(ui, 1120.0, |ui| {
             page_header(
                 ui,
                 "Settings",
@@ -87,36 +87,32 @@ impl App {
         });
     }
 
-    /// Performance as its own page (same card style as Settings).
+    /// Performance as its own page using the same page shell as the rest of the app.
     pub(super) fn ui_perf_page(&mut self, ui: &mut egui::Ui) {
-        if !perf::CPU_SUPPORTED {
-            ui.add_space(20.0);
-            ui.label("Process CPU sampling is not available on this platform.");
-            return;
-        }
-        centered_page(ui, 1000.0, |ui| {
-            let pill = {
-                let c = self.perf_live;
-                (
-                    format!("{c:.1}% CPU"),
-                    if c > 25.0 { pal::AMBER } else { pal::GREEN },
-                )
-            };
-            tool_card(
+        centered_page(ui, 1120.0, |ui| {
+            page_header(
                 ui,
-                "📈",
                 "Performance",
-                "keyjitsu samples its own CPU and tags each sample with what it was doing.",
-                Some(pill),
-                self,
-                |ui, app| app.ui_performance(ui),
+                "Measure Keyjitsu's own CPU use and compare expensive visual modes.",
             );
+            if !perf::CPU_SUPPORTED {
+                card(ui, "Unavailable", |ui| {
+                    ui.label("Process CPU sampling is not available on this platform.");
+                });
+                return;
+            }
+            card(ui, "Measurements", |ui| self.ui_performance(ui));
         });
     }
 
     /// Autolayer as its own page.
     pub(super) fn ui_auto_page(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1000.0, |ui| {
+        centered_page(ui, 1120.0, |ui| {
+            page_header(
+                ui,
+                "Autolayer",
+                "Switch layers automatically when the frontmost macOS app changes.",
+            );
             let pill = if !cfg!(target_os = "macos") {
                 ("macOS only".to_string(), pal::TEXT_DIM)
             } else if self.autolayer_enabled && self.connected.is_none() {
@@ -133,15 +129,13 @@ impl App {
             } else {
                 ("Off".to_string(), pal::TEXT_DIM)
             };
-            tool_card(
-                ui,
-                "⇆",
-                "Autolayer",
-                "Switches layers automatically based on the frontmost app.",
-                Some(pill),
-                self,
-                |ui, app| app.ui_autolayer(ui),
-            );
+            card(ui, "Rules", |ui| {
+                ui.horizontal(|ui| {
+                    status_pill(ui, &pill.0, pill.1);
+                });
+                ui.add_space(8.0);
+                self.ui_autolayer(ui);
+            });
         });
     }
 
@@ -370,6 +364,7 @@ impl App {
             a.press_effect,
             a.press_color,
             a.custom_name.clone(),
+            a.custom_replace_base,
         );
 
         labeled(ui, "constant effect", |ui| {
@@ -383,17 +378,30 @@ impl App {
                 .selected_text(sel_text)
                 .show_ui(ui, |ui| {
                     for (e, label) in Effect::ALL {
-                        ui.selectable_value(&mut a.effect, e, label);
+                        if ui.selectable_value(&mut a.effect, e, label).changed()
+                            && e != Effect::Custom
+                        {
+                            a.custom_name.clear();
+                            a.custom.clear();
+                            a.custom_replace_base = false;
+                        }
                     }
-                    if !self.custom_fx.is_empty() {
+                    let sequence_fx = self
+                        .custom_fx
+                        .iter()
+                        .filter(|c| c.preset.is_none())
+                        .collect::<Vec<_>>();
+                    if !sequence_fx.is_empty() {
                         ui.separator();
                     }
-                    for c in &self.custom_fx {
+                    for c in sequence_fx {
                         let is = a.effect == Effect::Custom && a.custom_name == c.name;
                         if ui.selectable_label(is, format!("★ {}", c.name)).clicked() {
                             a.effect = Effect::Custom;
                             a.custom = c.steps.clone();
                             a.custom_name = c.name.clone();
+                            a.custom_replace_base =
+                                matches!(c.background, config::FxBackgroundMode::Blackout);
                         }
                     }
                 });
@@ -449,6 +457,7 @@ impl App {
             a.press_effect,
             a.press_color,
             a.custom_name.clone(),
+            a.custom_replace_base,
         );
         let rgb = (after != before).then(|| config::RgbState {
             effect: a.effect,

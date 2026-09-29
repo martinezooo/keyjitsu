@@ -100,6 +100,8 @@ pub struct KbResponse {
     pub clicked: Option<usize>,
     /// Key currently under the cursor (for tooltips).
     pub hovered: Option<usize>,
+    /// Exact rendered keyboard bounds (without the outer allocation margins).
+    pub board_rect: Rect,
 }
 
 /// Reduce a color's alpha by `alpha` (1.0 = unchanged), keeping its hue.
@@ -433,7 +435,11 @@ pub fn draw_keyboard(
     }
 
     let clicked = if response.clicked() { hovered } else { None };
-    KbResponse { clicked, hovered }
+    KbResponse {
+        clicked,
+        hovered,
+        board_rect: Rect::from_min_size(origin, Vec2::new(board_w, board_h)),
+    }
 }
 
 /// Draw a key's tap + hold legend text centered on its cap.

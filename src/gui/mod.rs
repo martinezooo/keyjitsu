@@ -17,7 +17,7 @@ mod update;
 mod widget;
 mod worker;
 
-pub use rgb_anim::{CustomFx, Effect, FxStep, FxTrigger, PressEffect};
+pub use rgb_anim::{CustomFx, Effect, FxPresetSource, FxStep, FxTrigger, PressEffect};
 
 use std::collections::HashMap;
 
@@ -117,7 +117,6 @@ pub fn run(serial: Option<String>) -> Result<()> {
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Live,
-    Layers,
     Heatmap,
     Peek,
     Fx,
@@ -164,16 +163,6 @@ struct ComboChip {
     ms: u128,
     /// Press-to-press gap for a double-tap, in ms (0 if n/a).
     gap_ms: u128,
-}
-
-/// Which FX Studio library category is browsed (picked in the sidebar).
-#[derive(PartialEq, Clone, Copy)]
-enum FxLib {
-    Const,
-    Press,
-    Custom,
-    /// The board-level application panel (constant effect + press reaction).
-    Apply,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,6 +258,10 @@ struct App {
     /// Inline "new layer name" field state (sidebar).
     new_layer_open: bool,
     new_layer_name: String,
+    new_layer_source: Option<u8>,
+    rename_layer_target: Option<u8>,
+    rename_layer_name: String,
+    delete_layer_confirm: Option<u8>,
     glow_work: HashMap<(u8, usize), [u8; 3]>, // being edited
     glow_saved: HashMap<(u8, usize), [u8; 3]>, // persisted snapshot
     selected_key: Option<usize>,              // shown in the bottom config panel
@@ -342,6 +335,9 @@ struct App {
     // Minimap HUD (global fallback + per-layer overrides)
     peek: PeekConfig,
     minimap_layers: Vec<config::MinimapLayerConfig>,
+    minimap_global: config::MinimapLayerConfig,
+    minimap_global_enabled: bool,
+    minimap_edit_global: bool,
     minimap_locked: bool,
     peek_until: Option<Instant>,
     peek_layer: u8,
@@ -408,7 +404,6 @@ struct App {
     /// User-built step sequences (FX Studio), persisted in config.
     custom_fx: Vec<CustomFx>,
     /// FX Studio library category (picked in the sidebar).
-    fx_lib: FxLib,
     /// Chord of matrix positions that shows the minimap while held.
     overlay_chord: Vec<[u8; 2]>,
     /// True while waiting for the user to press the combo to bind.
@@ -484,15 +479,20 @@ struct PerfRun {
     restore: Option<Effect>,
     /// A scripted comparison temporarily owns the minimap lock.
     restore_minimap_locked: Option<bool>,
+    /// Restore the user's selected minimap layer after scripted comparison.
+    restore_peek_layer: Option<u8>,
 }
 
 #[derive(Clone)]
 struct FxBoardRestore {
     until: Instant,
     effect: Effect,
+    color: [u8; 3],
     speed: f32,
+    brightness: f32,
     custom: Vec<FxStep>,
     custom_name: String,
+    custom_replace_base: bool,
 }
 
 impl FxBoardRestore {
@@ -500,17 +500,23 @@ impl FxBoardRestore {
         Self {
             until,
             effect: a.effect,
+            color: a.color,
             speed: a.speed,
+            brightness: a.brightness,
             custom: a.custom.clone(),
             custom_name: a.custom_name.clone(),
+            custom_replace_base: a.custom_replace_base,
         }
     }
 
     fn restore(self, a: &mut Anim) {
         a.effect = self.effect;
+        a.color = self.color;
         a.speed = self.speed;
+        a.brightness = self.brightness;
         a.custom = self.custom;
         a.custom_name = self.custom_name;
+        a.custom_replace_base = self.custom_replace_base;
     }
 }
 
@@ -723,12 +729,14 @@ impl App {
             a.press_effect = r.press_effect;
             a.press_color = r.press_color;
             a.custom_name = r.custom_name.clone();
-            a.custom = cfg
-                .custom_fx
-                .iter()
-                .find(|c| c.name == r.custom_name)
-                .map(|c| c.steps.clone())
-                .unwrap_or_default();
+            if let Some(custom) = cfg.custom_fx.iter().find(|c| c.name == r.custom_name) {
+                a.custom = custom.steps.clone();
+                a.custom_replace_base =
+                    matches!(custom.background, config::FxBackgroundMode::Blackout);
+            } else {
+                a.custom.clear();
+                a.custom_replace_base = false;
+            }
             if a.effect == Effect::Custom && a.custom.is_empty() {
                 a.effect = Effect::Off;
             }
@@ -755,7 +763,7 @@ impl App {
                 Ok("heatmap") => Tab::Heatmap,
                 Ok("peek") | Ok("minimap") => Tab::Peek,
                 Ok("layout") | Ok("live") => Tab::Live,
-                Ok("layers") => Tab::Layers,
+                Ok("layers") => Tab::Live,
                 Ok("fx") => Tab::Fx,
                 Ok("keys") | Ok("library") => Tab::Tools,
                 Ok("perf") => Tab::Perf,
@@ -770,11 +778,6 @@ impl App {
             }) {
                 Some(i) if i < cfg.custom_fx.len() => FxSel::Custom(i),
                 _ => FxSel::Press(PressEffect::Ripple),
-            },
-            fx_lib: if std::env::var("KEYJITSU_FX").is_ok() {
-                FxLib::Custom
-            } else {
-                FxLib::Press
             },
             overlay_chord: if cfg.overlay_chord.is_empty() {
                 cfg.overlay_trigger.map(|t| vec![t]).unwrap_or_default()
@@ -821,6 +824,10 @@ impl App {
             synth_layers: Vec::new(),
             new_layer_open: false,
             new_layer_name: String::new(),
+            new_layer_source: None,
+            rename_layer_target: None,
+            rename_layer_name: String::new(),
+            delete_layer_confirm: None,
             glow_work: HashMap::new(),
             glow_saved: HashMap::new(),
             edit_color: [160, 90, 255],
@@ -865,6 +872,15 @@ impl App {
             picker_layer_arg: 1,
             peek: cfg.peek.clone(),
             minimap_layers: cfg.minimap_layers.clone(),
+            minimap_global: cfg.minimap_global.clone().unwrap_or_else(|| {
+                config::MinimapLayerConfig {
+                    layer: 0,
+                    settings: cfg.peek.clone(),
+                    ..config::MinimapLayerConfig::default()
+                }
+            }),
+            minimap_global_enabled: cfg.minimap_global_enabled,
+            minimap_edit_global: false,
             minimap_locked: cfg.minimap_locked,
             peek_until: None,
             peek_layer: 0,
@@ -940,6 +956,7 @@ impl App {
             phase_until: now,
             restore: None,
             restore_minimap_locked: None,
+            restore_peek_layer: None,
         });
     }
 
@@ -973,6 +990,7 @@ impl App {
         ];
         let restore = self.anim.lock().map(|a| a.effect).ok();
         let restore_minimap_locked = self.minimap_locked;
+        let restore_peek_layer = self.peek_layer;
         // Scripted comparisons own both animation and minimap visibility so
         // the idle baseline cannot accidentally include a pinned/old overlay.
         self.minimap_locked = false;
@@ -990,6 +1008,7 @@ impl App {
             phases,
             restore,
             restore_minimap_locked: Some(restore_minimap_locked),
+            restore_peek_layer: Some(restore_peek_layer),
         });
     }
 
@@ -1003,6 +1022,9 @@ impl App {
             }
             if let Some(locked) = run.restore_minimap_locked {
                 self.minimap_locked = locked;
+            }
+            if let Some(layer) = run.restore_peek_layer {
+                self.peek_layer = layer.min(self.layer_count().saturating_sub(1));
             }
         }
     }
@@ -1053,7 +1075,12 @@ impl App {
             };
             self.set_anim_effect(ph.anim);
             if ph.peek {
-                self.peek_layer = self.active_layer.max(1);
+                let last = self.layer_count().saturating_sub(1);
+                self.peek_layer = if last > 0 {
+                    self.active_layer.max(1).min(last)
+                } else {
+                    0
+                };
                 self.peek_until = Some(now + Duration::from_secs(ph.secs + 1));
             } else {
                 self.peek_until = None;
@@ -1346,7 +1373,6 @@ impl App {
                     ui.spacing_mut().interact_size.y = 20.0;
                     for (tab, name, icon, available) in [
                         (Tab::Live, "Layout", "⌨", true),
-                        (Tab::Layers, "Layers", "▤", true),
                         (Tab::Heatmap, "Heatmap", "🔥", true),
                         (Tab::Peek, "Minimap", "⌨", true),
                         (Tab::Fx, "FX Studio (exp)", "✨", true),
@@ -1487,12 +1513,18 @@ impl App {
                             .auto_shrink([false, false])
                             .show(ui, |ui| self.ui_live(ui, h));
                     }
-                    Tab::Layers => {
-                        egui::ScrollArea::vertical().show(ui, |ui| self.ui_layers(ui));
-                    }
                     Tab::Heatmap => {
                         let h = ui.available_height();
-                        egui::ScrollArea::vertical().show(ui, |ui| self.ui_heatmap(ui, h));
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            centered_page(ui, 1120.0, |ui| {
+                                page_header(
+                                    ui,
+                                    "Heatmap",
+                                    "See which physical keys you use most, across all layers or one layer.",
+                                );
+                                self.ui_heatmap(ui, (h - 58.0).max(180.0));
+                            });
+                        });
                     }
                     Tab::Peek => {
                         egui::ScrollArea::vertical().show(ui, |ui| self.ui_peek_page(ui));
@@ -1823,7 +1855,6 @@ fn nav_item(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, icon: &str, name: &s
 /// Standard page header: a title and one short subtitle line. Every page
 /// that has a header uses this, so type and spacing stay identical.
 fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
-    ui.add_space(8.0);
     ui.label(RichText::new(title).strong().size(21.0).color(pal::TEXT));
     if !subtitle.is_empty() {
         ui.label(RichText::new(subtitle).size(12.5).color(pal::TEXT_DIM));
@@ -2719,7 +2750,9 @@ mod fx_board_restore_tests {
     fn custom_board_test_restores_exact_previous_program() {
         let mut anim = Anim {
             effect: Effect::Custom,
+            color: [7, 8, 9],
             speed: 2.25,
+            brightness: 0.42,
             custom_name: "before".into(),
             custom: vec![FxStep {
                 keys: vec![1, 2],
@@ -2730,12 +2763,16 @@ mod fx_board_restore_tests {
         };
         let restore = FxBoardRestore::capture(&anim, Instant::now());
         anim.effect = Effect::Rainbow;
+        anim.color = [200, 100, 50];
         anim.speed = 0.4;
+        anim.brightness = 0.95;
         anim.custom_name = "test".into();
         anim.custom.clear();
         restore.restore(&mut anim);
         assert_eq!(anim.effect, Effect::Custom);
+        assert_eq!(anim.color, [7, 8, 9]);
         assert!((anim.speed - 2.25).abs() < f32::EPSILON);
+        assert!((anim.brightness - 0.42).abs() < f32::EPSILON);
         assert_eq!(anim.custom_name, "before");
         assert_eq!(anim.custom.len(), 1);
         assert_eq!(anim.custom[0].keys, vec![1, 2]);

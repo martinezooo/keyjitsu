@@ -4,151 +4,199 @@ use super::*;
 
 impl App {
     pub(super) fn ui_fx_studio(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(8.0);
-        // "board RGB" (sidebar) = the application panel: what the physical
-        // keyboard actually runs, moved here from Tools.
-        if self.fx_lib == FxLib::Apply {
-            page_header(ui, "FX Studio", "What the board runs right now: the constant effect plus the global press reaction.");
-            card(ui, "Board RGB", |ui| self.ui_rgb_effects(ui));
-            return;
-        }
-        page_header(
-            ui,
-            "FX Studio",
-            "Pick an effect, tune it, and test it in the preview or on the board.",
-        );
+        centered_page(ui, 1120.0, |ui| {
+            page_header(
+                ui,
+                "FX Studio",
+                "Browse built-ins, keep editable copies in My effects, or paint a custom sequence.",
+            );
 
-        // --- Library: one category at a time (picked in the sidebar), so the
-        //     list stays a single short row of chips.
-        card(ui, "Library", |ui| {
-            match self.fx_lib {
-                FxLib::Const => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("CONSTANT").size(10.5).color(pal::TEXT_DIM));
-                        for (e, label) in Effect::ALL {
-                            if e == Effect::Off {
-                                continue;
-                            }
-                            let name = label
-                                .split(" -")
-                                .next()
-                                .unwrap_or(label)
-                                .split(" (")
-                                .next()
-                                .unwrap_or(label);
-                            if ui
-                                .selectable_label(self.fx_sel == FxSel::Const(e), name)
-                                .clicked()
-                            {
-                                self.fx_sel = FxSel::Const(e);
-                                self.fx_t0 = Instant::now();
-                            }
+            card(ui, "Library", |ui| {
+                ui.label(
+                    RichText::new("DEFAULT · CONTINUOUS")
+                        .size(10.5)
+                        .color(pal::TEXT_DIM),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    for (e, label) in Effect::ALL {
+                        if e == Effect::Off {
+                            continue;
                         }
-                    });
-                }
-                FxLib::Press => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("ON PRESS").size(10.5).color(pal::TEXT_DIM));
-                        for (e, label) in PressEffect::ALL {
-                            if e == PressEffect::None {
-                                continue;
-                            }
-                            let name = label
-                                .replace("This key - ", "")
-                                .replace("Whole board - ", "🌐 ");
-                            if ui
-                                .selectable_label(self.fx_sel == FxSel::Press(e), name)
-                                .clicked()
-                            {
-                                self.fx_sel = FxSel::Press(e);
-                                self.fx_events.clear();
-                                self.fx_t0 = Instant::now();
-                            }
-                        }
-                        ui.label(
-                            RichText::new("🌐 = whole board")
-                                .size(10.5)
-                                .color(pal::TEXT_DIM),
-                        );
-                    });
-                }
-                FxLib::Apply => unreachable!(),
-                FxLib::Custom => {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("CUSTOM").size(10.5).color(pal::TEXT_DIM));
-                        let mut select: Option<usize> = None;
-                        for (i, c) in self.custom_fx.iter().enumerate() {
-                            if ui
-                                .selectable_label(
-                                    self.fx_sel == FxSel::Custom(i),
-                                    format!("★ {}", c.name),
-                                )
-                                .clicked()
-                            {
-                                select = Some(i);
-                            }
-                        }
-                        if let Some(i) = select {
-                            self.fx_sel = FxSel::Custom(i);
-                            self.fx_step = 0;
+                        let name = label
+                            .split(" -")
+                            .next()
+                            .unwrap_or(label)
+                            .split(" (")
+                            .next()
+                            .unwrap_or(label);
+                        if ui
+                            .selectable_label(self.fx_sel == FxSel::Const(e), name)
+                            .clicked()
+                        {
+                            self.fx_sel = FxSel::Const(e);
                             self.fx_t0 = Instant::now();
                         }
-                        if ui.button("＋ new").clicked() {
-                            let n = self.custom_fx.len() + 1;
-                            self.custom_fx.push(CustomFx {
-                                name: format!("my effect {n}"),
-                                steps: vec![FxStep {
-                                    keys: Vec::new(),
-                                    color: [138, 92, 246],
-                                    ms: 220,
-                                }],
-                            });
-                            self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
-                            self.fx_step = 0;
-                            self.fx_playing = false; // start in paint mode
-                            self.save_custom_fx();
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("DEFAULT · ON KEY PRESS")
+                        .size(10.5)
+                        .color(pal::TEXT_DIM),
+                );
+                ui.horizontal_wrapped(|ui| {
+                    for (e, label) in PressEffect::ALL {
+                        if e == PressEffect::None {
+                            continue;
                         }
-                    });
-                }
-            }
-        });
-        ui.add_space(8.0);
-
-        // --- Tune + Preview: side by side when there's room, stacked when not
-        //     - sized from the available width so nothing is ever cut off.
-        let full = ui.available_width();
-        let ed_w = 250.0;
-        if full - ed_w - 16.0 >= 540.0 {
-            ui.horizontal_top(|ui| {
-                ui.vertical(|ui| {
-                    ui.set_width(ed_w);
-                    self.fx_tune_card(ui);
+                        let name = label
+                            .replace("This key - ", "")
+                            .replace("Whole board - ", "Board · ");
+                        if ui
+                            .selectable_label(self.fx_sel == FxSel::Press(e), name)
+                            .clicked()
+                        {
+                            self.fx_sel = FxSel::Press(e);
+                            self.fx_events.clear();
+                            self.fx_t0 = Instant::now();
+                        }
+                    }
                 });
                 ui.add_space(8.0);
-                ui.vertical(|ui| {
-                    ui.set_width(full - ed_w - 16.0);
-                    self.fx_preview_card(ui);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("MY EFFECTS").size(10.5).color(pal::TEXT_DIM));
+                    let mut select = None;
+                    for (i, c) in self.custom_fx.iter().enumerate() {
+                        if ui
+                            .selectable_label(
+                                self.fx_sel == FxSel::Custom(i),
+                                format!("★ {}", c.name),
+                            )
+                            .clicked()
+                        {
+                            select = Some(i);
+                        }
+                    }
+                    if let Some(i) = select {
+                        self.fx_sel = FxSel::Custom(i);
+                        self.fx_step = 0;
+                        self.fx_t0 = Instant::now();
+                        self.fx_events.clear();
+                    }
+                    if ui.button("＋ New custom").clicked() {
+                        let n = self.custom_fx.len() + 1;
+                        self.custom_fx.push(CustomFx {
+                            name: format!("my effect {n}"),
+                            steps: vec![FxStep {
+                                keys: Vec::new(),
+                                color: [138, 92, 246],
+                                ms: 220,
+                            }],
+                            background: config::FxBackgroundMode::Preserve,
+                            preset: None,
+                        });
+                        self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
+                        self.fx_step = 0;
+                        self.fx_playing = false;
+                        self.save_custom_fx();
+                    }
                 });
             });
-        } else {
-            self.fx_tune_card(ui);
-            ui.add_space(8.0);
-            self.fx_preview_card(ui);
-        }
+
+            let full = ui.available_width();
+            let ed_w = 270.0;
+            if full - ed_w - 16.0 >= 540.0 {
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ed_w);
+                        self.fx_tune_card(ui);
+                    });
+                    ui.add_space(8.0);
+                    ui.vertical(|ui| {
+                        ui.set_width(full - ed_w - 16.0);
+                        self.fx_preview_card(ui);
+                    });
+                });
+            } else {
+                self.fx_tune_card(ui);
+                ui.add_space(8.0);
+                self.fx_preview_card(ui);
+            }
+
+            card(ui, "Board output", |ui| self.ui_rgb_effects(ui));
+        });
     }
 
-    /// FX Studio: the tuning card - the effect's knobs plus a way to test it
-    /// on the physical board. Assigning lives elsewhere (key editor / Tools).
+    fn unique_fx_name(&self, base: &str) -> String {
+        let base = format!("{base} copy");
+        if !self.custom_fx.iter().any(|c| c.name == base) {
+            return base;
+        }
+        for n in 2..1000 {
+            let candidate = format!("{base} {n}");
+            if !self.custom_fx.iter().any(|c| c.name == candidate) {
+                return candidate;
+            }
+        }
+        format!("{base} new")
+    }
+
+    fn save_builtin_as_editable_copy(&mut self) {
+        let (name, preset) = match self.fx_sel {
+            FxSel::Const(effect) => (
+                self.unique_fx_name(effect.label().split(" -").next().unwrap_or(effect.label())),
+                FxPresetSource::Constant {
+                    effect,
+                    color: self.fx_color,
+                    speed: self.fx_speed,
+                    brightness: self.fx_bright,
+                },
+            ),
+            FxSel::Press(effect) => (
+                self.unique_fx_name(
+                    effect
+                        .label()
+                        .replace("This key - ", "")
+                        .replace("Whole board - ", "Board ")
+                        .as_str(),
+                ),
+                FxPresetSource::Press {
+                    effect,
+                    color: self.fx_color,
+                },
+            ),
+            FxSel::Custom(_) => return,
+        };
+        self.custom_fx.push(CustomFx {
+            name,
+            steps: Vec::new(),
+            background: config::FxBackgroundMode::Preserve,
+            preset: Some(preset),
+        });
+        self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
+        self.fx_t0 = Instant::now();
+        self.save_custom_fx();
+    }
+
+    /// Tuning always edits a user-owned copy. Built-ins remain immutable and
+    /// expose a single explicit "Save editable copy" action.
     pub(super) fn fx_tune_card(&mut self, ui: &mut egui::Ui) {
         if let FxSel::Custom(i) = self.fx_sel {
-            if i < self.custom_fx.len() {
-                self.fx_custom_editor(ui, i);
-            } else {
+            if i >= self.custom_fx.len() {
                 self.fx_sel = FxSel::Press(PressEffect::Ripple);
+                return;
+            }
+            if self.custom_fx[i].preset.is_some() {
+                self.fx_preset_editor(ui, i);
+            } else {
+                self.fx_custom_editor(ui, i);
             }
             return;
         }
-        card(ui, "Tune", |ui| {
+
+        card(ui, "Default effect", |ui| {
             let (name, uses_color, is_press) = match self.fx_sel {
                 FxSel::Const(e) => (e.label().to_string(), e.uses_color(), false),
                 FxSel::Press(e) => (e.label().to_string(), e.uses_color(), true),
@@ -157,9 +205,9 @@ impl App {
             ui.label(RichText::new(name).strong().size(15.0).color(pal::TEXT));
             ui.label(
                 RichText::new(if is_press {
-                    "plays from a key, over your RGB"
+                    "Built-in key reaction · preview settings are temporary until you save a copy."
                 } else {
-                    "whole board, runs continuously"
+                    "Built-in board effect · preview settings are temporary until you save a copy."
                 })
                 .size(11.5)
                 .color(pal::TEXT_DIM),
@@ -179,25 +227,18 @@ impl App {
                 });
             }
             if is_press {
-                ui.add_space(8.0);
                 let on = self.connected.is_some();
-                let test = ui
-                    .add_enabled(
-                        on,
-                        egui::Button::new(
-                            RichText::new("⚡ Test on keyboard").color(Color32::WHITE),
-                        )
-                        .fill(pal::VIOLET),
-                    )
-                    .on_disabled_hover_text("Plug in the Voyager to test on it");
-                if test.clicked() {
+                if ui
+                    .add_enabled(on, egui::Button::new("⚡ Test on keyboard"))
+                    .on_disabled_hover_text("Plug in the Voyager to test on it")
+                    .clicked()
+                {
                     if let (FxSel::Press(e), Ok(mut a)) = (self.fx_sel, self.anim.lock()) {
                         let now = Instant::now();
                         let seed = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.subsec_nanos() as u64)
                             .unwrap_or(0);
-                        // Fire from a central key; board-wide effects ignore it.
                         a.events.push(FxEvent {
                             key: 16,
                             effect: e,
@@ -205,18 +246,160 @@ impl App {
                             at: now,
                             seed,
                             seq: None,
+                            replace_base: false,
                         });
                     }
                 }
             }
             ui.add_space(8.0);
+            if ui.button("Save editable copy").clicked() {
+                self.save_builtin_as_editable_copy();
+            }
+        });
+    }
+
+    fn fx_preset_editor(&mut self, ui: &mut egui::Ui, i: usize) {
+        card(ui, "My effect", |ui| {
+            let mut dirty = false;
+            let mut name = self.custom_fx[i].name.clone();
+            if ui
+                .add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY))
+                .changed()
+            {
+                self.rename_custom_fx(i, name);
+            }
+            ui.add_space(6.0);
+
+            let preset = self.custom_fx[i].preset.clone();
+            match preset {
+                Some(FxPresetSource::Constant {
+                    mut effect,
+                    mut color,
+                    mut speed,
+                    mut brightness,
+                }) => {
+                    labeled(ui, "Effect", |ui| {
+                        egui::ComboBox::from_id_salt(("saved_const_fx", i))
+                            .selected_text(effect.label())
+                            .show_ui(ui, |ui| {
+                                for (candidate, label) in Effect::ALL {
+                                    if candidate != Effect::Off {
+                                        dirty |= ui
+                                            .selectable_value(&mut effect, candidate, label)
+                                            .changed();
+                                    }
+                                }
+                            });
+                    });
+                    if effect.uses_color() {
+                        labeled(ui, "Color", |ui| {
+                            dirty |= ui.color_edit_button_srgb(&mut color).changed();
+                        });
+                    }
+                    labeled(ui, "Speed", |ui| {
+                        dirty |= ui
+                            .add(egui::Slider::new(&mut speed, 0.2..=3.0).show_value(false))
+                            .changed();
+                    });
+                    labeled(ui, "Brightness", |ui| {
+                        dirty |= ui
+                            .add(egui::Slider::new(&mut brightness, 0.05..=1.0).show_value(false))
+                            .changed();
+                    });
+                    if dirty {
+                        self.custom_fx[i].preset = Some(FxPresetSource::Constant {
+                            effect,
+                            color,
+                            speed,
+                            brightness,
+                        });
+                    }
+                    if ui
+                        .add_enabled(
+                            self.connected.is_some(),
+                            egui::Button::new("⚡ Test 5 s on keyboard"),
+                        )
+                        .clicked()
+                    {
+                        if let Ok(mut a) = self.anim.lock() {
+                            let until = Instant::now() + Duration::from_secs(5);
+                            let mut restore = self
+                                .fx_board_restore
+                                .take()
+                                .unwrap_or_else(|| FxBoardRestore::capture(&a, until));
+                            restore.until = until;
+                            a.effect = effect;
+                            a.color = color;
+                            a.speed = speed;
+                            a.brightness = brightness;
+                            self.fx_board_restore = Some(restore);
+                        }
+                    }
+                }
+                Some(FxPresetSource::Press {
+                    mut effect,
+                    mut color,
+                }) => {
+                    labeled(ui, "Effect", |ui| {
+                        egui::ComboBox::from_id_salt(("saved_press_fx", i))
+                            .selected_text(effect.label())
+                            .show_ui(ui, |ui| {
+                                for (candidate, label) in PressEffect::ALL {
+                                    if candidate != PressEffect::None {
+                                        dirty |= ui
+                                            .selectable_value(&mut effect, candidate, label)
+                                            .changed();
+                                    }
+                                }
+                            });
+                    });
+                    if effect.uses_color() {
+                        labeled(ui, "Color", |ui| {
+                            dirty |= ui.color_edit_button_srgb(&mut color).changed();
+                        });
+                    }
+                    if dirty {
+                        self.custom_fx[i].preset = Some(FxPresetSource::Press { effect, color });
+                    }
+                    if ui
+                        .add_enabled(
+                            self.connected.is_some(),
+                            egui::Button::new("⚡ Test on keyboard"),
+                        )
+                        .clicked()
+                    {
+                        if let Ok(mut a) = self.anim.lock() {
+                            let now = Instant::now();
+                            a.events.push(FxEvent {
+                                key: 16,
+                                effect,
+                                color,
+                                at: now,
+                                seed: now.elapsed().subsec_nanos() as u64,
+                                seq: None,
+                                replace_base: false,
+                            });
+                        }
+                    }
+                }
+                None => {}
+            }
+
+            ui.add_space(8.0);
             ui.separator();
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Use it per key in Layout (key → On press), or board-wide under board RGB (left).")
-                    .size(11.0)
-                    .color(pal::TEXT_MUTED),
-            );
+            ui.horizontal(|ui| {
+                ui.weak("This is your copy. The built-in it came from stays unchanged.");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("🗑").on_hover_text("delete this effect").clicked() {
+                        self.remove_custom_fx(i);
+                        self.fx_sel = FxSel::Press(PressEffect::Ripple);
+                        dirty = false;
+                    }
+                });
+            });
+            if dirty {
+                self.save_custom_fx();
+            }
         });
     }
 
@@ -230,8 +413,7 @@ impl App {
                 .add(egui::TextEdit::singleline(&mut name).desired_width(f32::INFINITY))
                 .changed()
             {
-                self.custom_fx[i].name = name;
-                dirty = true;
+                self.rename_custom_fx(i, name);
             }
             ui.add_space(6.0);
 
@@ -322,8 +504,26 @@ impl App {
                     dirty = true;
                 }
             });
-            labeled(ui, "tempo", |ui| {
+            labeled(ui, "Tempo", |ui| {
                 ui.add(egui::Slider::new(&mut self.fx_speed, 0.2..=3.0).show_value(false));
+            });
+            labeled(ui, "Other LEDs", |ui| {
+                ui.horizontal(|ui| {
+                    dirty |= ui
+                        .selectable_value(
+                            &mut self.custom_fx[i].background,
+                            config::FxBackgroundMode::Preserve,
+                            "Keep current RGB",
+                        )
+                        .changed();
+                    dirty |= ui
+                        .selectable_value(
+                            &mut self.custom_fx[i].background,
+                            config::FxBackgroundMode::Blackout,
+                            "Turn off",
+                        )
+                        .changed();
+                });
             });
             ui.add_space(6.0);
 
@@ -347,6 +547,10 @@ impl App {
                     restore.until = until;
                     a.custom = self.custom_fx[i].steps.clone();
                     a.custom_name = self.custom_fx[i].name.clone();
+                    a.custom_replace_base = matches!(
+                        self.custom_fx[i].background,
+                        config::FxBackgroundMode::Blackout
+                    );
                     a.speed = self.fx_speed;
                     a.effect = Effect::Custom;
                     self.fx_board_restore = Some(restore);
@@ -356,9 +560,11 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("Use: ▶ board RGB → constant effect → ★")
-                        .size(11.0)
-                        .color(pal::TEXT_MUTED),
+                    RichText::new(
+                        "Assign from Layout → On press, or choose it in Board output below.",
+                    )
+                    .size(11.0)
+                    .color(pal::TEXT_MUTED),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -366,9 +572,9 @@ impl App {
                         .on_hover_text("delete this effect")
                         .clicked()
                     {
-                        self.custom_fx.remove(i);
+                        self.remove_custom_fx(i);
                         self.fx_sel = FxSel::Press(PressEffect::Ripple);
-                        dirty = true;
+                        dirty = false;
                     }
                 });
             });
@@ -378,16 +584,11 @@ impl App {
         });
     }
 
-    /// FX Studio: the preview card (pure `compute`, never touches the LEDs).
+    /// FX Studio: the preview card (pure renderer; never touches LEDs).
     pub(super) fn fx_preview_card(&mut self, ui: &mut egui::Ui) {
-        // Fit the preview into the window's remaining height (the widget keeps
-        // its own legible floor), so the studio fits without scrolling.
         let (cols, rows) = self.board_units();
-        // Reserve room for the card header/margins and the play-controls row.
         let budget = (ui.ctx().screen_rect().height() - ui.cursor().top() - 118.0).max(170.0);
         card(ui, "Preview", |ui| {
-            // Match the widget's own legible floor (34px/unit) so the container
-            // is never narrower than what draw_keyboard will actually paint.
             let w = ui
                 .available_width()
                 .min((budget / rows).max(34.0) * cols + 24.0);
@@ -401,52 +602,78 @@ impl App {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                let label = if self.fx_playing {
-                    "⏸ Pause"
-                } else {
-                    "▶ Play"
+                let sequence = match self.fx_sel {
+                    FxSel::Custom(i) => self.custom_fx.get(i).is_some_and(|c| c.preset.is_none()),
+                    _ => false,
                 };
-                if ui.button(label).clicked() {
-                    self.fx_playing = !self.fx_playing;
-                    self.fx_t0 = Instant::now();
-                }
-                let hint = match self.fx_sel {
-                    FxSel::Custom(_) if !self.fx_playing => format!(
-                        "painting step {} - click keys to toggle them",
-                        self.fx_step + 1
-                    ),
-                    FxSel::Custom(_) => {
-                        "playing the loop - pause to paint · clicks still paint".to_string()
+                if sequence {
+                    let label = if self.fx_playing {
+                        "⏸ Pause"
+                    } else {
+                        "▶ Play"
+                    };
+                    if ui.button(label).clicked() {
+                        self.fx_playing = !self.fx_playing;
+                        self.fx_t0 = Instant::now();
                     }
-                    _ => "click keys in the preview to fire the effect".to_string(),
-                };
-                ui.label(RichText::new(hint).size(11.0).color(pal::TEXT_DIM));
+                    let hint = if self.fx_playing {
+                        "playing the loop · pause to paint keys"
+                    } else {
+                        "paint mode · click keys to toggle the active step"
+                    };
+                    ui.label(RichText::new(hint).size(11.0).color(pal::TEXT_DIM));
+                } else {
+                    ui.label(
+                        RichText::new("Click a key to trigger key-press effects.")
+                            .size(11.0)
+                            .color(pal::TEXT_DIM),
+                    );
+                }
             });
         });
     }
 
-    /// The FX Studio live preview: renders the engine's pure `compute` on the
-    /// on-screen keyboard - never touches the physical LEDs.
+    fn preview_press_event(
+        &mut self,
+        key: usize,
+        effect: PressEffect,
+        color: [u8; 3],
+        now: Instant,
+    ) {
+        self.fx_events.push(FxEvent {
+            key,
+            effect,
+            color,
+            at: now,
+            seed: now.elapsed().subsec_nanos() as u64,
+            seq: None,
+            replace_base: false,
+        });
+    }
+
+    /// The FX Studio live preview: built-ins and saved copies use the same pure
+    /// render path as the device animation engine.
     pub(super) fn fx_preview(&mut self, ui: &mut egui::Ui) {
         let geo = self.geometry();
         let n = geo.len();
         let now = Instant::now();
-        // Auto-fire press effects periodically so the preview animates itself.
+        self.fx_events
+            .retain(|ev| now.duration_since(ev.at).as_secs_f32() < 2.0);
+
+        let selected_press = match self.fx_sel {
+            FxSel::Press(e) => Some((e, self.fx_color)),
+            FxSel::Custom(i) => self.custom_fx.get(i).and_then(|c| match c.preset {
+                Some(FxPresetSource::Press { effect, color }) => Some((effect, color)),
+                _ => None,
+            }),
+            _ => None,
+        };
         if self.fx_playing {
-            if let FxSel::Press(e) = self.fx_sel {
-                self.fx_events
-                    .retain(|ev| now.duration_since(ev.at).as_secs_f32() < 1.5);
+            if let Some((effect, color)) = selected_press {
                 if now.duration_since(self.fx_last_fire) > Duration::from_millis(1400) {
                     self.fx_last_fire = now;
                     let key = [16usize, 30, 8, 42][(now.elapsed().subsec_nanos() as usize) % 4];
-                    self.fx_events.push(FxEvent {
-                        key: key % n,
-                        effect: e,
-                        color: self.fx_color,
-                        at: now,
-                        seed: now.elapsed().subsec_nanos() as u64,
-                        seq: None,
-                    });
+                    self.preview_press_event(key % n, effect, color, now);
                 }
             }
         }
@@ -463,6 +690,7 @@ impl App {
                 &base,
                 &[],
                 &[],
+                false,
                 geo,
             ),
             FxSel::Press(_) => rgb_anim::compute(
@@ -474,51 +702,94 @@ impl App {
                 &base,
                 &self.fx_events,
                 &[],
+                false,
                 geo,
             ),
-            FxSel::Custom(ci) => {
-                let steps = self
-                    .custom_fx
-                    .get(ci)
-                    .map(|c| c.steps.clone())
-                    .unwrap_or_default();
-                if self.fx_playing {
-                    rgb_anim::compute(
-                        Effect::Custom,
-                        [0, 0, 0],
-                        self.fx_speed,
-                        self.fx_bright,
-                        t,
-                        &base,
-                        &[],
-                        &steps,
-                        geo,
-                    )
-                } else {
-                    // Paint mode: the active step bright, the previous step as
-                    // a dim onion-skin so nudged copies line up visually.
-                    let mut fr = vec![[0u8, 0, 0]; n];
-                    if self.fx_step > 0 {
-                        if let Some(p) = steps.get(self.fx_step - 1) {
-                            for &k in &p.keys {
-                                if (k as usize) < n {
-                                    fr[k as usize] =
-                                        [p.color[0] / 4, p.color[1] / 4, p.color[2] / 4];
+            FxSel::Custom(ci) => match self.custom_fx.get(ci).cloned() {
+                Some(CustomFx {
+                    preset:
+                        Some(FxPresetSource::Constant {
+                            effect,
+                            color,
+                            speed,
+                            brightness,
+                        }),
+                    ..
+                }) => rgb_anim::compute(
+                    effect,
+                    color,
+                    speed,
+                    brightness,
+                    if self.fx_playing { t } else { 0.35 },
+                    &base,
+                    &[],
+                    &[],
+                    false,
+                    geo,
+                ),
+                Some(CustomFx {
+                    preset: Some(FxPresetSource::Press { .. }),
+                    ..
+                }) => rgb_anim::compute(
+                    Effect::Off,
+                    [0, 0, 0],
+                    1.0,
+                    1.0,
+                    t,
+                    &base,
+                    &self.fx_events,
+                    &[],
+                    false,
+                    geo,
+                ),
+                Some(custom) => {
+                    let replace = matches!(custom.background, config::FxBackgroundMode::Blackout);
+                    if self.fx_playing {
+                        rgb_anim::compute(
+                            Effect::Custom,
+                            [0, 0, 0],
+                            self.fx_speed,
+                            self.fx_bright,
+                            t,
+                            &base,
+                            &[],
+                            &custom.steps,
+                            replace,
+                            geo,
+                        )
+                    } else {
+                        let mut fr = if replace {
+                            vec![[0u8, 0, 0]; n]
+                        } else {
+                            base.clone()
+                        };
+                        if self.fx_step > 0 {
+                            if let Some(prev) = custom.steps.get(self.fx_step - 1) {
+                                for &k in &prev.keys {
+                                    if (k as usize) < n {
+                                        fr[k as usize] = [
+                                            prev.color[0] / 4,
+                                            prev.color[1] / 4,
+                                            prev.color[2] / 4,
+                                        ];
+                                    }
                                 }
                             }
                         }
-                    }
-                    if let Some(sdef) = steps.get(self.fx_step) {
-                        for &k in &sdef.keys {
-                            if (k as usize) < n {
-                                fr[k as usize] = sdef.color;
+                        if let Some(step) = custom.steps.get(self.fx_step) {
+                            for &k in &step.keys {
+                                if (k as usize) < n {
+                                    fr[k as usize] = step.color;
+                                }
                             }
                         }
+                        fr
                     }
-                    fr
                 }
-            }
+                None => base.clone(),
+            },
         };
+
         let glow: Vec<Option<Color32>> = frame
             .iter()
             .map(|c| (*c != [0, 0, 0]).then(|| Color32::from_rgb(c[0], c[1], c[2])))
@@ -537,33 +808,32 @@ impl App {
             1.0,
             false,
         );
-        // Clicking the preview: fire the press effect, or paint the custom step.
         if let Some(i) = kb.clicked {
             match self.fx_sel {
-                FxSel::Press(e) => {
-                    self.fx_events.push(FxEvent {
-                        key: i,
-                        effect: e,
-                        color: self.fx_color,
-                        at: now,
-                        seed: now.elapsed().subsec_nanos() as u64,
-                        seq: None,
-                    });
-                }
+                FxSel::Press(e) => self.preview_press_event(i, e, self.fx_color, now),
                 FxSel::Custom(ci) => {
-                    let step = self.fx_step;
-                    if let Some(st) = self
-                        .custom_fx
-                        .get_mut(ci)
-                        .and_then(|c| c.steps.get_mut(step))
-                    {
-                        match st.keys.iter().position(|&k| k as usize == i) {
-                            Some(p) => {
-                                st.keys.remove(p);
-                            }
-                            None => st.keys.push(i as u16),
+                    let preset = self.custom_fx.get(ci).and_then(|c| c.preset.clone());
+                    match preset {
+                        Some(FxPresetSource::Press { effect, color }) => {
+                            self.preview_press_event(i, effect, color, now);
                         }
-                        self.save_custom_fx();
+                        Some(FxPresetSource::Constant { .. }) => {}
+                        None => {
+                            let step = self.fx_step;
+                            if let Some(st) = self
+                                .custom_fx
+                                .get_mut(ci)
+                                .and_then(|c| c.steps.get_mut(step))
+                            {
+                                match st.keys.iter().position(|&k| k as usize == i) {
+                                    Some(p) => {
+                                        st.keys.remove(p);
+                                    }
+                                    None => st.keys.push(i as u16),
+                                }
+                                self.save_custom_fx();
+                            }
+                        }
                     }
                 }
                 FxSel::Const(_) => {}

@@ -224,6 +224,15 @@ pub struct CustomShortcut {
     pub high: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub enum FxBackgroundMode {
+    /// Preserve the existing layout/RGB and draw this effect on top.
+    #[default]
+    Preserve,
+    /// Turn every other LED off while this custom effect frame is active.
+    Blackout,
+}
+
 /// A per-key press effect assigned in the key editor (Oryx-style: alongside
 /// the key's color, a reaction that plays when the key is pressed).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -308,6 +317,10 @@ pub struct Config {
     pub peek: PeekConfig,
     /// Independent minimap presentation and hints for individual layers.
     pub minimap_layers: Vec<MinimapLayerConfig>,
+    /// Shared minimap presentation used when global mode is enabled.
+    pub minimap_global: Option<MinimapLayerConfig>,
+    /// When true, every layer renders the shared global minimap configuration.
+    pub minimap_global_enabled: bool,
     /// Pin the real minimap overlay on screen until explicitly unlocked.
     pub minimap_locked: bool,
     /// Show a live CPU pill in the sidebar.

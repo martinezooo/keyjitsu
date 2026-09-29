@@ -545,14 +545,69 @@ impl App {
     }
 
     /// Append a new empty custom layer and view it.
-    pub(super) fn add_custom_layer(&mut self, name: String) {
+    /// Add a blank custom layer or duplicate the effective contents of an
+    /// existing one. Duplication refuses actions the custom-layer firmware
+    /// path cannot round-trip instead of silently simplifying them.
+    pub(super) fn add_custom_layer_from(&mut self, name: String, source: Option<u8>) {
         let Some(hash) = self.layout_hash.clone() else {
             return;
         };
+        let mut keys = Vec::new();
+        if let Some(source) = source {
+            let Some(layer) = self.editing_layer(source) else {
+                self.persist_error = Some(format!(
+                    "could not duplicate layer {source}: layout unavailable"
+                ));
+                return;
+            };
+            for (key, def) in layer.keys.iter().enumerate() {
+                if !def.assignment_roundtrip_safe()
+                    || def.double_tap.is_some()
+                    || def.tap_hold.is_some()
+                {
+                    self.persist_error = Some(format!(
+                        "could not duplicate {}: key {key} uses behavior custom layers cannot represent yet",
+                        self.layer_name(source)
+                    ));
+                    return;
+                }
+                let tap = def
+                    .tap
+                    .as_ref()
+                    .and_then(crate::oryx_api::KeyAction::qmk_code);
+                let hold = def
+                    .hold
+                    .as_ref()
+                    .and_then(crate::oryx_api::KeyAction::qmk_code);
+                let code = match (tap, hold) {
+                    (None, None) => None,
+                    (Some(tap), None) => Some(tap),
+                    (None, Some(hold)) => Some(hold),
+                    (Some(tap), Some(hold)) => match crate::key_action::hold_wrap(&hold, &tap) {
+                        Some(code) => Some(code),
+                        None => {
+                            self.persist_error = Some(format!(
+                                "could not duplicate {}: key {key} has a hold action custom layers cannot represent yet",
+                                self.layer_name(source)
+                            ));
+                            return;
+                        }
+                    },
+                };
+                if let Some(code) = code {
+                    if !matches!(code.as_str(), "KC_NO" | "KC_TRANSPARENT" | "KC_TRNS") {
+                        keys.push(config::CustomKey {
+                            key: key as u16,
+                            code,
+                        });
+                    }
+                }
+            }
+        }
         self.custom_layers.push(config::CustomLayer {
             layout: hash,
             name,
-            keys: Vec::new(),
+            keys,
         });
         self.save_custom_layers();
         self.view_layer = self.layer_count() - 1;
@@ -1012,12 +1067,109 @@ impl App {
         });
     }
 
-    /// Persist the user-built custom effects.
+    /// Persist user effects and keep an already-running custom sequence in sync
+    /// with edits made in FX Studio.
     pub(super) fn save_custom_fx(&mut self) {
+        if let Ok(mut a) = self.anim.lock() {
+            if a.effect == Effect::Custom {
+                if let Some(custom) = self
+                    .custom_fx
+                    .iter()
+                    .find(|c| c.preset.is_none() && c.name == a.custom_name)
+                {
+                    a.custom = custom.steps.clone();
+                    a.custom_replace_base =
+                        matches!(custom.background, config::FxBackgroundMode::Blackout);
+                }
+            }
+        }
         let custom_fx = self.custom_fx.clone();
         self.persist_config("saving custom effects", move |cfg| {
             cfg.custom_fx = custom_fx;
         });
+    }
+
+    pub(super) fn rename_custom_fx(&mut self, index: usize, name: String) {
+        let Some(old) = self.custom_fx.get(index).map(|c| c.name.clone()) else {
+            return;
+        };
+        if old == name || name.trim().is_empty() {
+            return;
+        }
+        self.custom_fx[index].name = name.clone();
+        let mut key_refs_changed = false;
+        for (_, _, _, custom) in self.key_fx.values_mut() {
+            if custom.as_deref() == Some(old.as_str()) {
+                *custom = Some(name.clone());
+                key_refs_changed = true;
+            }
+        }
+        let rgb = if let Ok(mut a) = self.anim.lock() {
+            if a.custom_name == old {
+                a.custom_name = name.clone();
+            }
+            Some(config::RgbState {
+                effect: a.effect,
+                color: a.color,
+                speed: a.speed,
+                brightness: a.brightness,
+                press_effect: a.press_effect,
+                press_color: a.press_color,
+                custom_name: a.custom_name.clone(),
+            })
+        } else {
+            None
+        };
+        self.save_custom_fx();
+        if key_refs_changed {
+            self.save_key_fx();
+        }
+        if let Some(rgb) = rgb {
+            self.persist_config("renaming active custom effect", move |cfg| cfg.rgb = rgb);
+        }
+    }
+
+    pub(super) fn remove_custom_fx(&mut self, index: usize) {
+        if index >= self.custom_fx.len() {
+            return;
+        }
+        let removed = self.custom_fx.remove(index).name;
+        let mut key_refs_changed = false;
+        self.key_fx.retain(|_, (_, effect, _, custom)| {
+            if custom.as_deref() == Some(removed.as_str()) {
+                *custom = None;
+                key_refs_changed = true;
+            }
+            *effect != PressEffect::None || custom.is_some()
+        });
+        let rgb = if let Ok(mut a) = self.anim.lock() {
+            if a.custom_name == removed {
+                a.custom_name.clear();
+                a.custom.clear();
+                a.custom_replace_base = false;
+                if a.effect == Effect::Custom {
+                    a.effect = Effect::Off;
+                }
+            }
+            Some(config::RgbState {
+                effect: a.effect,
+                color: a.color,
+                speed: a.speed,
+                brightness: a.brightness,
+                press_effect: a.press_effect,
+                press_color: a.press_color,
+                custom_name: a.custom_name.clone(),
+            })
+        } else {
+            None
+        };
+        self.save_custom_fx();
+        if key_refs_changed {
+            self.save_key_fx();
+        }
+        if let Some(rgb) = rgb {
+            self.persist_config("removing active custom effect", move |cfg| cfg.rgb = rgb);
+        }
     }
 
     /// Translate a custom-effect step by one grid unit; keys that would land
@@ -1179,14 +1331,14 @@ impl App {
         };
 
         // A per-key "★ custom" assignment plays the sequence once.
-        let seq = fired.as_ref().and_then(|(_, _, custom)| {
-            custom.as_deref().and_then(|name| {
-                self.custom_fx
-                    .iter()
-                    .find(|c| c.name == name)
-                    .map(|c| std::sync::Arc::new(c.steps.clone()))
-            })
+        let custom_program = fired.as_ref().and_then(|(_, _, custom)| {
+            custom
+                .as_deref()
+                .and_then(|name| self.custom_fx.iter().find(|c| c.name == name))
         });
+        let seq = custom_program.map(|c| std::sync::Arc::new(c.steps.clone()));
+        let replace_base = custom_program
+            .is_some_and(|c| matches!(c.background, config::FxBackgroundMode::Blackout));
 
         let Ok(mut a) = self.anim.lock() else { return };
         let (effect, color) = match &fired {
@@ -1210,6 +1362,7 @@ impl App {
             at: now,
             seed,
             seq,
+            replace_base,
         });
     }
 

@@ -77,11 +77,33 @@ pub struct FxStep {
     pub ms: u64,
 }
 
-/// A named, persisted custom effect.
+/// Editable copy of a built-in effect. The built-in library remains immutable;
+/// saving a copy stores its own parameters here.
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub enum FxPresetSource {
+    Constant {
+        effect: Effect,
+        color: [u8; 3],
+        speed: f32,
+        brightness: f32,
+    },
+    Press {
+        effect: PressEffect,
+        color: [u8; 3],
+    },
+}
+
+/// A named, persisted user effect. `preset == None` is the original painted
+/// step-sequence format; `Some` is an editable copy of a built-in effect.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CustomFx {
     pub name: String,
+    #[serde(default)]
     pub steps: Vec<FxStep>,
+    #[serde(default)]
+    pub background: crate::config::FxBackgroundMode,
+    #[serde(default)]
+    pub preset: Option<FxPresetSource>,
 }
 
 /// When a per-key effect fires.
@@ -185,6 +207,8 @@ pub struct FxEvent {
     /// A user-built sequence to play ONCE instead of `effect` (per-key
     /// "on press → ★ custom" assignments from the editor).
     pub seq: Option<Arc<Vec<FxStep>>>,
+    /// Whether a custom sequence should blank the current RGB before painting.
+    pub replace_base: bool,
 }
 
 impl FxEvent {
@@ -226,6 +250,8 @@ pub struct Anim {
     /// The program for `Effect::Custom` + its display name.
     pub custom: Vec<FxStep>,
     pub custom_name: String,
+    /// Custom sequences either overlay the normal layout colors or replace them.
+    pub custom_replace_base: bool,
     /// The latest rendered frame (what the LEDs show right now); empty when
     /// the engine is idle. The Live view mirrors this.
     pub frame: Vec<[u8; 3]>,
@@ -244,6 +270,7 @@ impl Default for Anim {
             events: Vec::new(),
             custom: Vec::new(),
             custom_name: String::new(),
+            custom_replace_base: false,
             frame: Vec::new(),
         }
     }
@@ -301,7 +328,7 @@ fn run(
             Ok(guard) => Some(guard),
             Err(poisoned) => Some(poisoned.into_inner()),
         };
-        let (effect, color, speed, brightness, base, events, custom) = {
+        let (effect, color, speed, brightness, base, events, custom, custom_replace_base) = {
             let Some(mut a) = snapshot else { break };
             let now = Instant::now();
             a.events
@@ -314,6 +341,7 @@ fn run(
                 a.base.clone(),
                 a.events.clone(),
                 a.custom.clone(),
+                a.custom_replace_base,
             )
         };
 
@@ -338,7 +366,16 @@ fn run(
 
         let t = start.elapsed().as_secs_f32();
         let frame = compute(
-            effect, color, speed, brightness, t, &base, &events, &custom, geo,
+            effect,
+            color,
+            speed,
+            brightness,
+            t,
+            &base,
+            &events,
+            &custom,
+            custom_replace_base,
+            geo,
         );
 
         // Send the whole frame as ONE coalescing command; the device loop keeps
@@ -374,6 +411,7 @@ pub(crate) fn compute(
     base: &[[u8; 3]],
     events: &[FxEvent],
     custom: &[FxStep],
+    custom_replace_base: bool,
     geo: &geometry::Geometry,
 ) -> Vec<[u8; 3]> {
     let n = geo.len();
@@ -427,8 +465,11 @@ pub(crate) fn compute(
             }
         }
         Effect::Custom => {
-            // Looping step sequencer: dark board, each step paints its keys in
-            // its color for its duration. `speed` scales the whole loop.
+            // A custom loop can either replace the board (blackout) or layer
+            // only its painted keys on top of the normal layout colors.
+            if !custom_replace_base {
+                layout_base(&mut f);
+            }
             let total: u64 = custom.iter().map(|s| s.ms.max(30)).sum::<u64>().max(1);
             let tm = ((t * speed * 1000.0) as u64) % total;
             let mut acc = 0u64;
@@ -454,6 +495,9 @@ pub(crate) fn compute(
         let e = ev.at.elapsed().as_secs_f32();
         // A custom sequence event plays its steps once, as authored.
         if let Some(steps) = &ev.seq {
+            if ev.replace_base {
+                f.fill([0, 0, 0]);
+            }
             let tm = (e * 1000.0) as u64;
             let mut acc = 0u64;
             for st in steps.iter() {
@@ -662,6 +706,7 @@ mod tests {
             at: Instant::now(),
             seed: 7,
             seq: None,
+            replace_base: false,
         }
     }
 
@@ -671,7 +716,18 @@ mod tests {
         // Late in the paint phase the arms reach the whole row/column.
         let mut e = ev(8, PressEffect::Cross);
         e.at = Instant::now() - Duration::from_millis(350);
-        let f = compute(Effect::Off, [0, 0, 0], 1.0, 1.0, 0.0, &[], &[e], &[], geo);
+        let f = compute(
+            Effect::Off,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.0,
+            &[],
+            &[e],
+            &[],
+            false,
+            geo,
+        );
         let (px, py) = (geo.keys[8].x, geo.keys[8].y);
         let lit_row = geo
             .keys
@@ -696,7 +752,18 @@ mod tests {
         for ms in [100u64, 300, 500, 700] {
             let mut e = ev(0, PressEffect::BoardSparkle);
             e.at = Instant::now() - Duration::from_millis(ms);
-            let f = compute(Effect::Off, [0, 0, 0], 1.0, 1.0, 0.0, &[], &[e], &[], geo);
+            let f = compute(
+                Effect::Off,
+                [0, 0, 0],
+                1.0,
+                1.0,
+                0.0,
+                &[],
+                &[e],
+                &[],
+                false,
+                geo,
+            );
             any += f.iter().filter(|c| **c != [0, 0, 0]).count();
         }
         assert!(any > 0, "sparkles should appear at some point");
@@ -714,6 +781,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             geo,
         );
         assert_eq!(f.len(), geo.len());
@@ -737,6 +805,7 @@ mod tests {
             &base,
             &[],
             &[],
+            false,
             geo,
         );
         assert_eq!(f[3], [10, 200, 30]);
@@ -755,6 +824,7 @@ mod tests {
             &[],
             &[ev(5, PressEffect::Flash)],
             &[],
+            false,
             geo,
         );
         let sum = |c: [u8; 3]| c[0] as u32 + c[1] as u32 + c[2] as u32;
@@ -773,6 +843,7 @@ mod tests {
             &[],
             &[ev(5, PressEffect::BoardFlash)],
             &[],
+            false,
             geo,
         );
         assert!(
@@ -802,7 +873,20 @@ mod tests {
                 ms: 100,
             },
         ];
-        let at = |t: f32| compute(Effect::Custom, [0, 0, 0], 1.0, 1.0, t, &[], &[], &prog, geo);
+        let at = |t: f32| {
+            compute(
+                Effect::Custom,
+                [0, 0, 0],
+                1.0,
+                1.0,
+                t,
+                &[],
+                &[],
+                &prog,
+                true,
+                geo,
+            )
+        };
         // t=0.05s → step 1: keys 0,1 red, key 2 dark.
         let f = at(0.05);
         assert_eq!(f[0], [255, 0, 0]);
@@ -825,9 +909,90 @@ mod tests {
             &[],
             &[],
             &prog,
+            true,
             geo,
         );
         assert_eq!(f[0], [255, 0, 0]);
+    }
+
+    #[test]
+    fn custom_sequence_can_preserve_existing_layout_colors() {
+        let geo = geometry::voyager();
+        let mut base = vec![[0u8, 0, 0]; geo.len()];
+        base[10] = [10, 20, 30];
+        let prog = vec![FxStep {
+            keys: vec![0],
+            color: [255, 0, 0],
+            ms: 200,
+        }];
+        let f = compute(
+            Effect::Custom,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.05,
+            &base,
+            &[],
+            &prog,
+            false,
+            geo,
+        );
+        assert_eq!(f[0], [255, 0, 0]);
+        assert_eq!(f[10], [10, 20, 30]);
+    }
+
+    #[test]
+    fn custom_sequence_blackout_turns_other_leds_off() {
+        let geo = geometry::voyager();
+        let mut base = vec![[0u8, 0, 0]; geo.len()];
+        base[10] = [10, 20, 30];
+        let prog = vec![FxStep {
+            keys: vec![0],
+            color: [255, 0, 0],
+            ms: 200,
+        }];
+        let f = compute(
+            Effect::Custom,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.05,
+            &base,
+            &[],
+            &prog,
+            true,
+            geo,
+        );
+        assert_eq!(f[0], [255, 0, 0]);
+        assert_eq!(f[10], [0, 0, 0]);
+    }
+
+    #[test]
+    fn custom_press_sequence_can_blackout_base_for_its_frame() {
+        let geo = geometry::voyager();
+        let mut base = vec![[0u8, 0, 0]; geo.len()];
+        base[10] = [20, 30, 40];
+        let mut event = ev(0, PressEffect::None);
+        event.seq = Some(Arc::new(vec![FxStep {
+            keys: vec![1],
+            color: [0, 255, 0],
+            ms: 500,
+        }]));
+        event.replace_base = true;
+        let f = compute(
+            Effect::Off,
+            [0, 0, 0],
+            1.0,
+            1.0,
+            0.0,
+            &base,
+            &[event],
+            &[],
+            false,
+            geo,
+        );
+        assert_eq!(f[1], [0, 255, 0]);
+        assert_eq!(f[10], [0, 0, 0]);
     }
 
     #[test]

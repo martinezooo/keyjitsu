@@ -78,11 +78,10 @@ fn minimap_content_size(
         config::MinimapHintPlacement::Left | config::MinimapHintPlacement::Right => {
             (kb_w + gap + hint_w, header_h + keyboard_h.max(hint_h))
         }
-        config::MinimapHintPlacement::Top
-        | config::MinimapHintPlacement::Bottom
-        | config::MinimapHintPlacement::Inline => {
+        config::MinimapHintPlacement::Top | config::MinimapHintPlacement::Bottom => {
             (kb_w.max(hint_w), header_h + keyboard_h + gap + hint_h)
         }
+        config::MinimapHintPlacement::Inline => (kb_w, header_h + keyboard_h),
     }
 }
 
@@ -134,59 +133,100 @@ fn minimap_layer_header(
     ui.add_space(7.0 * s);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn minimap_content_layout(
     ui: &mut egui::Ui,
     placement: config::MinimapHintPlacement,
     show_hints: bool,
     gap: f32,
+    mut inside_size: impl FnMut(egui::Rect) -> egui::Vec2,
     mut header: impl FnMut(&mut egui::Ui),
-    mut board: impl FnMut(&mut egui::Ui),
-    mut hints: impl FnMut(&mut egui::Ui),
+    mut board: impl FnMut(&mut egui::Ui) -> egui::Rect,
+    mut hints: impl FnMut(&mut egui::Ui, Option<f32>),
 ) {
     if !show_hints {
         header(ui);
-        board(ui);
+        let _ = board(ui);
         return;
     }
     match placement {
         config::MinimapHintPlacement::Top => {
-            hints(ui);
+            hints(ui, None);
             ui.add_space(gap);
             header(ui);
-            board(ui);
+            let _ = board(ui);
         }
         config::MinimapHintPlacement::Inline => {
             header(ui);
-            hints(ui);
-            ui.add_space(gap);
-            board(ui);
+            let board_rect = board(ui);
+            // "Inside" means the physical gap between the two Voyager halves,
+            // not another row above/below the keyboard.
+            let inside_size = inside_size(board_rect);
+            let rect = egui::Rect::from_center_size(board_rect.center(), inside_size);
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::Center)),
+            );
+            hints(&mut child, Some(inside_size.x));
         }
         config::MinimapHintPlacement::Bottom => {
             header(ui);
-            board(ui);
+            let _ = board(ui);
             ui.add_space(gap);
-            hints(ui);
+            hints(ui, None);
         }
         config::MinimapHintPlacement::Left => {
             header(ui);
             ui.horizontal(|ui| {
-                hints(ui);
+                hints(ui, None);
                 ui.add_space(gap);
-                board(ui);
+                let _ = board(ui);
             });
         }
         config::MinimapHintPlacement::Right => {
             header(ui);
             ui.horizontal(|ui| {
-                board(ui);
+                let _ = board(ui);
                 ui.add_space(gap);
-                hints(ui);
+                hints(ui, None);
             });
         }
     }
 }
 
+fn minimap_inside_size(
+    geo: &crate::geometry::Geometry,
+    board_rect: egui::Rect,
+    layer_cfg: &config::MinimapLayerConfig,
+    scale: f32,
+) -> egui::Vec2 {
+    let cols = geo.keys.iter().map(|k| k.x).fold(0.0f32, f32::max) + 1.0;
+    let split = cols / 2.0;
+    let left = geo
+        .keys
+        .iter()
+        .filter(|k| k.x < split)
+        .map(|k| k.x)
+        .fold(0.0f32, f32::max);
+    let right = geo
+        .keys
+        .iter()
+        .filter(|k| k.x >= split)
+        .map(|k| k.x)
+        .fold(cols, f32::min);
+    let unit = board_rect.width() / cols.max(1.0);
+    let physical_gap = ((right - left - 1.0).max(0.0) * unit + unit * 0.16).max(76.0 * scale);
+    let (wanted_w, wanted_h) = minimap_hint_dimensions(layer_cfg, scale);
+    egui::vec2(
+        wanted_w.min((physical_gap - 6.0 * scale).max(70.0 * scale)),
+        wanted_h.min(board_rect.height() * 0.78).max(36.0 * scale),
+    )
+}
+
 impl App {
+    /// Stored per-layer settings. Missing layers start from the legacy/default
+    /// layer config; runtime global mode is applied separately.
     pub(super) fn minimap_layer_config(&self, layer: u8) -> config::MinimapLayerConfig {
         self.minimap_layers
             .iter()
@@ -199,8 +239,39 @@ impl App {
             })
     }
 
+    pub(super) fn minimap_display_config(&self, layer: u8) -> config::MinimapLayerConfig {
+        if self.minimap_global_enabled {
+            let mut global = self.minimap_global.clone();
+            global.layer = layer;
+            global
+        } else {
+            self.minimap_layer_config(layer)
+        }
+    }
+
     pub(super) fn minimap_settings(&self, layer: u8) -> PeekConfig {
-        self.minimap_layer_config(layer).settings
+        self.minimap_display_config(layer).settings
+    }
+
+    fn store_minimap_global(&mut self, global: config::MinimapLayerConfig) {
+        self.minimap_global = global.clone();
+        // Keep the old global field in sync as a backward-compatible fallback.
+        self.peek = global.settings.clone();
+        self.persist_config("saving global minimap", move |cfg| {
+            cfg.peek = global.settings.clone();
+            cfg.minimap_global = Some(global);
+        });
+    }
+
+    fn set_minimap_global_enabled(&mut self, enabled: bool) {
+        if self.minimap_global_enabled == enabled {
+            return;
+        }
+        self.minimap_global_enabled = enabled;
+        self.peek_until = None;
+        self.persist_config("saving minimap scope", move |cfg| {
+            cfg.minimap_global_enabled = enabled;
+        });
     }
 
     fn store_minimap_layer(&mut self, layer_cfg: config::MinimapLayerConfig) {
@@ -221,62 +292,114 @@ impl App {
     }
 
     pub(super) fn ui_peek_page(&mut self, ui: &mut egui::Ui) {
-        page_header(
-            ui,
-            "Minimap",
-            "Configure each layer here; changes appear in the real click-through overlay.",
-        );
+        centered_page(ui, 1120.0, |ui| {
+            page_header(
+                ui,
+                "Minimap",
+                "Configure the real click-through overlay. Choose Global or a layer in the sidebar.",
+            );
 
-        let mut layer_cfg = self.minimap_layer_config(self.peek_layer);
-        let original_layer_cfg = layer_cfg.clone();
-        let mut c = layer_cfg.settings.clone();
-        self.minimap_instructions_card(ui, &mut layer_cfg);
-        ui.add_space(8.0);
-        if ui.available_width() >= 760.0 {
-            ui.columns(2, |cols| {
-                self.peek_settings_card(&mut cols[0], &mut c);
-                self.peek_appearance_card(&mut cols[1], &mut c);
-                cols[1].add_space(8.0);
-                self.peek_position_card(&mut cols[1], &mut c);
+            ui.horizontal(|ui| {
+                let scope = if self.minimap_edit_global {
+                    "Editing Global"
+                } else {
+                    "Editing this layer"
+                };
+                status_pill(ui, scope, pal::VIOLET_HI);
+                let mut global = self.minimap_global_enabled;
+                if toggle(ui, &mut global).changed() {
+                    self.set_minimap_global_enabled(global);
+                }
+                ui.label(
+                    RichText::new("Use Global on all layers")
+                        .size(11.5)
+                        .color(pal::TEXT_MUTED),
+                );
+                if self.minimap_global_enabled && !self.minimap_edit_global {
+                    ui.weak("This layer is stored, but Global is what appears on screen.");
+                }
             });
-        } else {
-            self.peek_settings_card(ui, &mut c);
             ui.add_space(8.0);
-            self.peek_appearance_card(ui, &mut c);
-            ui.add_space(8.0);
-            self.peek_position_card(ui, &mut c);
-        }
-        ui.add_space(8.0);
-        if ui.button("Reset layer minimap to defaults").clicked() {
-            let (monitor, offset) = (c.monitor, c.offset);
-            c = PeekConfig {
-                monitor,
-                offset,
-                ..PeekConfig::default()
-            };
-        }
 
-        layer_cfg.settings = c.clone();
-        if layer_cfg != original_layer_cfg {
-            self.store_minimap_layer(layer_cfg);
-            if c.enabled {
-                self.arm_minimap_overlay(&c, 2500);
+            let mut layer_cfg = if self.minimap_edit_global {
+                self.minimap_global.clone()
             } else {
-                self.peek_until = None;
+                self.minimap_layer_config(self.peek_layer)
+            };
+            let original_layer_cfg = layer_cfg.clone();
+            let mut c = layer_cfg.settings.clone();
+            self.minimap_instructions_card(ui, &mut layer_cfg);
+            ui.add_space(8.0);
+            if ui.available_width() >= 760.0 {
+                ui.columns(2, |cols| {
+                    self.peek_settings_card(&mut cols[0], &mut c);
+                    self.peek_appearance_card(&mut cols[1], &mut c);
+                    cols[1].add_space(8.0);
+                    self.peek_position_card(&mut cols[1], &mut c);
+                });
+            } else {
+                self.peek_settings_card(ui, &mut c);
+                ui.add_space(8.0);
+                self.peek_appearance_card(ui, &mut c);
+                ui.add_space(8.0);
+                self.peek_position_card(ui, &mut c);
             }
-        }
+            ui.add_space(8.0);
+            if ui
+                .button(if self.minimap_edit_global {
+                    "Reset Global minimap to defaults"
+                } else {
+                    "Reset layer minimap to defaults"
+                })
+                .clicked()
+            {
+                let (monitor, offset) = (c.monitor, c.offset);
+                c = PeekConfig {
+                    monitor,
+                    offset,
+                    ..PeekConfig::default()
+                };
+            }
+
+            layer_cfg.settings = c.clone();
+            if layer_cfg != original_layer_cfg {
+                if self.minimap_edit_global {
+                    self.store_minimap_global(layer_cfg);
+                } else {
+                    self.store_minimap_layer(layer_cfg);
+                }
+                let visible = if self.minimap_edit_global {
+                    self.minimap_global_enabled
+                } else {
+                    !self.minimap_global_enabled
+                };
+                if c.enabled && visible {
+                    self.arm_minimap_overlay(&c, 2500);
+                } else if !c.enabled && visible {
+                    self.peek_until = None;
+                }
+            }
+        });
     }
 
     pub(super) fn peek_settings_card(&mut self, ui: &mut egui::Ui, c: &mut PeekConfig) {
         card(ui, "Behaviour", |ui| {
             // A bound Voyager key shows the minimap while held, independent of
             // the auto-peek toggles.
-            group_header(ui, "Shortcut", "");
+            group_header(ui, "Manual shortcut", "");
             self.peek_shortcut_row(ui);
             ui.add_space(6.0);
-            toggle_row(ui, "Enable minimap for this layer", &mut c.enabled);
+            toggle_row(
+                ui,
+                "Show automatically when a layer activates",
+                &mut c.enabled,
+            );
             ui.add_enabled_ui(c.enabled, |ui| {
-                toggle_row(ui, "Only outside the base layer", &mut c.only_non_base);
+                toggle_row(
+                    ui,
+                    "Keep visible while a non-base layer is active",
+                    &mut c.only_non_base,
+                );
                 toggle_row(ui, "Show background panel", &mut c.show_background);
                 toggle_row(ui, "Black & white (high contrast)", &mut c.monochrome);
                 toggle_row(ui, "Show layer name", &mut c.show_layer_name);
@@ -565,7 +688,7 @@ impl App {
     /// Draw the transparent, click-through layer peek as its own polished,
     /// card-like viewport, positioned on the chosen monitor.
     pub(super) fn show_peek(&self, ctx: &egui::Context) {
-        let layer_cfg = self.minimap_layer_config(self.peek_layer);
+        let layer_cfg = self.minimap_display_config(self.peek_layer);
         let c = &layer_cfg.settings;
         let geo = self.geometry();
         let edge = 48.0;
@@ -703,6 +826,7 @@ impl App {
                             hint_placement,
                             show_hints,
                             12.0 * scale,
+                            |board_rect| minimap_inside_size(geo, board_rect, &layer_cfg, scale),
                             |ui| {
                                 if show_name {
                                     minimap_layer_header(ui, peek_layer, &title, accent, a, scale);
@@ -710,7 +834,7 @@ impl App {
                             },
                             |ui| {
                                 ui.set_width(kb_w);
-                                draw_keyboard(
+                                let kb = draw_keyboard(
                                     ui,
                                     geo,
                                     legends,
@@ -725,8 +849,9 @@ impl App {
                                     ui.add_space(6.0 * scale);
                                     combo_strip(ui, &combo, opacity, accent, show_combo_ms);
                                 }
+                                kb.board_rect
                             },
-                            |ui| {
+                            |ui, max_width| {
                                 minimap_instruction_panel(
                                     ui,
                                     &instructions,
@@ -734,6 +859,7 @@ impl App {
                                     accent,
                                     hint_scale,
                                     hint_flow,
+                                    max_width,
                                 );
                             },
                         );
@@ -773,6 +899,7 @@ fn minimap_instruction_panel(
     accent: Color32,
     scale: f32,
     flow: config::MinimapHintFlow,
+    max_width: Option<f32>,
 ) {
     let s = scale.clamp(0.30, 2.40);
     let a = (opacity.clamp(0.08, 1.0) * 255.0) as u8;
@@ -802,57 +929,75 @@ fn minimap_instruction_panel(
         ))
         .corner_radius(egui::CornerRadius::same(scaled_u8(10.0, s)))
         .inner_margin(egui::Margin::same(scaled_i8(10.0, s)))
-        .show(ui, |ui| match flow {
-            config::MinimapHintFlow::Column => {
-                ui.set_min_width(210.0 * s);
-                for row in &visible {
-                    ui.horizontal(|ui| {
-                        egui::Frame::new()
-                            .fill(key_fill)
-                            .corner_radius(egui::CornerRadius::same(scaled_u8(5.0, s)))
-                            .inner_margin(egui::Margin::symmetric(
-                                scaled_i8(6.0, s),
-                                scaled_i8(3.0, s),
-                            ))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new(&row.keys)
-                                        .monospace()
-                                        .size(font)
-                                        .color(key_text),
-                                );
+        .show(ui, |ui| {
+            if let Some(width) = max_width {
+                ui.set_width(width.max(56.0 * s));
+            }
+            match flow {
+                config::MinimapHintFlow::Column => {
+                    // Force a vertical parent. Inheriting a horizontal parent
+                    // was the reason Column previously still rendered inline.
+                    ui.vertical(|ui| {
+                        if max_width.is_none() {
+                            ui.set_min_width(210.0 * s);
+                        }
+                        for row in &visible {
+                            ui.horizontal(|ui| {
+                                egui::Frame::new()
+                                    .fill(key_fill)
+                                    .corner_radius(egui::CornerRadius::same(scaled_u8(5.0, s)))
+                                    .inner_margin(egui::Margin::symmetric(
+                                        scaled_i8(6.0, s),
+                                        scaled_i8(3.0, s),
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(&row.keys)
+                                                .monospace()
+                                                .size(font)
+                                                .color(key_text),
+                                        );
+                                    });
+                                if !row.desc.trim().is_empty() {
+                                    ui.label(RichText::new(&row.desc).size(font).color(text));
+                                }
                             });
-                        ui.label(RichText::new(&row.desc).size(font).color(text));
+                        }
                     });
                 }
-            }
-            config::MinimapHintFlow::Row => {
-                ui.horizontal_wrapped(|ui| {
-                    for row in &visible {
-                        egui::Frame::new()
-                            .fill(key_fill)
-                            .corner_radius(egui::CornerRadius::same(scaled_u8(6.0, s)))
-                            .inner_margin(egui::Margin::symmetric(
-                                scaled_i8(7.0, s),
-                                scaled_i8(4.0, s),
-                            ))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&row.keys)
-                                            .monospace()
-                                            .strong()
-                                            .size(font)
-                                            .color(key_text),
-                                    );
-                                    if !row.desc.trim().is_empty() {
-                                        ui.label(RichText::new(&row.desc).size(font).color(text));
-                                    }
-                                });
-                            });
-                        ui.add_space(4.0 * s);
-                    }
-                });
+                config::MinimapHintFlow::Row => {
+                    // Row deliberately uses one wrapping horizontal flow.
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for row in &visible {
+                                egui::Frame::new()
+                                    .fill(key_fill)
+                                    .corner_radius(egui::CornerRadius::same(scaled_u8(6.0, s)))
+                                    .inner_margin(egui::Margin::symmetric(
+                                        scaled_i8(7.0, s),
+                                        scaled_i8(4.0, s),
+                                    ))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(&row.keys)
+                                                    .monospace()
+                                                    .strong()
+                                                    .size(font)
+                                                    .color(key_text),
+                                            );
+                                            if !row.desc.trim().is_empty() {
+                                                ui.label(
+                                                    RichText::new(&row.desc).size(font).color(text),
+                                                );
+                                            }
+                                        });
+                                    });
+                                ui.add_space(4.0 * s);
+                            }
+                        });
+                    });
+                }
             }
         });
 }
@@ -896,6 +1041,28 @@ mod minimap_layout_tests {
             layers.iter().map(|c| c.layer).collect::<Vec<_>>(),
             vec![1, 3]
         );
+    }
+
+    #[test]
+    fn row_and_column_hints_have_distinct_geometry() {
+        let mut layer = hints(4);
+        layer.instruction_flow = config::MinimapHintFlow::Column;
+        let column = minimap_hint_dimensions(&layer, 1.0);
+        layer.instruction_flow = config::MinimapHintFlow::Row;
+        let row = minimap_hint_dimensions(&layer, 1.0);
+        assert!(row.0 > column.0, "row should spread horizontally");
+        assert!(row.1 < column.1, "column should stack vertically");
+    }
+
+    #[test]
+    fn inside_hints_do_not_expand_minimap_bounds() {
+        let c = PeekConfig::default();
+        let mut layer = hints(3);
+        layer.instruction_placement = config::MinimapHintPlacement::Inline;
+        let with_inside = minimap_content_size(&c, &layer, 1.0);
+        layer.show_instructions = false;
+        let without_hints = minimap_content_size(&c, &layer, 1.0);
+        assert_eq!(with_inside, without_hints);
     }
 
     #[test]
