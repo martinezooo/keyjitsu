@@ -474,6 +474,7 @@ impl App {
         let Some(hash) = self.layout_hash.clone() else {
             return;
         };
+        let minimap_layers = self.minimap_layers.clone();
         let state = LayoutScopedState {
             custom_layers: self.custom_layers.clone(),
             glow_overrides: self
@@ -524,6 +525,7 @@ impl App {
         };
         let saved = self.persist_config("saving layer changes", move |cfg| {
             replace_layout_scoped_state(cfg, &hash, state);
+            cfg.minimap_layers = minimap_layers;
         });
         if saved {
             self.glow_saved = self.glow_work.clone();
@@ -569,6 +571,14 @@ impl App {
         shift(&mut self.key_fx, del);
         shift(&mut self.key_edits, del);
         shift(&mut self.key_dances, del);
+        super::peek::shift_minimap_layers_after_delete(&mut self.minimap_layers, del);
+        self.peek_layer = if self.peek_layer > del {
+            self.peek_layer - 1
+        } else if self.peek_layer == del {
+            del.saturating_sub(1)
+        } else {
+            self.peek_layer
+        };
 
         // 2. Layer-switch keycode strings pointing above `del` shift down.
         for cl in &mut self.custom_layers {

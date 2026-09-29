@@ -2,6 +2,19 @@
 
 use super::*;
 
+pub(super) fn shift_minimap_layers_after_delete(
+    layers: &mut Vec<config::MinimapLayerConfig>,
+    deleted: u8,
+) {
+    layers.retain(|c| c.layer != deleted);
+    for c in layers.iter_mut() {
+        if c.layer > deleted {
+            c.layer -= 1;
+        }
+    }
+    layers.sort_by_key(|c| c.layer);
+}
+
 impl App {
     pub(super) fn minimap_layer_config(&self, layer: u8) -> config::MinimapLayerConfig {
         self.minimap_layers
@@ -251,7 +264,7 @@ impl App {
                 }
                 if ui.button("✕ clear").clicked() {
                     self.overlay_chord.clear();
-                    self.persist_config("clearing peek shortcut", |cfg| {
+                    self.persist_config("clearing minimap shortcut", |cfg| {
                         cfg.overlay_chord.clear();
                         cfg.overlay_trigger = None;
                     });
@@ -266,7 +279,37 @@ impl App {
         });
     }
 
-    /// Right column: a live preview of the peek over a transparency checkerboard.
+    fn minimap_preview_layout(
+        width: f32,
+        c: &PeekConfig,
+        layer_cfg: &config::MinimapLayerConfig,
+    ) -> (f32, f32, bool) {
+        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
+        let side_by_side = show_hints && width >= 760.0;
+        let hint_w = if side_by_side { 230.0 } else { 0.0 };
+        let keyboard_budget =
+            (width - 48.0 - hint_w - if side_by_side { 12.0 } else { 0.0 }).max(300.0);
+        let unit = (keyboard_budget / PEEK_BOARD_UNITS_WIDE).clamp(20.0, 42.0);
+        let keyboard_w = unit * PEEK_BOARD_UNITS_WIDE;
+        let header_h = if c.show_layer_name { 34.0 } else { 0.0 };
+        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
+        let keyboard_h = unit * PEEK_BOARD_UNITS_TALL + header_h + combo_h + 32.0;
+        let hint_h = if show_hints {
+            26.0 + layer_cfg.instructions.len().min(8) as f32 * 28.0
+        } else {
+            0.0
+        };
+        let content_h = if side_by_side {
+            keyboard_h.max(hint_h + header_h + 18.0)
+        } else if show_hints {
+            keyboard_h + hint_h + 10.0
+        } else {
+            keyboard_h
+        };
+        (content_h.clamp(235.0, 520.0), keyboard_w, side_by_side)
+    }
+
+    /// Live in-app preview of the selected layer minimap.
     pub(super) fn peek_preview_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -274,10 +317,10 @@ impl App {
         layer_cfg: &config::MinimapLayerConfig,
     ) {
         card(ui, "Preview", |ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), 185.0),
-                egui::Sense::hover(),
-            );
+            let preview_w = ui.available_width();
+            let (preview_h, _, _) = Self::minimap_preview_layout(preview_w, c, layer_cfg);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
             draw_checkerboard(ui.painter(), rect);
             self.render_peek_into(ui, rect.shrink(14.0), c, layer_cfg);
             ui.add_space(10.0);
@@ -299,7 +342,7 @@ impl App {
         });
     }
 
-    /// Draw the peek's card + minimap inside `rect` (for the inline preview).
+    /// Draw the selected layer minimap inside `rect` (for the inline preview).
     pub(super) fn render_peek_into(
         &self,
         ui: &mut egui::Ui,
@@ -328,17 +371,8 @@ impl App {
                 .max_rect(rect)
                 .layout(egui::Layout::top_down(egui::Align::Center)),
         );
-        // Fit the minimap into the rect: unit from the HEIGHT budget (the board
-        // is PEEK_BOARD_UNITS_TALL units tall incl. the rotated thumbs), width follows.
-        let header_h = if c.show_layer_name { 32.0 } else { 0.0 };
-        let hint_w = if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
-            240.0
-        } else {
-            0.0
-        };
-        let unit_fit = ((rect.height() - 24.0 - header_h) / PEEK_BOARD_UNITS_TALL)
-            .min((rect.width() - 44.0 - hint_w) / PEEK_BOARD_UNITS_WIDE);
-        let kb_w = (unit_fit * PEEK_BOARD_UNITS_WIDE + 24.0).max(120.0);
+        let (_, kb_w, side_by_side) = Self::minimap_preview_layout(rect.width(), c, layer_cfg);
+        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
         let card_fill = if c.show_background {
             Color32::from_rgba_unmultiplied(17, 18, 24, a)
         } else {
@@ -393,43 +427,58 @@ impl App {
                     vec![false; geo.len()]
                 };
                 let combo_keys = self.combo_member_mask(layer);
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_max_width(kb_w);
-                        draw_keyboard(
+                let draw_board = |ui: &mut egui::Ui| {
+                    ui.set_width(kb_w);
+                    draw_keyboard(
+                        ui,
+                        geo,
+                        legends,
+                        &glow,
+                        &press,
+                        None,
+                        Some(&combo_keys),
+                        c.opacity.clamp(0.08, 1.0),
+                        c.monochrome,
+                    );
+                    if c.show_combo {
+                        ui.add_space(6.0);
+                        let entries = self.combo_recent();
+                        combo_strip(
                             ui,
-                            geo,
-                            legends,
-                            &glow,
-                            &press,
-                            None,
-                            Some(&combo_keys),
+                            &entries,
                             c.opacity.clamp(0.08, 1.0),
-                            c.monochrome,
+                            accent,
+                            c.show_combo_ms,
                         );
-                        if c.show_combo {
-                            ui.add_space(6.0);
-                            let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
-                            let entries = self.combo_recent();
-                            combo_strip(
+                    }
+                };
+                if side_by_side {
+                    ui.horizontal(|ui| {
+                        ui.vertical(draw_board);
+                        if show_hints {
+                            ui.add_space(10.0);
+                            minimap_instruction_panel(
                                 ui,
-                                &entries,
+                                &layer_cfg.instructions,
                                 c.opacity.clamp(0.08, 1.0),
                                 accent,
-                                c.show_combo_ms,
                             );
                         }
                     });
-                    if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
-                        ui.add_space(10.0);
-                        minimap_instruction_panel(
-                            ui,
-                            &layer_cfg.instructions,
-                            c.opacity.clamp(0.08, 1.0),
-                            accent,
-                        );
-                    }
-                });
+                } else {
+                    ui.vertical(|ui| {
+                        draw_board(ui);
+                        if show_hints {
+                            ui.add_space(8.0);
+                            minimap_instruction_panel(
+                                ui,
+                                &layer_cfg.instructions,
+                                c.opacity.clamp(0.08, 1.0),
+                                accent,
+                            );
+                        }
+                    });
+                }
             });
     }
 
@@ -469,6 +518,7 @@ impl App {
     pub(super) fn maybe_peek(&mut self, n: u8) {
         let c = self.minimap_settings(n);
         if !c.enabled {
+            self.peek_until = None;
             return;
         }
         if c.only_non_base && n == 0 {
@@ -493,25 +543,36 @@ impl App {
         let layer_cfg = self.minimap_layer_config(self.peek_layer);
         let c = &layer_cfg.settings;
         let geo = self.geometry();
-        let scale = c.scale.clamp(0.5, 1.6);
-        // Card padding + header add to the raw keyboard size.
         let pad = 16.0;
+        let edge = 48.0;
         let header = if c.show_layer_name { 40.0 } else { 0.0 };
+        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
+        let show_hints = layer_cfg.show_instructions && !layer_cfg.instructions.is_empty();
+
+        // Fit the requested size to the selected monitor before creating the
+        // native viewport. Large scales + a hint panel must never open wider
+        // than the display and clip half of the minimap off-screen.
+        let (mx, my, mw, mh) = self.peek_monitor_rect(ctx, c.monitor);
+        let requested_scale = c.scale.clamp(0.5, 1.6);
+        let base_width = 620.0 + if show_hints { 260.0 } else { 0.0 };
+        let base_keyboard_h = 620.0 / PEEK_BOARD_UNITS_WIDE * PEEK_BOARD_UNITS_TALL;
+        let max_scale_w = ((mw - edge * 2.0 - pad * 2.0) / base_width).clamp(0.5, 1.6);
+        let max_scale_h =
+            ((mh - edge * 2.0 - header - combo_h - pad * 2.0) / base_keyboard_h).clamp(0.5, 1.6);
+        let scale = requested_scale.min(max_scale_w).min(max_scale_h);
         let kb_w = 620.0 * scale;
-        // draw_keyboard sizes by width, so derive the unit from it.
         let unit = kb_w / PEEK_BOARD_UNITS_WIDE;
-        let hint_w = if layer_cfg.show_instructions && !layer_cfg.instructions.is_empty() {
-            260.0 * scale
+        let hint_w = if show_hints { 260.0 * scale } else { 0.0 };
+        let width = kb_w + hint_w + pad * 2.0;
+        let keyboard_h = unit * PEEK_BOARD_UNITS_TALL + combo_h;
+        let hint_h = if show_hints {
+            28.0 + layer_cfg.instructions.len().min(12) as f32 * 30.0
         } else {
             0.0
         };
-        let width = kb_w + hint_w + pad * 2.0;
-        let combo_h = if c.show_combo { 42.0 } else { 0.0 };
-        let height = unit * PEEK_BOARD_UNITS_TALL + header + combo_h + pad * 2.0;
+        let height = header + keyboard_h.max(hint_h) + pad * 2.0;
 
         // Position on the selected monitor (falls back to the main display).
-        let (mx, my, mw, mh) = self.peek_monitor_rect(ctx, c.monitor);
-        let edge = 48.0;
         let x =
             mx + match c.halign {
                 HAlign::Left => edge,
@@ -650,6 +711,7 @@ impl App {
                         }
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
+                                ui.set_width(kb_w);
                                 draw_keyboard(
                                     ui,
                                     geo,
@@ -752,4 +814,68 @@ fn minimap_instruction_panel(
                 });
             }
         });
+}
+
+#[cfg(test)]
+mod minimap_layout_tests {
+    use super::*;
+
+    fn hints(n: usize) -> config::MinimapLayerConfig {
+        config::MinimapLayerConfig {
+            layer: 1,
+            show_instructions: true,
+            instructions: (0..n)
+                .map(|i| config::MinimapInstruction {
+                    keys: format!("K{i}"),
+                    desc: "Action".into(),
+                })
+                .collect(),
+            ..config::MinimapLayerConfig::default()
+        }
+    }
+
+    #[test]
+    fn inline_preview_no_longer_collapses_to_legacy_fixed_height() {
+        let c = PeekConfig::default();
+        let layer = config::MinimapLayerConfig::default();
+        let (height, keyboard_w, side_by_side) = App::minimap_preview_layout(720.0, &c, &layer);
+        assert!(!side_by_side);
+        assert!(height > 235.0);
+        assert!(keyboard_w >= 300.0);
+    }
+
+    #[test]
+    fn layer_delete_drops_deleted_minimap_and_shifts_higher_layers() {
+        let mut layers = vec![
+            config::MinimapLayerConfig {
+                layer: 1,
+                ..Default::default()
+            },
+            config::MinimapLayerConfig {
+                layer: 3,
+                ..Default::default()
+            },
+            config::MinimapLayerConfig {
+                layer: 4,
+                ..Default::default()
+            },
+        ];
+        shift_minimap_layers_after_delete(&mut layers, 3);
+        assert_eq!(
+            layers.iter().map(|c| c.layer).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+    }
+
+    #[test]
+    fn hints_stack_on_narrow_preview_and_move_beside_on_wide_preview() {
+        let c = PeekConfig::default();
+        let layer = hints(4);
+        let (narrow_h, narrow_w, narrow_side) = App::minimap_preview_layout(620.0, &c, &layer);
+        let (wide_h, wide_w, wide_side) = App::minimap_preview_layout(1000.0, &c, &layer);
+        assert!(!narrow_side);
+        assert!(wide_side);
+        assert!(narrow_h > wide_h);
+        assert!(narrow_w >= 300.0 && wide_w > narrow_w);
+    }
 }

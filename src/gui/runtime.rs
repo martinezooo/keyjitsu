@@ -187,7 +187,7 @@ impl App {
                         self.binding_overlay = false;
                         self.overlay_chord = std::mem::take(&mut self.binding_draft);
                         let chord = self.overlay_chord.clone();
-                        self.persist_config("saving peek shortcut", move |cfg| {
+                        self.persist_config("saving minimap shortcut", move |cfg| {
                             cfg.overlay_trigger = chord.first().copied();
                             cfg.overlay_chord = chord;
                         });

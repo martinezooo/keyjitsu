@@ -335,34 +335,78 @@ impl App {
         });
     }
 
+    fn add_imported_shortcuts(&mut self, found: Vec<crate::shortcuts::ShortcutDef>) -> usize {
+        let mut added = 0usize;
+        for d in found {
+            let builtin_duplicate = crate::shortcuts::builtin()
+                .iter()
+                .any(|b| b.category == d.category && b.keys == d.keys);
+            let custom_duplicate = self
+                .custom_shortcuts
+                .iter()
+                .any(|c| c.category == d.category && c.keys == d.keys);
+            if builtin_duplicate || custom_duplicate {
+                continue;
+            }
+            self.custom_shortcuts.push(config::CustomShortcut {
+                category: d.category,
+                keys: d.keys,
+                desc: d.desc,
+                high: d.high,
+            });
+            added += 1;
+        }
+        if added > 0 {
+            self.save_custom_shortcuts();
+        }
+        added
+    }
+
     pub(super) fn import_terminal_shortcuts_into_library(&mut self) {
         let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
             self.shortcut_import_status = Some("HOME is unavailable".into());
             return;
         };
-        let found = crate::shortcuts::import_terminal_shortcuts(&home);
-        let mut added = 0usize;
-        for d in found {
-            let duplicate = self
-                .custom_shortcuts
-                .iter()
-                .any(|c| c.category == d.category && c.keys == d.keys && c.desc == d.desc);
-            if !duplicate {
-                self.custom_shortcuts.push(config::CustomShortcut {
-                    category: d.category,
-                    keys: d.keys,
-                    desc: d.desc,
-                    high: d.high,
-                });
-                added += 1;
-            }
-        }
-        if added > 0 {
-            self.save_custom_shortcuts();
-            self.shortcut_import_status = Some(format!("Imported {added} terminal shortcuts"));
-        } else {
+        let sources = crate::shortcuts::detect_terminal_configs(&home);
+        if sources.is_empty() {
             self.shortcut_import_status =
-                Some("No new Ghostty/Kitty keybinds found in default config paths".into());
+                Some("No supported terminal config detected. Try a custom path.".into());
+            self.shortcut_import_custom_open = true;
+            return;
+        }
+
+        let found = crate::shortcuts::import_terminal_shortcuts(&home);
+        let imported = found.len();
+        let added = self.add_imported_shortcuts(found);
+        let names = sources
+            .iter()
+            .map(|s| s.terminal)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(" + ");
+        self.shortcut_import_status = Some(if added > 0 {
+            format!("Detected {names}: imported {added} new shortcuts ({imported} parsed)")
+        } else {
+            format!("Detected {names}: everything parsed is already in the library")
+        });
+    }
+
+    pub(super) fn import_terminal_shortcuts_custom(&mut self) {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            self.shortcut_import_status = Some("HOME is unavailable".into());
+            return;
+        };
+        let path = crate::shortcuts::expand_user_path(&home, &self.shortcut_import_path);
+        match crate::shortcuts::import_terminal_shortcuts_from_path(&path) {
+            Ok(found) => {
+                let parsed = found.len();
+                let added = self.add_imported_shortcuts(found);
+                self.shortcut_import_status = Some(format!(
+                    "Custom config: imported {added} new shortcuts ({parsed} parsed)"
+                ));
+            }
+            Err(e) => self.shortcut_import_status = Some(e),
         }
     }
 
@@ -382,10 +426,8 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .button("⇩ import terminal keybinds")
-                    .on_hover_text(
-                        "Import simple keybinds from Ghostty or Kitty default config paths",
-                    )
+                    .button("⇩ import terminal shortcuts")
+                    .on_hover_text("Auto-detect Ghostty/Kitty in their standard config locations")
                     .clicked()
                 {
                     self.import_terminal_shortcuts_into_library();
@@ -418,9 +460,59 @@ impl App {
                 }
             });
         });
+        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+            let sources = crate::shortcuts::detect_terminal_configs(&home);
+            if !sources.is_empty() {
+                let detected = sources
+                    .iter()
+                    .map(|s| {
+                        let shown = s
+                            .path
+                            .strip_prefix(&home)
+                            .map(|p| format!("~/{}", p.display()))
+                            .unwrap_or_else(|_| s.path.display().to_string());
+                        format!("{} · {shown}", s.terminal)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("   ");
+                ui.label(
+                    RichText::new(format!("Detected: {detected}"))
+                        .size(10.5)
+                        .color(pal::TEXT_DIM),
+                );
+            }
+        }
         if let Some(status) = &self.shortcut_import_status {
             ui.label(RichText::new(status).size(11.0).color(pal::TEXT_DIM));
         }
+        ui.horizontal(|ui| {
+            if ui
+                .small_button(if self.shortcut_import_custom_open {
+                    "hide custom path"
+                } else {
+                    "custom path…"
+                })
+                .clicked()
+            {
+                self.shortcut_import_custom_open = !self.shortcut_import_custom_open;
+            }
+            if self.shortcut_import_custom_open {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.shortcut_import_path)
+                        .hint_text("~/path/to/config")
+                        .desired_width(300.0),
+                );
+                if ui
+                    .add_enabled(
+                        !self.shortcut_import_path.trim().is_empty(),
+                        egui::Button::new("import file"),
+                    )
+                    .clicked()
+                {
+                    self.import_terminal_shortcuts_custom();
+                }
+            }
+        });
         ui.add_space(6.0);
 
         // Category chips (all + every category present).

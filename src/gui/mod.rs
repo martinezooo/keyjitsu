@@ -431,6 +431,8 @@ struct App {
     custom_shortcuts: Vec<config::CustomShortcut>,
     keys_adding: bool,
     shortcut_import_status: Option<String>,
+    shortcut_import_custom_open: bool,
+    shortcut_import_path: String,
     /// Draft name for "save current as profile" (Settings).
     profile_draft: String,
     profile_error: Option<String>,
@@ -757,6 +759,8 @@ impl App {
             custom_shortcuts: cfg.custom_shortcuts.clone(),
             keys_adding: false,
             shortcut_import_status: None,
+            shortcut_import_custom_open: false,
+            shortcut_import_path: String::new(),
             profile_draft: String::new(),
             profile_error: profile_load_error,
             persist_error: config_load_error,

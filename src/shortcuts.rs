@@ -49,27 +49,160 @@ pub fn builtin() -> &'static [ShortcutDef] {
     })
 }
 
-/// Import straightforward key bindings from terminal configs found under a
-/// user's home directory. Only line-oriented formats are supported.
-pub fn import_terminal_shortcuts(home: &Path) -> Vec<ShortcutDef> {
-    let mut out = Vec::new();
-    for path in [
-        home.join(".config/ghostty/config"),
-        home.join("Library/Application Support/com.mitchellh.ghostty/config"),
-    ] {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            parse_ghostty_bindings(&text, &mut out);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalConfigKind {
+    Ghostty,
+    Kitty,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalConfigSource {
+    pub terminal: &'static str,
+    pub path: std::path::PathBuf,
+    kind: TerminalConfigKind,
+}
+
+/// Find supported terminal configs without making the user browse for them.
+/// XDG and terminal-specific environment overrides are respected when present.
+pub fn detect_terminal_configs(home: &Path) -> Vec<TerminalConfigSource> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    let kitty_dir = std::env::var_os("KITTY_CONFIG_DIRECTORY").map(std::path::PathBuf::from);
+
+    detect_terminal_configs_with(home, &xdg, kitty_dir.as_deref())
+}
+
+fn detect_terminal_configs_with(
+    home: &Path,
+    xdg: &Path,
+    kitty_dir: Option<&Path>,
+) -> Vec<TerminalConfigSource> {
+    let mut candidates = vec![
+        TerminalConfigSource {
+            terminal: "Ghostty",
+            path: xdg.join("ghostty/config.ghostty"),
+            kind: TerminalConfigKind::Ghostty,
+        },
+        TerminalConfigSource {
+            terminal: "Ghostty",
+            path: xdg.join("ghostty/config"),
+            kind: TerminalConfigKind::Ghostty,
+        },
+        TerminalConfigSource {
+            terminal: "Ghostty",
+            path: home.join("Library/Application Support/com.mitchellh.ghostty/config.ghostty"),
+            kind: TerminalConfigKind::Ghostty,
+        },
+        TerminalConfigSource {
+            terminal: "Ghostty",
+            path: home.join("Library/Application Support/com.mitchellh.ghostty/config"),
+            kind: TerminalConfigKind::Ghostty,
+        },
+    ];
+
+    candidates.push(TerminalConfigSource {
+        terminal: "Kitty",
+        path: kitty_dir
+            .map(|p| p.join("kitty.conf"))
+            .unwrap_or_else(|| xdg.join("kitty/kitty.conf")),
+        kind: TerminalConfigKind::Kitty,
+    });
+
+    let mut found = Vec::new();
+    for source in candidates {
+        if source.path.is_file()
+            && !found
+                .iter()
+                .any(|s: &TerminalConfigSource| s.path == source.path)
+        {
+            found.push(source);
         }
     }
-    if let Ok(text) = std::fs::read_to_string(home.join(".config/kitty/kitty.conf")) {
-        parse_kitty_bindings(&text, &mut out);
+    found
+}
+
+/// Import key bindings from every supported terminal config detected in its
+/// standard location. Unsupported lines are skipped rather than guessed.
+pub fn import_terminal_shortcuts(home: &Path) -> Vec<ShortcutDef> {
+    let mut out = Vec::new();
+    for source in detect_terminal_configs(home) {
+        if let Ok(text) = std::fs::read_to_string(&source.path) {
+            parse_terminal_bindings(source.kind, source.terminal, &text, &mut out);
+        }
     }
-    out.sort_by(|a, b| (&a.category, &a.keys, &a.desc).cmp(&(&b.category, &b.keys, &b.desc)));
-    out.dedup_by(|a, b| a.category == b.category && a.keys == b.keys && a.desc == b.desc);
+    normalize_terminal_import(&mut out);
     out
 }
 
-fn parse_ghostty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
+/// Import one explicitly chosen config. The terminal format is inferred from
+/// its contents, so a custom path does not need a separate terminal selector.
+pub fn import_terminal_shortcuts_from_path(path: &Path) -> Result<Vec<ShortcutDef>, String> {
+    let path = if path.is_dir() {
+        ["config.ghostty", "config", "kitty.conf"]
+            .into_iter()
+            .map(|name| path.join(name))
+            .find(|p| p.is_file())
+            .ok_or_else(|| "No supported terminal config found in that directory".to_string())?
+    } else {
+        path.to_path_buf()
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let kind = infer_terminal_config_kind(&text)
+        .ok_or_else(|| "Unsupported config format (supported: Ghostty, Kitty)".to_string())?;
+    let terminal = match kind {
+        TerminalConfigKind::Ghostty => "Ghostty",
+        TerminalConfigKind::Kitty => "Kitty",
+    };
+    let mut out = Vec::new();
+    parse_terminal_bindings(kind, terminal, &text, &mut out);
+    normalize_terminal_import(&mut out);
+    Ok(out)
+}
+
+pub fn expand_user_path(home: &Path, raw: &str) -> std::path::PathBuf {
+    let raw = raw.trim();
+    if raw == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home.join(rest);
+    }
+    std::path::PathBuf::from(raw)
+}
+
+fn infer_terminal_config_kind(text: &str) -> Option<TerminalConfigKind> {
+    if text
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("keybind"))
+    {
+        Some(TerminalConfigKind::Ghostty)
+    } else if text
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("map "))
+    {
+        Some(TerminalConfigKind::Kitty)
+    } else {
+        None
+    }
+}
+
+fn parse_terminal_bindings(
+    kind: TerminalConfigKind,
+    terminal: &str,
+    text: &str,
+    out: &mut Vec<ShortcutDef>,
+) {
+    match kind {
+        TerminalConfigKind::Ghostty => parse_ghostty_bindings(terminal, text, out),
+        TerminalConfigKind::Kitty => parse_kitty_bindings(terminal, text, out),
+    }
+}
+
+fn parse_ghostty_bindings(terminal: &str, text: &str, out: &mut Vec<ShortcutDef>) {
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         let Some(rest) = line.strip_prefix("keybind") else {
@@ -81,11 +214,11 @@ fn parse_ghostty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
         let Some((keys, action)) = rest.trim().split_once('=') else {
             continue;
         };
-        push_terminal_binding(out, "Ghostty import", keys, action);
+        push_terminal_binding(out, terminal, keys, action);
     }
 }
 
-fn parse_kitty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
+fn parse_kitty_bindings(terminal: &str, text: &str, out: &mut Vec<ShortcutDef>) {
     for line in text.lines() {
         let line = line.split('#').next().unwrap_or("").trim();
         let Some(rest) = line.strip_prefix("map ") else {
@@ -100,8 +233,18 @@ fn parse_kitty_bindings(text: &str, out: &mut Vec<ShortcutDef>) {
         if action.is_empty() {
             continue;
         }
-        push_terminal_binding(out, "Kitty import", keys, &action);
+        push_terminal_binding(out, terminal, keys, &action);
     }
+}
+
+fn normalize_terminal_import(out: &mut Vec<ShortcutDef>) {
+    // Terminal config semantics are generally "last mapping wins". Keep the
+    // last value for each trigger, then sort only for stable library display.
+    let mut latest = std::collections::BTreeMap::new();
+    for shortcut in out.drain(..) {
+        latest.insert((shortcut.category.clone(), shortcut.keys.clone()), shortcut);
+    }
+    *out = latest.into_values().collect();
 }
 
 fn push_terminal_binding(out: &mut Vec<ShortcutDef>, category: &str, keys: &str, action: &str) {
@@ -113,9 +256,19 @@ fn push_terminal_binding(out: &mut Vec<ShortcutDef>, category: &str, keys: &str,
     out.push(ShortcutDef {
         category: category.to_string(),
         keys,
-        desc: action.replace('_', " "),
+        desc: humanize_terminal_action(action),
         high: true,
     });
+}
+
+fn humanize_terminal_action(action: &str) -> String {
+    if action == "unbind" {
+        return "Pass through / unbind".to_string();
+    }
+    if action.starts_with("text:") || action.starts_with("send_text ") {
+        return "Send text".to_string();
+    }
+    action.replace('_', " ").replace(':', " ")
 }
 
 fn humanize_terminal_keys(keys: &str) -> String {
@@ -133,12 +286,32 @@ fn humanize_terminal_keys(keys: &str) -> String {
             "cmd" | "command" | "super" => "Cmd".to_string(),
             "enter" | "return" => "Enter".to_string(),
             "escape" | "esc" => "Esc".to_string(),
+            "tab" => "Tab".to_string(),
             "space" => "Space".to_string(),
+            "home" => "Home".to_string(),
+            "end" => "End".to_string(),
+            "up" => "Up".to_string(),
+            "down" => "Down".to_string(),
+            "left" => "Left".to_string(),
+            "right" => "Right".to_string(),
+            "backspace" => "Backspace".to_string(),
+            "delete" => "Delete".to_string(),
+            "page_up" | "pageup" => "Page Up".to_string(),
+            "page_down" | "pagedown" => "Page Down".to_string(),
+            "plus" => "+".to_string(),
+            "minus" => "-".to_string(),
+            "comma" => ",".to_string(),
+            "zero" => "0".to_string(),
             _ => {
-                let mut chars = p.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(c), None) => c.to_ascii_uppercase().to_string(),
-                    _ => p.to_string(),
+                let lower = p.to_ascii_lowercase();
+                if lower.starts_with('f') && lower[1..].chars().all(|c| c.is_ascii_digit()) {
+                    lower.to_ascii_uppercase()
+                } else {
+                    let mut chars = p.chars();
+                    match chars.next() {
+                        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
+                        None => String::new(),
+                    }
                 }
             }
         })
@@ -326,23 +499,59 @@ mod tests {
     fn imports_ghostty_and_kitty_line_bindings() {
         let mut got = Vec::new();
         parse_ghostty_bindings(
+            "Ghostty",
             "keybind = ctrl+shift+t=new_tab\n# nope\nkeybind = super+k=clear_screen\n",
             &mut got,
         );
         parse_kitty_bindings(
+            "Kitty",
             "map ctrl+shift+w close_window\nmap alt+1 goto_tab 1\nmap --allow-fallback=shifted,ascii ctrl+shift+k scroll_line_up smooth\n",
             &mut got,
         );
-        assert!(got.iter().any(|s| s.category == "Ghostty import"
+        assert!(got.iter().any(|s| s.category == "Ghostty"
             && s.keys == "Ctrl + Shift + T"
             && s.desc == "new tab"));
-        assert!(got.iter().any(|s| s.category == "Kitty import"
+        assert!(got.iter().any(|s| s.category == "Kitty"
             && s.keys == "Ctrl + Shift + W"
             && s.desc == "close window"));
         assert!(got.iter().any(|s| s.keys == "Cmd + K"));
         assert!(got
             .iter()
             .any(|s| s.keys == "Ctrl + Shift + K" && s.desc == "scroll line up smooth"));
+    }
+
+    #[test]
+    fn detects_current_ghostty_and_kitty_default_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let xdg = home.join(".config");
+        std::fs::create_dir_all(xdg.join("ghostty")).unwrap();
+        std::fs::create_dir_all(xdg.join("kitty")).unwrap();
+        std::fs::write(
+            xdg.join("ghostty/config.ghostty"),
+            "keybind = cmd+t=new_tab",
+        )
+        .unwrap();
+        std::fs::write(xdg.join("kitty/kitty.conf"), "map ctrl+shift+t new_tab").unwrap();
+
+        let found = detect_terminal_configs_with(home, &xdg, None);
+        assert!(found
+            .iter()
+            .any(|s| s.terminal == "Ghostty" && s.path.ends_with("config.ghostty")));
+        assert!(found
+            .iter()
+            .any(|s| s.terminal == "Kitty" && s.path.ends_with("kitty.conf")));
+    }
+
+    #[test]
+    fn custom_import_infers_supported_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my-terminal.conf");
+        std::fs::write(&path, "keybind = global:opt+tab=toggle_quick_terminal").unwrap();
+        let got = import_terminal_shortcuts_from_path(&path).unwrap();
+        assert_eq!(got[0].category, "Ghostty");
+        assert_eq!(got[0].keys, "Opt + Tab");
+        assert_eq!(got[0].desc, "toggle quick terminal");
     }
 
     #[test]
