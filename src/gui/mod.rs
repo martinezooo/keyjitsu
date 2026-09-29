@@ -12,6 +12,7 @@ mod rgb_anim;
 mod runtime;
 mod settings;
 mod sidebar;
+mod signature;
 mod state;
 mod update;
 mod widget;
@@ -1390,12 +1391,18 @@ impl App {
                     .inner_margin(egui::Margin::symmetric(12, 12)),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new("Keyjitsu")
-                        .strong()
-                        .size(19.0)
-                        .color(pal::VIOLET),
+                let logo = ui.add(
+                    egui::Label::new(
+                        RichText::new("Keyjitsu")
+                            .strong()
+                            .size(19.0)
+                            .color(pal::VIOLET),
+                    )
+                    .sense(egui::Sense::click()),
                 );
+                if logo.clicked() {
+                    self.trigger_keyjitsu_signature();
+                }
                 ui.add_space(10.0);
                 // Reserve exactly as much room as the footer needs. The old
                 // fixed 34 px budget caused status controls to overlap/compress

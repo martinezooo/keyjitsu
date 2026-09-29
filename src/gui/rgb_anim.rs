@@ -13,6 +13,7 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::signature::{self, KeyjitsuSignature};
 use super::worker::KbCmd;
 use crate::geometry;
 
@@ -258,6 +259,7 @@ pub struct Anim {
     pub custom_name: String,
     /// Custom sequences either overlay the normal layout colors or replace them.
     pub custom_replace_base: bool,
+    pub(super) signature: Option<KeyjitsuSignature>,
     /// The latest rendered frame (what the LEDs show right now); empty when
     /// the engine is idle. The Live view mirrors this.
     pub frame: Vec<[u8; 3]>,
@@ -277,8 +279,15 @@ impl Default for Anim {
             custom: Vec::new(),
             custom_name: String::new(),
             custom_replace_base: false,
+            signature: None,
             frame: Vec::new(),
         }
+    }
+}
+
+impl Anim {
+    pub fn start_keyjitsu_signature(&mut self, keys: [usize; 8]) {
+        self.signature = Some(KeyjitsuSignature::new(keys));
     }
 }
 
@@ -334,11 +343,24 @@ fn run(
             Ok(guard) => Some(guard),
             Err(poisoned) => Some(poisoned.into_inner()),
         };
-        let (effect, color, speed, brightness, base, events, custom, custom_replace_base) = {
+        let (
+            effect,
+            color,
+            speed,
+            brightness,
+            base,
+            events,
+            custom,
+            custom_replace_base,
+            signature,
+        ) = {
             let Some(mut a) = snapshot else { break };
             let now = Instant::now();
             a.events
                 .retain(|e| now.duration_since(e.at).as_secs_f32() < e.duration());
+            if a.signature.is_some_and(|sig| sig.finished(now)) {
+                a.signature = None;
+            }
             (
                 a.effect,
                 a.color,
@@ -348,10 +370,11 @@ fn run(
                 a.events.clone(),
                 a.custom.clone(),
                 a.custom_replace_base,
+                a.signature,
             )
         };
 
-        let busy = effect != Effect::Off || !events.is_empty();
+        let busy = signature.is_some() || effect != Effect::Off || !events.is_empty();
         if !busy {
             let idle = *idle_since.get_or_insert_with(Instant::now);
             if took_over && idle.elapsed() > IDLE_GRACE {
@@ -371,18 +394,22 @@ fn run(
         took_over = true;
 
         let t = start.elapsed().as_secs_f32();
-        let frame = compute(
-            effect,
-            color,
-            speed,
-            brightness,
-            t,
-            &base,
-            &events,
-            &custom,
-            custom_replace_base,
-            geo,
-        );
+        let frame = if let Some(sig) = signature {
+            sig.frame(Instant::now(), geo)
+        } else {
+            compute(
+                effect,
+                color,
+                speed,
+                brightness,
+                t,
+                &base,
+                &events,
+                &custom,
+                custom_replace_base,
+                geo,
+            )
+        };
 
         // Send the whole frame as ONE coalescing command; the device loop keeps
         // only the newest, primes the takeover, and sends the per-key diff.
@@ -398,7 +425,11 @@ fn run(
         }
         ctx.request_repaint();
 
-        std::thread::sleep(FRAME_INTERVAL);
+        std::thread::sleep(if signature.is_some() {
+            signature::FRAME_INTERVAL
+        } else {
+            FRAME_INTERVAL
+        });
     }
 
     if took_over {

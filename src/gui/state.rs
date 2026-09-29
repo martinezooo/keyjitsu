@@ -162,6 +162,39 @@ impl App {
         self.device_key(layer, key)
     }
 
+    /// Resolve the physical keys spelling KEYJITSU on the firmware's base
+    /// layer and start the tiny signature animation. If a custom layout moves
+    /// a letter, the animation follows the letter instead of a hard-coded LED.
+    pub(super) fn trigger_keyjitsu_signature(&mut self) {
+        if self.connected.is_none() {
+            return;
+        }
+        let Some(layer) = self.device_layer(0) else {
+            return;
+        };
+        let mut keys = [0usize; 8];
+        for (slot, code) in [
+            "KC_K", "KC_E", "KC_Y", "KC_J", "KC_I", "KC_T", "KC_S", "KC_U",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let Some(key) = layer.keys.iter().position(|key| {
+                key.tap
+                    .as_ref()
+                    .and_then(|action| action.qmk_code())
+                    .as_deref()
+                    == Some(code)
+            }) else {
+                return;
+            };
+            keys[slot] = key;
+        }
+        if let Ok(mut anim) = self.anim.lock() {
+            anim.start_keyjitsu_signature(keys);
+        }
+    }
+
     pub(super) fn device_layer(&self, layer: u8) -> Option<Layer> {
         if matches!(
             self.device_state_kind(),

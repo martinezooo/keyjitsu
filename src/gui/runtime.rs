@@ -293,6 +293,7 @@ impl App {
                             self.build_result = Some(Ok(format!("Built {}", bin.display())));
                             self.build_log
                                 .push_str(&format!("✓ built: {}\n", bin.display()));
+                            self.trigger_keyjitsu_signature();
                         }
                     }
                     BuildMsg::Failed(e) => {

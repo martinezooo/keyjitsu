@@ -60,6 +60,7 @@ impl App {
                 self.build_phase = "Firmware confirmed ✓".into();
                 self.build_result =
                     Some(Ok("Firmware flashed and confirmed by the keyboard.".into()));
+                self.trigger_keyjitsu_signature();
             }
             FirmwareConfirmation::Mismatch => {
                 self.build_phase = "Firmware not confirmed".into();
