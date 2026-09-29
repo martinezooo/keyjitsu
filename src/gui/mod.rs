@@ -101,7 +101,7 @@ pub fn run(serial: Option<String>) -> Result<()> {
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]
-            crate::macos_status::install();
+            crate::macos_status::install(cc.egui_ctx.clone());
             let mut app = App::new(cc, serial);
             // QA: preview the build modal without running a build.
             if std::env::var("KEYJITSU_BUILD_DEMO").is_ok() {
@@ -378,6 +378,8 @@ struct App {
     guard_enabled: bool,
     #[cfg(target_os = "macos")]
     guard_error: Option<String>,
+    #[cfg(target_os = "macos")]
+    tray_quit_armed: bool,
     rules: Vec<AutolayerRule>,
     rules_dirty: bool,
     autolayer_enabled: bool,
@@ -941,6 +943,8 @@ impl App {
             guard_enabled: cfg.guard_enabled,
             #[cfg(target_os = "macos")]
             guard_error: None,
+            #[cfg(target_os = "macos")]
+            tray_quit_armed: false,
             rules: cfg.autolayer_rules,
             rules_dirty: false,
             autolayer_enabled: cfg.autolayer_enabled,
@@ -1313,6 +1317,51 @@ impl App {
         self.reconcile_background_jobs(ctx);
 
         let writing_firmware = flash_is_writing(self.flash_state.as_ref());
+
+        #[cfg(target_os = "macos")]
+        {
+            let requests = crate::macos_status::take_requests();
+            if requests.open {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            if requests.toggle_minimap {
+                self.set_minimap_locked(!self.minimap_locked);
+            }
+            if requests.toggle_guard {
+                self.set_guard_enabled(!self.guard_enabled);
+            }
+            if requests.quit {
+                if writing_firmware {
+                    self.flash_close_blocked = true;
+                } else {
+                    self.tray_quit_armed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            crate::macos_status::sync_state(
+                self.guard_enabled,
+                self.minimap_locked,
+                !writing_firmware,
+            );
+
+            if ctx.input(|i| i.viewport().close_requested()) {
+                if self.tray_quit_armed && !writing_firmware {
+                    // Explicit Quit from the menu bar: allow the root viewport
+                    // to close and run normal App cleanup.
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.tray_quit_armed = false;
+                    self.flash_close_blocked = false;
+                }
+            } else if !writing_firmware {
+                self.flash_close_blocked = false;
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
         if ctx.input(|i| i.viewport().close_requested()) && writing_firmware {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.flash_close_blocked = true;
