@@ -28,6 +28,17 @@ pub(super) enum DeviceStateKind {
     UnknownDeviceIdentity,
 }
 
+fn shift_autolayer_rules_after_delete(rules: &mut Vec<AutolayerRule>, deleted: u8) -> bool {
+    let before = rules.clone();
+    rules.retain(|rule| rule.layer != deleted);
+    for rule in rules.iter_mut() {
+        if rule.layer > deleted {
+            rule.layer -= 1;
+        }
+    }
+    *rules != before
+}
+
 impl App {
     pub(super) fn connected_state_marker(&self) -> Option<&str> {
         self.connected
@@ -572,6 +583,7 @@ impl App {
         shift(&mut self.key_edits, del);
         shift(&mut self.key_dances, del);
         super::peek::shift_minimap_layers_after_delete(&mut self.minimap_layers, del);
+        let autolayer_rules_changed = shift_autolayer_rules_after_delete(&mut self.rules, del);
         self.peek_layer = if self.peek_layer > del {
             self.peek_layer - 1
         } else if self.peek_layer == del {
@@ -625,6 +637,15 @@ impl App {
         // A crash or disk error can no longer leave layer numbers renumbered in
         // only some of custom layers, glow/effects, or staged firmware changes.
         self.persist_layout_scoped_state();
+        if autolayer_rules_changed {
+            let rules = self.rules.clone();
+            if self.persist_config("renumbering autolayer rules", move |cfg| {
+                cfg.autolayer_rules = rules;
+            }) {
+                self.rules_dirty = false;
+                self.autolayer = None;
+            }
+        }
         self.view_layer = self.view_layer.min(self.layer_count().saturating_sub(1));
         self.edit_synced = None; // re-hydrate the editor for the new indices
     }
@@ -1203,7 +1224,7 @@ impl App {
         perf::PerfState {
             anim,
             press_fx,
-            peek: self.peek_until.is_some_and(|u| Instant::now() < u),
+            peek: self.minimap_locked || self.peek_until.is_some_and(|u| Instant::now() < u),
             glow_sync: self.sync_glow,
             connected: self.connected.is_some(),
         }
@@ -1230,5 +1251,32 @@ impl App {
                 false
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod autolayer_layer_ref_tests {
+    use super::*;
+
+    #[test]
+    fn deleted_layer_drops_its_rule_and_shifts_higher_rules() {
+        let mut rules = vec![
+            AutolayerRule {
+                bundle: "one".into(),
+                layer: 1,
+            },
+            AutolayerRule {
+                bundle: "deleted".into(),
+                layer: 3,
+            },
+            AutolayerRule {
+                bundle: "higher".into(),
+                layer: 4,
+            },
+        ];
+        assert!(shift_autolayer_rules_after_delete(&mut rules, 3));
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].layer, 1);
+        assert_eq!(rules[1].layer, 3);
     }
 }

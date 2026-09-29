@@ -50,8 +50,8 @@ fn minimap_hint_dimensions(layer_cfg: &config::MinimapLayerConfig, board_scale: 
     match layer_cfg.instruction_flow {
         config::MinimapHintFlow::Column => (220.0 * s, (18.0 + count as f32 * 28.0) * s),
         config::MinimapHintFlow::Row => {
-            let cols = count.min(4).max(1);
-            let rows = (count + cols - 1) / cols;
+            let cols = count.clamp(1, 4);
+            let rows = count.div_ceil(cols);
             (
                 cols as f32 * 150.0 * s + cols.saturating_sub(1) as f32 * 6.0 * s,
                 (18.0 + rows as f32 * 32.0) * s,
@@ -224,16 +224,12 @@ impl App {
         page_header(
             ui,
             "Minimap",
-            "A transparent, click-through map for each layer, with optional shortcut hints.",
+            "Configure each layer here; changes appear in the real click-through overlay.",
         );
 
         let mut layer_cfg = self.minimap_layer_config(self.peek_layer);
         let original_layer_cfg = layer_cfg.clone();
         let mut c = layer_cfg.settings.clone();
-        // Preview stays full width. Use two columns only when there is enough
-        // room for both setting groups without squeezing their controls.
-        self.peek_preview_card(ui, &mut c, &layer_cfg);
-        ui.add_space(8.0);
         self.minimap_instructions_card(ui, &mut layer_cfg);
         ui.add_space(8.0);
         if ui.available_width() >= 760.0 {
@@ -250,12 +246,21 @@ impl App {
             ui.add_space(8.0);
             self.peek_position_card(ui, &mut c);
         }
+        ui.add_space(8.0);
+        if ui.button("Reset layer minimap to defaults").clicked() {
+            let (monitor, offset) = (c.monitor, c.offset);
+            c = PeekConfig {
+                monitor,
+                offset,
+                ..PeekConfig::default()
+            };
+        }
 
         layer_cfg.settings = c.clone();
         if layer_cfg != original_layer_cfg {
             self.store_minimap_layer(layer_cfg);
             if c.enabled {
-                self.arm_preview(&c, 2500);
+                self.arm_minimap_overlay(&c, 2500);
             } else {
                 self.peek_until = None;
             }
@@ -483,165 +488,7 @@ impl App {
         });
     }
 
-    fn minimap_preview_layout(
-        width: f32,
-        c: &PeekConfig,
-        layer_cfg: &config::MinimapLayerConfig,
-    ) -> (f32, f32, f32) {
-        let requested = c.scale.clamp(0.5, 1.6);
-        let available_w = (width - 44.0).max(180.0);
-        let (requested_w, requested_h) = minimap_content_size(c, layer_cfg, requested);
-        let fit_w = (available_w / requested_w.max(1.0)).min(1.0);
-        let fit_h = (480.0 / requested_h.max(1.0)).min(1.0);
-        let scale = (requested * fit_w.min(fit_h)).max(0.24);
-        let (_, content_h) = minimap_content_size(c, layer_cfg, scale);
-        let keyboard_w = 620.0 * scale;
-        ((content_h + 28.0).clamp(140.0, 520.0), keyboard_w, scale)
-    }
-
-    /// Live in-app preview of the selected layer minimap.
-    pub(super) fn peek_preview_card(
-        &mut self,
-        ui: &mut egui::Ui,
-        c: &mut PeekConfig,
-        layer_cfg: &config::MinimapLayerConfig,
-    ) {
-        card(ui, "Preview", |ui| {
-            let preview_w = ui.available_width();
-            let (preview_h, _, _) = Self::minimap_preview_layout(preview_w, c, layer_cfg);
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
-            draw_checkerboard(ui.painter(), rect);
-            self.render_peek_into(ui, rect.shrink(14.0), c, layer_cfg);
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                if ui.button("📌 Keep preview visible").clicked() {
-                    let snap = c.clone();
-                    self.arm_preview(&snap, 5000);
-                }
-                if ui.button("Reset to defaults").clicked() {
-                    // Preserve the chosen monitor/offset, reset the rest.
-                    let (monitor, offset) = (c.monitor, c.offset);
-                    *c = PeekConfig {
-                        monitor,
-                        offset,
-                        ..PeekConfig::default()
-                    };
-                }
-            });
-        });
-    }
-
-    /// Draw the selected layer minimap inside `rect` (for the inline preview).
-    pub(super) fn render_peek_into(
-        &self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        c: &PeekConfig,
-        layer_cfg: &config::MinimapLayerConfig,
-    ) {
-        let layer = self.peek_layer.min(self.layer_count().saturating_sub(1));
-        let geo = self.geometry();
-        let glow = self.glow_colors(layer);
-        let device_layer = self.device_layer(layer);
-        let legends = if c.show_legends {
-            device_layer.as_ref()
-        } else {
-            None
-        };
-        let title = device_layer
-            .as_ref()
-            .and_then(|l| l.title.clone())
-            .unwrap_or_else(|| format!("Layer {layer}"));
-        let a = (c.opacity.clamp(0.08, 1.0) * 255.0) as u8;
-        let accent = Color32::from_rgb(c.accent[0], c.accent[1], c.accent[2]);
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(rect)
-                .layout(egui::Layout::top_down(egui::Align::Center)),
-        );
-        let (_, kb_w, preview_scale) = Self::minimap_preview_layout(rect.width(), c, layer_cfg);
-        let hint_scale = minimap_hint_scale(preview_scale, layer_cfg);
-        let show_hints = minimap_has_hints(layer_cfg);
-        let card_fill = if c.show_background {
-            Color32::from_rgba_unmultiplied(17, 18, 24, a)
-        } else {
-            Color32::TRANSPARENT
-        };
-        egui::Frame::new()
-            .fill(card_fill)
-            .stroke(if c.show_background {
-                egui::Stroke::new(
-                    1.0,
-                    Color32::from_rgba_unmultiplied(
-                        accent.r(),
-                        accent.g(),
-                        accent.b(),
-                        (a as f32 * 0.6) as u8,
-                    ),
-                )
-            } else {
-                egui::Stroke::NONE
-            })
-            .corner_radius(egui::CornerRadius::same(scaled_u8(12.0, preview_scale)))
-            .inner_margin(egui::Margin::same(scaled_i8(10.0, preview_scale)))
-            .show(&mut child, |ui| {
-                let press = if c.show_combo {
-                    self.pressed.clone()
-                } else {
-                    vec![false; geo.len()]
-                };
-                let combo_keys = self.combo_member_mask(layer);
-                minimap_content_layout(
-                    ui,
-                    layer_cfg.instruction_placement,
-                    show_hints,
-                    10.0 * preview_scale,
-                    |ui| {
-                        if c.show_layer_name {
-                            minimap_layer_header(ui, layer, &title, accent, a, preview_scale);
-                        }
-                    },
-                    |ui| {
-                        ui.set_width(kb_w);
-                        draw_keyboard(
-                            ui,
-                            geo,
-                            legends,
-                            &glow,
-                            &press,
-                            None,
-                            Some(&combo_keys),
-                            c.opacity.clamp(0.08, 1.0),
-                            c.monochrome,
-                        );
-                        if c.show_combo {
-                            ui.add_space(6.0 * preview_scale);
-                            let entries = self.combo_recent();
-                            combo_strip(
-                                ui,
-                                &entries,
-                                c.opacity.clamp(0.08, 1.0),
-                                accent,
-                                c.show_combo_ms,
-                            );
-                        }
-                    },
-                    |ui| {
-                        minimap_instruction_panel(
-                            ui,
-                            &layer_cfg.instructions,
-                            c.opacity.clamp(0.08, 1.0),
-                            accent,
-                            hint_scale,
-                            layer_cfg.instruction_flow,
-                        );
-                    },
-                );
-            });
-    }
-
-    /// Monitor selector: lists monitors by their real name + resolution
+    /// Monitor selector:    /// Monitor selector: lists monitors by their real name + resolution
     /// (from the cached list).
     pub(super) fn peek_monitor_combo(&self, ui: &mut egui::Ui, monitor: &mut usize) {
         let mons = &self.monitors_cache;
@@ -668,13 +515,32 @@ impl App {
             });
     }
 
-    /// Show a sample layer's peek for `ms`, so settings changes are visible.
-    pub(super) fn arm_preview(&mut self, c: &PeekConfig, ms: u64) {
+    /// Show the real minimap overlay briefly so settings changes are visible.
+    pub(super) fn arm_minimap_overlay(&mut self, c: &PeekConfig, ms: u64) {
         self.peek_layer = self.peek_layer.min(self.layer_count().saturating_sub(1));
         self.peek_until = Some(Instant::now() + Duration::from_millis(ms.max(c.duration_ms)));
     }
 
+    pub(super) fn set_minimap_locked(&mut self, locked: bool) {
+        if self.minimap_locked == locked {
+            return;
+        }
+        self.minimap_locked = locked;
+        self.peek_until = None;
+        if locked {
+            self.peek_layer = self.active_layer;
+        }
+        self.persist_config("saving minimap lock", move |cfg| {
+            cfg.minimap_locked = locked;
+        });
+    }
+
     pub(super) fn maybe_peek(&mut self, n: u8) {
+        if self.minimap_locked {
+            self.peek_layer = n;
+            self.peek_until = None;
+            return;
+        }
         let c = self.minimap_settings(n);
         if !c.enabled {
             self.peek_until = None;
@@ -705,20 +571,23 @@ impl App {
         let edge = 48.0;
         let show_hints = minimap_has_hints(&layer_cfg);
         let (mx, my, mw, mh) = self.peek_monitor_rect(ctx, c.monitor);
+        let locked = self.minimap_locked;
         let requested_scale = c.scale.clamp(0.5, 1.6);
         let requested_pad = (16.0 * requested_scale).clamp(8.0, 26.0);
         let (requested_w, requested_h) = minimap_content_size(c, &layer_cfg, requested_scale);
+        let requested_lock_h = if locked { 24.0 * requested_scale } else { 0.0 };
         let available_w = (mw - edge * 2.0 - requested_pad * 2.0).max(180.0);
         let available_h = (mh - edge * 2.0 - requested_pad * 2.0 - 24.0).max(160.0);
         let fit = (available_w / requested_w.max(1.0))
-            .min(available_h / requested_h.max(1.0))
+            .min(available_h / (requested_h + requested_lock_h).max(1.0))
             .min(1.0);
         let scale = (requested_scale * fit).max(0.24);
         let pad = (16.0 * scale).clamp(6.0, 26.0);
         let (content_w, content_h) = minimap_content_size(c, &layer_cfg, scale);
         let kb_w = 620.0 * scale;
         let width = content_w + pad * 2.0;
-        let height = content_h + pad * 2.0;
+        let lock_h = if locked { 24.0 * scale } else { 0.0 };
+        let height = content_h + lock_h + pad * 2.0;
 
         let x =
             mx + match c.halign {
@@ -820,6 +689,15 @@ impl App {
                             egui::epaint::Shadow::NONE
                         });
                     card.show(ui, |ui| {
+                        if locked {
+                            ui.label(
+                                RichText::new("🔒 MINIMAP LOCKED")
+                                    .strong()
+                                    .size((10.5 * scale).clamp(7.0, 20.0))
+                                    .color(accent),
+                            );
+                            ui.add_space(5.0 * scale);
+                        }
                         minimap_content_layout(
                             ui,
                             hint_placement,
@@ -998,19 +876,6 @@ mod minimap_layout_tests {
     }
 
     #[test]
-    fn inline_preview_tracks_the_requested_minimap_scale() {
-        let mut large = PeekConfig::default();
-        large.scale = 1.0;
-        let mut small = large.clone();
-        small.scale = 0.5;
-        let layer = config::MinimapLayerConfig::default();
-        let (_, large_w, large_scale) = App::minimap_preview_layout(1100.0, &large, &layer);
-        let (_, small_w, small_scale) = App::minimap_preview_layout(1100.0, &small, &layer);
-        assert!(small_w < large_w);
-        assert!(small_scale < large_scale);
-    }
-
-    #[test]
     fn layer_delete_drops_deleted_minimap_and_shifts_higher_layers() {
         let mut layers = vec![
             config::MinimapLayerConfig {
@@ -1041,17 +906,5 @@ mod minimap_layout_tests {
         let large = minimap_hint_scale(1.0, &layer);
         assert!(small < large);
         assert!((large - 1.25).abs() < 0.001);
-    }
-
-    #[test]
-    fn top_hints_preserve_more_keyboard_width_than_side_hints() {
-        let c = PeekConfig::default();
-        let mut side = hints(4);
-        side.instruction_placement = config::MinimapHintPlacement::Right;
-        let mut top = side.clone();
-        top.instruction_placement = config::MinimapHintPlacement::Top;
-        let (_, side_w, _) = App::minimap_preview_layout(760.0, &c, &side);
-        let (_, top_w, _) = App::minimap_preview_layout(760.0, &c, &top);
-        assert!(top_w >= side_w);
     }
 }

@@ -495,39 +495,40 @@ pub fn spawn_autolayer(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
     let thread = std::thread::spawn(move || {
-        let mut last_bundle = String::new();
+        let mut last_bundle: Option<String> = None;
         let mut active_rule_layer: Option<u8> = None;
         while !stop_t.load(Ordering::SeqCst) {
-            if let Some(bundle) = crate::cmd_autolayer::frontmost_bundle_id() {
-                if bundle != last_bundle {
-                    let target = rules
+            let observed = crate::cmd_autolayer::frontmost_bundle_id();
+            if observed != last_bundle {
+                let target = observed.as_deref().and_then(|bundle| {
+                    rules
                         .iter()
-                        .find(|r| crate::cmd_autolayer::rule_matches(&bundle, &r.bundle))
-                        .map(|r| r.layer);
-                    let (release, enable) =
-                        crate::cmd_autolayer::layer_transition(active_rule_layer, target);
-                    if let Some(prev) = release {
-                        if cmd_tx
-                            .send(KbCmd::SetLayer {
-                                on: false,
-                                layer: prev,
-                            })
-                            .is_err()
-                        {
-                            return;
-                        }
+                        .find(|r| crate::cmd_autolayer::rule_matches(bundle, &r.bundle))
+                        .map(|r| r.layer)
+                });
+                let (release, enable) =
+                    crate::cmd_autolayer::layer_transition(active_rule_layer, target);
+                if let Some(prev) = release {
+                    if cmd_tx
+                        .send(KbCmd::SetLayer {
+                            on: false,
+                            layer: prev,
+                        })
+                        .is_err()
+                    {
+                        return;
                     }
-                    if let Some(layer) = enable {
-                        if cmd_tx.send(KbCmd::SetLayer { on: true, layer }).is_err() {
-                            return;
-                        }
-                    }
-                    if release.is_some() || enable.is_some() {
-                        active_rule_layer = target;
-                        ctx.request_repaint();
-                    }
-                    last_bundle = bundle;
                 }
+                if let Some(layer) = enable {
+                    if cmd_tx.send(KbCmd::SetLayer { on: true, layer }).is_err() {
+                        return;
+                    }
+                }
+                if release.is_some() || enable.is_some() {
+                    active_rule_layer = target;
+                    ctx.request_repaint();
+                }
+                last_bundle = observed;
             }
             for _ in 0..8 {
                 if stop_t.load(Ordering::SeqCst) {

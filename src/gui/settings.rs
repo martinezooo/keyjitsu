@@ -73,7 +73,7 @@ impl App {
                 ui,
                 "📚",
                 "Shortcut library",
-                "Common shortcuts to borrow when planning layers. Edit keys in Live.",
+                "Common shortcuts to borrow when planning layers. Edit keys in Layout.",
                 Some(("Reference".to_string(), pal::TEXT_DIM)),
                 self,
                 |ui, app| {
@@ -119,6 +119,8 @@ impl App {
         centered_page(ui, 1000.0, |ui| {
             let pill = if !cfg!(target_os = "macos") {
                 ("macOS only".to_string(), pal::TEXT_DIM)
+            } else if self.autolayer_enabled && self.connected.is_none() {
+                ("On · waiting for Voyager".to_string(), pal::AMBER)
             } else if self.autolayer_enabled {
                 (
                     format!(
@@ -264,7 +266,7 @@ impl App {
         ui.add_space(4.0);
         if toggle_row(
             ui,
-            "Show CPU in the header (always visible)",
+            "Show CPU in the sidebar (always visible)",
             &mut self.show_cpu_header,
         ) {
             let show = self.show_cpu_header;
@@ -786,29 +788,33 @@ impl App {
             ui.add_space(6.0);
 
             // Add a rule from a running app (no need to know bundle ids).
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("add_running")
-                    .selected_text("＋ Add from running app…")
-                    .width(240.0)
-                    .show_ui(ui, |ui| {
-                        for (name, bundle) in crate::cmd_autolayer::running_apps() {
-                            if ui
-                                .selectable_label(false, format!("{name}  ·  {bundle}"))
-                                .clicked()
-                            {
-                                self.rules.push(AutolayerRule { bundle, layer: 1 });
-                                self.rules_dirty = true;
+            if self.layer_count() <= 1 {
+                ui.weak("Add a non-base layer before creating Autolayer rules.");
+            } else {
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("add_running")
+                        .selected_text("＋ Add from running app…")
+                        .width(240.0)
+                        .show_ui(ui, |ui| {
+                            for (name, bundle) in crate::cmd_autolayer::running_apps() {
+                                if ui
+                                    .selectable_label(false, format!("{name}  ·  {bundle}"))
+                                    .clicked()
+                                {
+                                    self.rules.push(AutolayerRule { bundle, layer: 1 });
+                                    self.rules_dirty = true;
+                                }
                             }
-                        }
-                    });
-                if ui.button("＋ blank rule").clicked() {
-                    self.rules.push(AutolayerRule {
-                        bundle: String::new(),
-                        layer: 1,
-                    });
-                    self.rules_dirty = true;
-                }
-            });
+                        });
+                    if ui.button("＋ blank rule").clicked() {
+                        self.rules.push(AutolayerRule {
+                            bundle: String::new(),
+                            layer: 1,
+                        });
+                        self.rules_dirty = true;
+                    }
+                });
+            }
 
             if self.rules_dirty {
                 ui.add_space(4.0);

@@ -213,7 +213,7 @@ impl App {
             ui.separator();
             ui.add_space(4.0);
             ui.label(
-                RichText::new("Use it per key in Live (key → On press), or board-wide under board RGB (left).")
+                RichText::new("Use it per key in Layout (key → On press), or board-wide under board RGB (left).")
                     .size(11.0)
                     .color(pal::TEXT_MUTED),
             );
@@ -339,16 +339,17 @@ impl App {
                 .clicked()
             {
                 if let Ok(mut a) = self.anim.lock() {
-                    let prev = if a.effect == Effect::Custom {
-                        Effect::Off
-                    } else {
-                        a.effect
-                    };
+                    let until = Instant::now() + Duration::from_secs(5);
+                    let mut restore = self
+                        .fx_board_restore
+                        .take()
+                        .unwrap_or_else(|| FxBoardRestore::capture(&a, until));
+                    restore.until = until;
                     a.custom = self.custom_fx[i].steps.clone();
                     a.custom_name = self.custom_fx[i].name.clone();
                     a.speed = self.fx_speed;
                     a.effect = Effect::Custom;
-                    self.fx_board_restore = Some((Instant::now() + Duration::from_secs(5), prev));
+                    self.fx_board_restore = Some(restore);
                 }
             }
             ui.add_space(6.0);

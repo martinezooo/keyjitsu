@@ -62,36 +62,37 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
     let r = running.clone();
     ctrlc::set_handler(move || r.store(false, Ordering::SeqCst))?;
 
-    let mut last_bundle = String::new();
+    let mut last_bundle: Option<String> = None;
     let mut active_rule_layer: Option<u8> = None;
 
     while running.load(Ordering::SeqCst) {
         // Consume pending events so the OS buffer doesn't fill up.
         while let Ok(Some(_)) = kb.read_event(Duration::ZERO) {}
 
-        if let Some(bundle) = frontmost_bundle_id() {
-            if bundle != last_bundle {
-                let target = rules
+        let observed = frontmost_bundle_id();
+        if observed != last_bundle {
+            let target = observed.as_deref().and_then(|bundle| {
+                rules
                     .iter()
-                    .find(|(pat, _)| rule_matches(&bundle, pat))
-                    .map(|(_, layer)| *layer);
-                let (release, enable) = layer_transition(active_rule_layer, target);
-                if let Some(prev) = release {
-                    kb.send(Command::SetLayer {
-                        on: false,
-                        layer: prev,
-                    })
-                    .context("releasing previous autolayer (keyboard unplugged?)")?;
-                    println!("→ layer {prev} released  ({bundle})");
-                }
-                if let Some(layer) = enable {
-                    kb.send(Command::SetLayer { on: true, layer })
-                        .context("switching layer (keyboard unplugged?)")?;
-                    println!("→ layer {layer}  ({bundle})");
-                }
-                active_rule_layer = target;
-                last_bundle = bundle;
+                    .find(|(pat, _)| rule_matches(bundle, pat))
+                    .map(|(_, layer)| *layer)
+            });
+            let (release, enable) = layer_transition(active_rule_layer, target);
+            if let Some(prev) = release {
+                kb.send(Command::SetLayer {
+                    on: false,
+                    layer: prev,
+                })
+                .context("releasing previous autolayer (keyboard unplugged?)")?;
+                println!("→ layer {prev} released");
             }
+            if let Some(layer) = enable {
+                kb.send(Command::SetLayer { on: true, layer })
+                    .context("switching layer (keyboard unplugged?)")?;
+                println!("→ layer {layer}");
+            }
+            active_rule_layer = target;
+            last_bundle = observed;
         }
         std::thread::sleep(Duration::from_millis(poll_ms));
     }

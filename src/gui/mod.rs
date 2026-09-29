@@ -92,7 +92,7 @@ pub fn run(serial: Option<String>) -> Result<()> {
                 eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon_256.png"))
                     .unwrap_or_default(),
             )
-            .with_title("Keyjitsu - Voyager keyboard mapper"),
+            .with_title(format!("Keyjitsu v{}", env!("CARGO_PKG_VERSION"))),
         ..Default::default()
     };
     eframe::run_native(
@@ -342,6 +342,7 @@ struct App {
     // Minimap HUD (global fallback + per-layer overrides)
     peek: PeekConfig,
     minimap_layers: Vec<config::MinimapLayerConfig>,
+    minimap_locked: bool,
     peek_until: Option<Instant>,
     peek_layer: u8,
 
@@ -437,6 +438,7 @@ struct App {
     profile_draft: String,
     profile_error: Option<String>,
     persist_error: Option<String>,
+    window_title: String,
     /// Last failure while opening/revealing a build-related path.
     file_action_error: Option<String>,
     /// Last autostart toggle error (shown in the App card).
@@ -448,8 +450,8 @@ struct App {
     draft_sc: config::CustomShortcut,
     /// Active step being painted in the custom-effect editor.
     fx_step: usize,
-    /// Board test in progress: restore this effect at this time.
-    fx_board_restore: Option<(Instant, Effect)>,
+    /// Board test in progress: restore the exact animation state at this time.
+    fx_board_restore: Option<FxBoardRestore>,
     fx_t0: Instant,
     fx_events: Vec<FxEvent>,
     fx_last_fire: Instant,
@@ -480,6 +482,36 @@ struct PerfRun {
     phase_until: Instant,
     /// Constant effect to restore after a scripted run.
     restore: Option<Effect>,
+    /// A scripted comparison temporarily owns the minimap lock.
+    restore_minimap_locked: Option<bool>,
+}
+
+#[derive(Clone)]
+struct FxBoardRestore {
+    until: Instant,
+    effect: Effect,
+    speed: f32,
+    custom: Vec<FxStep>,
+    custom_name: String,
+}
+
+impl FxBoardRestore {
+    fn capture(a: &Anim, until: Instant) -> Self {
+        Self {
+            until,
+            effect: a.effect,
+            speed: a.speed,
+            custom: a.custom.clone(),
+            custom_name: a.custom_name.clone(),
+        }
+    }
+
+    fn restore(self, a: &mut Anim) {
+        a.effect = self.effect;
+        a.speed = self.speed;
+        a.custom = self.custom;
+        a.custom_name = self.custom_name;
+    }
 }
 
 /// A press held longer than this (ms) reads as a "hold" gesture in the combo
@@ -722,6 +754,7 @@ impl App {
             tab: match std::env::var("KEYJITSU_TAB").as_deref() {
                 Ok("heatmap") => Tab::Heatmap,
                 Ok("peek") | Ok("minimap") => Tab::Peek,
+                Ok("layout") | Ok("live") => Tab::Live,
                 Ok("layers") => Tab::Layers,
                 Ok("fx") => Tab::Fx,
                 Ok("keys") | Ok("library") => Tab::Tools,
@@ -764,6 +797,7 @@ impl App {
             profile_draft: String::new(),
             profile_error: profile_load_error,
             persist_error: config_load_error,
+            window_title: String::new(),
             file_action_error: None,
             #[cfg(target_os = "macos")]
             autostart_error: None,
@@ -831,6 +865,7 @@ impl App {
             picker_layer_arg: 1,
             peek: cfg.peek.clone(),
             minimap_layers: cfg.minimap_layers.clone(),
+            minimap_locked: cfg.minimap_locked,
             peek_until: None,
             peek_layer: 0,
             anim,
@@ -904,6 +939,7 @@ impl App {
             phase_i: 0,
             phase_until: now,
             restore: None,
+            restore_minimap_locked: None,
         });
     }
 
@@ -929,14 +965,18 @@ impl App {
                 peek: false,
             },
             PerfPhase {
-                label: "rainbow+peek".into(),
+                label: "rainbow+minimap".into(),
                 secs: 12,
                 anim: Effect::Rainbow,
                 peek: true,
             },
         ];
         let restore = self.anim.lock().map(|a| a.effect).ok();
-        // Apply the first phase immediately.
+        let restore_minimap_locked = self.minimap_locked;
+        // Scripted comparisons own both animation and minimap visibility so
+        // the idle baseline cannot accidentally include a pinned/old overlay.
+        self.minimap_locked = false;
+        self.peek_until = None;
         self.set_anim_effect(phases[0].anim);
         self.perf_last = None;
         self.perf_run = Some(PerfRun {
@@ -949,6 +989,7 @@ impl App {
             phase_i: 0,
             phases,
             restore,
+            restore_minimap_locked: Some(restore_minimap_locked),
         });
     }
 
@@ -959,6 +1000,9 @@ impl App {
             if let Some(eff) = run.restore {
                 self.set_anim_effect(eff);
                 self.peek_until = None;
+            }
+            if let Some(locked) = run.restore_minimap_locked {
+                self.minimap_locked = locked;
             }
         }
     }
@@ -1218,6 +1262,15 @@ impl App {
             self.flash_close_blocked = false;
         }
         self.tick_perf();
+        let window_title = format!(
+            "Keyjitsu v{} · {}",
+            env!("CARGO_PKG_VERSION"),
+            self.connection_title()
+        );
+        if window_title != self.window_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(window_title.clone()));
+            self.window_title = window_title;
+        }
         if let Some(rx) = &self.update_rx {
             if let Ok(r) = rx.try_recv() {
                 self.update_state = Some(r);
@@ -1241,11 +1294,17 @@ impl App {
             self.peek_layer = self.active_layer;
             self.peek_until = Some(Instant::now() + Duration::from_millis(1200));
         }
-        // A "test on keyboard" run of a custom sequence auto-reverts.
-        if let Some((until, prev)) = self.fx_board_restore {
-            if Instant::now() >= until {
-                self.set_anim_effect(prev);
-                self.fx_board_restore = None;
+        // A "test on keyboard" run of a custom sequence restores every
+        // animation field it temporarily replaced, including a prior custom.
+        let restore_fx = self
+            .fx_board_restore
+            .as_ref()
+            .is_some_and(|restore| Instant::now() >= restore.until);
+        if restore_fx {
+            if let Ok(mut a) = self.anim.lock() {
+                if let Some(restore) = self.fx_board_restore.take() {
+                    restore.restore(&mut a);
+                }
             }
         }
         // Idle poll to drain channels; cheap now that per-frame work is cached.
@@ -1280,22 +1339,13 @@ impl App {
             .frame(egui::Frame::new().fill(pal::SURFACE).stroke(egui::Stroke::new(1.0, pal::BORDER)).inner_margin(egui::Margin::symmetric(12, 12)))
             .show(ctx, |ui| {
                 ui.label(RichText::new("Keyjitsu").strong().size(19.0).color(pal::VIOLET));
-                ui.label(
-                    RichText::new(format!("Voyager keyboard mapper v{}", env!("CARGO_PKG_VERSION")))
-                        .size(10.0)
-                        .color(pal::TEXT_DIM),
-                );
-                ui.add_space(6.0);
-                self.connection_pill(ui);
-                ui.add_space(6.0);
-                self.profile_bar(ui);
                 ui.add_space(10.0);
                 let nav_h = ui.available_height() - 34.0; // keep room for the CPU pill
                 egui::ScrollArea::vertical().max_height(nav_h).auto_shrink([false, true]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
                     ui.spacing_mut().interact_size.y = 20.0;
                     for (tab, name, icon, available) in [
-                        (Tab::Live, "Live", "⌨", true),
+                        (Tab::Live, "Layout", "⌨", true),
                         (Tab::Layers, "Layers", "▤", true),
                         (Tab::Heatmap, "Heatmap", "🔥", true),
                         (Tab::Peek, "Minimap", "⌨", true),
@@ -1352,6 +1402,23 @@ impl App {
                             if resp.clicked() {
                                 self.set_guard_enabled(!self.guard_enabled);
                             }
+                        }
+                        let (label, color) = if self.minimap_locked {
+                            ("⌨ minimap locked", pal::VIOLET_HI)
+                        } else {
+                            ("⌨ minimap lock", pal::TEXT_DIM)
+                        };
+                        let resp = egui::Frame::new()
+                            .show(ui, |ui| status_pill(ui, label, color))
+                            .response
+                            .interact(egui::Sense::click())
+                            .on_hover_text(if self.minimap_locked {
+                                "Click to unpin the minimap overlay."
+                            } else {
+                                "Click to pin the real minimap overlay on screen."
+                            });
+                        if resp.clicked() {
+                            self.set_minimap_locked(!self.minimap_locked);
                         }
                         if cfg!(target_os = "macos") && self.autolayer_enabled {
                             egui::Frame::new()
@@ -1449,8 +1516,12 @@ impl App {
         self.ui_picker(ctx);
         self.ui_build_modal(ctx);
 
-        // Layer-peek HUD: show while its timer is live, then let it close.
-        if let Some(until) = self.peek_until {
+        // The sidebar lock pins the real overlay. Otherwise normal per-layer
+        // activation/shortcut timing controls visibility.
+        if self.minimap_locked {
+            self.show_peek(ctx);
+            ctx.request_repaint_after(Duration::from_millis(250));
+        } else if let Some(until) = self.peek_until {
             let now = Instant::now();
             if now < until {
                 self.show_peek(ctx);
@@ -1841,29 +1912,6 @@ fn toggle_row(ui: &mut egui::Ui, label: &str, on: &mut bool) -> bool {
         });
     });
     changed
-}
-
-/// A checkerboard (transparency indicator) behind the peek preview.
-fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect) {
-    let s = 11.0;
-    let (a, b) = (
-        egui::Color32::from_rgb(40, 42, 50),
-        egui::Color32::from_rgb(28, 30, 37),
-    );
-    painter.rect_filled(rect, egui::CornerRadius::same(8), b);
-    let cols = (rect.width() / s).ceil() as i32;
-    let rows = (rect.height() / s).ceil() as i32;
-    for r in 0..rows {
-        for c in 0..cols {
-            if (r + c) % 2 == 0 {
-                let x = rect.left() + c as f32 * s;
-                let y = rect.top() + r as f32 * s;
-                let cell =
-                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(s, s)).intersect(rect);
-                painter.rect_filled(cell, egui::CornerRadius::ZERO, a);
-            }
-        }
-    }
 }
 
 /// A 3×3 anchor grid (corners, edges, center) for the peek position.
@@ -2660,5 +2708,36 @@ mod live_layout_tests {
         let (narrow_w, narrow_h) = live_board_size(620.0, 900.0, 14.0, 5.0);
         assert!(narrow_w <= 620.0);
         assert!(narrow_h < h);
+    }
+}
+
+#[cfg(test)]
+mod fx_board_restore_tests {
+    use super::*;
+
+    #[test]
+    fn custom_board_test_restores_exact_previous_program() {
+        let mut anim = Anim {
+            effect: Effect::Custom,
+            speed: 2.25,
+            custom_name: "before".into(),
+            custom: vec![FxStep {
+                keys: vec![1, 2],
+                color: [1, 2, 3],
+                ms: 123,
+            }],
+            ..Anim::default()
+        };
+        let restore = FxBoardRestore::capture(&anim, Instant::now());
+        anim.effect = Effect::Rainbow;
+        anim.speed = 0.4;
+        anim.custom_name = "test".into();
+        anim.custom.clear();
+        restore.restore(&mut anim);
+        assert_eq!(anim.effect, Effect::Custom);
+        assert!((anim.speed - 2.25).abs() < f32::EPSILON);
+        assert_eq!(anim.custom_name, "before");
+        assert_eq!(anim.custom.len(), 1);
+        assert_eq!(anim.custom[0].keys, vec![1, 2]);
     }
 }

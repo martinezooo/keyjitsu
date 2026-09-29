@@ -96,157 +96,152 @@ impl App {
         self.activate_profile_target(target, state);
     }
 
-    /// Firmware target selector. "device" means the currently confirmed
-    /// firmware state; a named profile is a draft target and must be flashed to
-    /// become device truth.
-    pub(super) fn profile_bar(&mut self, ui: &mut egui::Ui) {
+    /// Compact saved-layout selector used in the Layout firmware bar.
+    pub(super) fn layout_profile_controls(&mut self, ui: &mut egui::Ui) {
         let active = self.active_profile.clone();
         let active_label = active.clone().unwrap_or_else(|| {
             if self.pending_firmware_count() > 0 {
-                "device + draft".into()
+                "current + draft".into()
             } else {
-                "device".into()
+                "current".into()
             }
         });
         let saved_profiles = match list_profiles() {
             Ok(saved) => saved,
             Err(e) => {
-                self.profile_error = Some(format!("could not list firmware profiles: {e:#}"));
+                self.profile_error = Some(format!("could not list saved layouts: {e:#}"));
                 Vec::new()
             }
         };
-        ui.horizontal(|ui| {
-            let mut switch: Option<Option<String>> = None;
-            egui::ComboBox::from_id_salt("profile_sel")
-                .width(112.0)
-                .selected_text(RichText::new(format!("⚙ {active_label}")).size(11.5))
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(active.is_none(), "device (current)")
-                        .on_hover_text("Use the firmware state currently confirmed on the keyboard as the target.")
-                        .clicked()
-                        && active.is_some()
-                    {
-                        switch = Some(None);
-                    }
-                    for name in &saved_profiles {
-                        let is = active.as_deref() == Some(name.as_str());
-                        if ui
-                            .selectable_label(is, name)
-                            .on_hover_text("Firmware target; Build & flash is required to apply it to the keyboard.")
-                            .clicked()
-                            && !is
-                        {
-                            switch = Some(Some(name.clone()));
-                        }
-                    }
-                });
-            if let Some(t) = switch {
-                self.switch_profile(t);
-            }
-            ui.menu_button(RichText::new("＋").size(12.0), |ui| {
-                if ui.button("New firmware profile from current target…").clicked() {
-                    self.prof_new_open = true;
-                    self.profile_draft.clear();
-                    ui.close();
-                }
-                if ui.button(format!("Clone '{active_label}'")).clicked() {
-                    let result = self
-                        .desired_firmware_state()
-                        .ok_or_else(|| anyhow!("no matching firmware target to clone"))
-                        .and_then(|state| {
-                            next_profile_copy_name(&active_label)
-                                .and_then(|clone| create_profile(&clone, &state).map(|_| (clone, state)))
-                        });
-                    match result {
-                        Ok((clone, state)) => {
-                            self.activate_profile_target(Some(clone), Some(state));
-                        }
-                        Err(e) => {
-                            self.profile_error = Some(format!("could not clone firmware profile: {e:#}"));
-                        }
-                    }
-                    ui.close();
-                }
-                if active.is_some()
-                    && ui.button(format!("🗑 Delete '{active_label}'")).clicked()
+        let mut switch: Option<Option<String>> = None;
+        egui::ComboBox::from_id_salt("layout_profile_sel")
+            .width(145.0)
+            .selected_text(RichText::new(format!("Layout · {active_label}")).size(11.5))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(active.is_none(), "current device")
+                    .on_hover_text("Use the firmware state currently confirmed on the keyboard.")
+                    .clicked()
+                    && active.is_some()
                 {
-                    let deleted = active_label.clone();
-                    self.switch_profile(None);
-                    if self.active_profile.is_none() {
-                        match profile_path(&deleted) {
-                            Ok(path) => {
-                                if let Err(e) = std::fs::remove_file(path) {
-                                    if e.kind() != std::io::ErrorKind::NotFound {
-                                        self.profile_error =
-                                            Some(format!("could not delete {deleted}: {e}"));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                self.profile_error =
-                                    Some(format!("could not delete {deleted}: {e:#}"));
-                            }
-                        }
+                    switch = Some(None);
+                }
+                for name in &saved_profiles {
+                    let selected = active.as_deref() == Some(name.as_str());
+                    if ui
+                        .selectable_label(selected, name)
+                        .on_hover_text(
+                            "Load this saved layout target. Flash to apply it to the keyboard.",
+                        )
+                        .clicked()
+                        && !selected
+                    {
+                        switch = Some(Some(name.clone()));
                     }
-                    ui.close();
                 }
             });
-        });
-        if self.active_profile.is_some() {
-            ui.label(
-                RichText::new("profile = firmware target · flash to apply")
-                    .size(9.5)
-                    .color(pal::TEXT_DIM),
-            );
+        if let Some(target) = switch {
+            self.switch_profile(target);
         }
+        ui.menu_button("＋", |ui| {
+            if ui.button("Save current layout…").clicked() {
+                self.prof_new_open = true;
+                self.profile_draft.clear();
+                ui.close();
+            }
+            if ui.button(format!("Duplicate '{active_label}'")).clicked() {
+                let result = self
+                    .desired_firmware_state()
+                    .ok_or_else(|| anyhow!("no matching layout target to duplicate"))
+                    .and_then(|state| {
+                        next_profile_copy_name(&active_label).and_then(|clone| {
+                            create_profile(&clone, &state).map(|_| (clone, state))
+                        })
+                    });
+                match result {
+                    Ok((clone, state)) => {
+                        self.activate_profile_target(Some(clone), Some(state));
+                    }
+                    Err(e) => {
+                        self.profile_error =
+                            Some(format!("could not duplicate saved layout: {e:#}"));
+                    }
+                }
+                ui.close();
+            }
+            if active.is_some() && ui.button(format!("Delete '{active_label}'")).clicked() {
+                let deleted = active_label.clone();
+                self.switch_profile(None);
+                if self.active_profile.is_none() {
+                    match profile_path(&deleted) {
+                        Ok(path) => {
+                            if let Err(e) = std::fs::remove_file(path) {
+                                if e.kind() != std::io::ErrorKind::NotFound {
+                                    self.profile_error =
+                                        Some(format!("could not delete {deleted}: {e}"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.profile_error = Some(format!("could not delete {deleted}: {e:#}"));
+                        }
+                    }
+                }
+                ui.close();
+            }
+        });
+    }
+
+    pub(super) fn layout_profile_editor(&mut self, ui: &mut egui::Ui) {
         if let Some(e) = &self.profile_error {
             ui.colored_label(pal::RED, RichText::new(e).size(10.5));
         }
-        if self.prof_new_open {
-            ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.profile_draft)
-                        .hint_text("name…")
-                        .desired_width(96.0),
-                );
-                let draft = self.profile_draft.trim();
-                let ok = profile_file_name(draft).is_ok()
-                    && !saved_profiles
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(draft));
-                if ui
-                    .add_enabled(ok, egui::Button::new("✓"))
-                    .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'.")
-                    .clicked()
-                {
-                    let name = self.profile_draft.trim().to_string();
-                    let result = self
-                        .desired_firmware_state()
-                        .ok_or_else(|| anyhow!("no matching firmware target to save"))
-                        .and_then(|state| create_profile(&name, &state).map(|_| state));
-                    match result {
-                        Ok(state) => {
-                            if self.activate_profile_target(Some(name), Some(state)) {
-                                self.prof_new_open = false;
-                                self.profile_draft.clear();
-                            }
-                        }
-                        Err(e) => {
-                            self.profile_error =
-                                Some(format!("could not create firmware profile: {e:#}"));
+        if !self.prof_new_open {
+            return;
+        }
+        let saved_profiles = list_profiles().unwrap_or_default();
+        ui.horizontal(|ui| {
+            ui.weak("Save layout as");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.profile_draft)
+                    .hint_text("name…")
+                    .desired_width(150.0),
+            );
+            let draft = self.profile_draft.trim();
+            let ok = profile_file_name(draft).is_ok()
+                && !saved_profiles
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(draft));
+            if ui
+                .add_enabled(ok, egui::Button::new("Save"))
+                .on_disabled_hover_text("Use 1-64 letters, numbers, spaces, '-' or '_'.")
+                .clicked()
+            {
+                let name = self.profile_draft.trim().to_string();
+                let result = self
+                    .desired_firmware_state()
+                    .ok_or_else(|| anyhow!("no matching layout target to save"))
+                    .and_then(|state| create_profile(&name, &state).map(|_| state));
+                match result {
+                    Ok(state) => {
+                        if self.activate_profile_target(Some(name), Some(state)) {
+                            self.prof_new_open = false;
+                            self.profile_draft.clear();
                         }
                     }
+                    Err(e) => {
+                        self.profile_error = Some(format!("could not save layout: {e:#}"));
+                    }
                 }
-                if ui.button("✕").clicked() {
-                    self.prof_new_open = false;
-                }
-            });
-        }
+            }
+            if ui.button("Cancel").clicked() {
+                self.prof_new_open = false;
+            }
+        });
     }
 
-    /// Sub-items rendered in the sidebar under the ACTIVE tab: layers for
-    /// Live/Heatmap/Peek, library categories for FX Studio.
+    /// Sub-items rendered in the sidebar under the active tab.
+    /// Layout/Heatmap/Minimap show layers; FX Studio shows effect categories.
     pub(super) fn nav_children(&mut self, ui: &mut egui::Ui, tab: Tab) {
         let names: Vec<String> = (0..self.layer_count())
             .map(|n| self.layer_name(n))
@@ -307,7 +302,7 @@ impl App {
                     if sub_item(ui, self.peek_layer == n, n == active, name) {
                         self.peek_layer = n;
                         let c = self.minimap_settings(n);
-                        self.arm_preview(&c, 2000);
+                        self.arm_minimap_overlay(&c, 2000);
                     }
                 }
             }

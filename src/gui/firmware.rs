@@ -392,6 +392,7 @@ impl App {
                 if ui.button("Flash file…").clicked() {
                     self.show_flash = true;
                 }
+                self.layout_profile_controls(ui);
                 if pending > 0 {
                     let ready = self.env.is_ready()
                         && self.connected.is_some()
@@ -432,6 +433,7 @@ impl App {
                 }
             });
         });
+        self.layout_profile_editor(ui);
     }
 
     pub(super) fn ui_localbuild(&mut self, ui: &mut egui::Ui) {
@@ -612,7 +614,7 @@ impl App {
     }
 
     pub(super) fn flash_controls(&mut self, ui: &mut egui::Ui) {
-        ui.weak("Firmware, separate from the glow above. This flashes a complete firmware file or Oryx URL. To change what keys do, stage edits in Live and use Build & flash.");
+        ui.weak("Firmware, separate from the glow above. This flashes a complete firmware file or Oryx URL. To change what keys do, stage edits in Layout and use Build & flash.");
         if let Some((_, serial)) = &self.connected {
             ui.label(format!("current firmware/layout: {serial}"));
         }

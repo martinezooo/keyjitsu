@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::oryx_api::cache_dir;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutolayerRule {
     /// Substring matched against the frontmost app's bundle id.
     pub bundle: String,
@@ -110,36 +110,26 @@ pub struct MinimapInstruction {
 }
 
 /// Position of the layer-hint panel relative to the minimap keyboard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MinimapHintPlacement {
     Left,
     Top,
     Bottom,
     Inline,
     /// Also the fallback for an unknown value from a newer config.
+    #[default]
     #[serde(other)]
     Right,
 }
 
-impl Default for MinimapHintPlacement {
-    fn default() -> Self {
-        Self::Right
-    }
-}
-
 /// How multiple hints are arranged inside their panel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MinimapHintFlow {
     Row,
     /// Also the fallback for an unknown value from a newer config.
+    #[default]
     #[serde(other)]
     Column,
-}
-
-impl Default for MinimapHintFlow {
-    fn default() -> Self {
-        Self::Column
-    }
 }
 
 /// Per-layer minimap presentation. Missing layers fall back to the legacy
@@ -318,7 +308,9 @@ pub struct Config {
     pub peek: PeekConfig,
     /// Independent minimap presentation and hints for individual layers.
     pub minimap_layers: Vec<MinimapLayerConfig>,
-    /// Show a live CPU pill in the app header.
+    /// Pin the real minimap overlay on screen until explicitly unlocked.
+    pub minimap_locked: bool,
+    /// Show a live CPU pill in the sidebar.
     pub show_cpu_header: bool,
     /// Skip the once-per-launch check for a newer release (on by default so a
     /// fresh config checks; the user can turn it off in Settings).
@@ -532,6 +524,7 @@ mod tests {
         assert!(old.staged_edits.is_empty() && old.staged_dances.is_empty());
         assert!(old.custom_layer_sets.is_empty());
         assert!(old.minimap_layers.is_empty());
+        assert!(!old.minimap_locked);
 
         let old_layer: MinimapLayerConfig =
             serde_json::from_str(r#"{"layer":2,"show_instructions":true,"instructions":[]}"#)

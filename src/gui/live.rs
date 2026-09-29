@@ -7,69 +7,30 @@
 use super::*;
 
 impl App {
-    /// Compact connection status as a colored pill.
-    pub(super) fn connection_pill(&self, ui: &mut egui::Ui) {
-        let (dot, text, hover) = match (&self.connected, self.device_state_kind()) {
-            (Some((model, _)), DeviceStateKind::MissingFirmwareState) => (
-                pal::AMBER,
-                format!("{model} · state unknown"),
-                "The keyboard reports a Keyjitsu firmware marker, but the matching local firmware-state is unavailable.".to_string(),
-            ),
-            (Some((model, _)), DeviceStateKind::OryxBaseline) => {
-                let text = match &self.layout {
-                    Some(layout) => format!("{model} · {} · Oryx baseline", layout.title),
-                    None => format!("{model} · Oryx baseline"),
-                };
-                (
-                    pal::AMBER,
-                    text,
-                    "The device serial identifies this Oryx revision, but no Keyjitsu state marker proves that local/custom firmware changes are represented.".to_string(),
-                )
+    /// Compact connection/device text for the native window title.
+    pub(super) fn connection_title(&self) -> String {
+        match (&self.connected, self.device_state_kind()) {
+            (Some((model, _)), DeviceStateKind::MissingFirmwareState) => {
+                format!("{model} · state unknown")
             }
-            (Some((model, _)), DeviceStateKind::RecoveredLocalBuild) => {
-                let text = match &self.layout {
-                    Some(layout) => format!("{model} · {} · local build", layout.title),
-                    None => format!("{model} · local build"),
-                };
-                (
-                    pal::GREEN,
-                    text,
-                    "Recovered from the confirmed local Keyjitsu build for this exact pre-marker Oryx revision. A future Keyjitsu flash will embed a state marker so the keyboard can identify this state directly.".to_string(),
-                )
-            }
-            (Some((model, serial)), DeviceStateKind::VerifiedFirmware) => {
-                let text = match &self.layout {
-                    Some(layout) => format!("{model} · {}", layout.title),
-                    None => format!("{model} · {serial}"),
-                };
-                (pal::GREEN, text.clone(), text)
-            }
-            (None, DeviceStateKind::OfflineSnapshot) => (
-                pal::RED,
-                "No keyboard".to_string(),
-                "Plug in your Voyager and quit Keymapp (the HID channel is exclusive).".to_string(),
-            ),
-            _ => (
-                pal::AMBER,
-                "device state inconsistent".to_string(),
-                "The runtime state is internally inconsistent; reconnect the keyboard and inspect diagnostics.".to_string(),
-            ),
-        };
-        egui::Frame::new()
-            .fill(pal::RAISED)
-            .stroke(egui::Stroke::new(1.0, pal::BORDER))
-            .corner_radius(egui::CornerRadius::same(20))
-            .inner_margin(egui::Margin::symmetric(11, 4))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(dot, RichText::new("●").size(11.0));
-                    ui.add(egui::Label::new(RichText::new(&text).color(pal::TEXT_DIM)).truncate())
-                        .on_hover_text(hover);
-                });
-            });
+            (Some((model, _)), DeviceStateKind::OryxBaseline) => match &self.layout {
+                Some(layout) => format!("{model} · {} · Oryx baseline", layout.title),
+                None => format!("{model} · Oryx baseline"),
+            },
+            (Some((model, _)), DeviceStateKind::RecoveredLocalBuild) => match &self.layout {
+                Some(layout) => format!("{model} · {} · local build", layout.title),
+                None => format!("{model} · local build"),
+            },
+            (Some((model, serial)), DeviceStateKind::VerifiedFirmware) => match &self.layout {
+                Some(layout) => format!("{model} · {}", layout.title),
+                None => format!("{model} · {serial}"),
+            },
+            (None, DeviceStateKind::OfflineSnapshot) => "No keyboard".to_string(),
+            _ => "device state inconsistent".to_string(),
+        }
     }
 
-    /// The Layers tab: overview + management of every layer (Oryx + custom).
+    /// The Layers tab:    /// The Layers tab: overview + management of every layer (Oryx + custom).
     pub(super) fn ui_layers(&mut self, ui: &mut egui::Ui) {
         // Centered column.
         let full = ui.available_width();
@@ -166,7 +127,7 @@ impl App {
                                 self.new_layer_open = false;
                             }
                         });
-                        ui.label(RichText::new("Starts empty (all transparent). Fill its keys in Live, then add a switch key (Hold → this layer) somewhere.").size(11.5).color(pal::TEXT_DIM));
+                        ui.label(RichText::new("Starts empty (all transparent). Fill its keys in Layout, then add a switch key (Hold → this layer) somewhere.").size(11.5).color(pal::TEXT_DIM));
                     });
                 } else if ui.add(egui::Button::new(RichText::new("＋ Add layer").color(Color32::WHITE)).fill(pal::VIOLET)).clicked() {
                     self.new_layer_open = true;

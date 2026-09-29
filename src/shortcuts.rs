@@ -268,7 +268,7 @@ fn humanize_terminal_action(action: &str) -> String {
     if action.starts_with("text:") || action.starts_with("send_text ") {
         return "Send text".to_string();
     }
-    action.replace('_', " ").replace(':', " ")
+    action.replace(['_', ':'], " ")
 }
 
 fn humanize_terminal_keys(keys: &str) -> String {
