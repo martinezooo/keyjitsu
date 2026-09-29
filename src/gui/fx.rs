@@ -14,6 +14,13 @@ fn fx_test_active_ms(spec: &FxTestSpec) -> u64 {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FxLibraryGroup {
+    BuiltIn,
+    Press,
+    Mine,
+}
+
 impl App {
     pub(super) fn ui_fx_studio(&mut self, ui: &mut egui::Ui) {
         centered_page(ui, PAGE_MAX_WIDTH, |ui| {
@@ -28,126 +35,176 @@ impl App {
                 ui.add_space(6.0);
             }
 
-            let full = ui.available_width();
-            if full >= 820.0 {
-                ui.horizontal_top(|ui| {
-                    ui.vertical(|ui| {
-                        ui.set_width(252.0);
-                        self.fx_library_panel(ui);
-                    });
-                    ui.add_space(10.0);
-                    ui.vertical(|ui| {
-                        ui.set_width((full - 262.0).max(500.0));
-                        self.fx_editor_stack(ui);
+            self.fx_selector_card(ui);
+            ui.add_space(8.0);
+
+            let custom_sequence = match self.fx_sel {
+                FxSel::Custom(i) => self.custom_fx.get(i).is_some_and(|c| c.preset.is_none()),
+                _ => false,
+            };
+
+            if ui.available_width() >= 780.0 {
+                ui.columns(2, |cols| {
+                    self.fx_tune_card(&mut cols[0]);
+                    card(&mut cols[1], "Active keyboard RGB", |ui| {
+                        self.ui_rgb_effects(ui)
                     });
                 });
             } else {
-                self.fx_library_panel(ui);
+                self.fx_tune_card(ui);
                 ui.add_space(8.0);
-                self.fx_editor_stack(ui);
+                card(ui, "Active keyboard RGB", |ui| self.ui_rgb_effects(ui));
+            }
+
+            if custom_sequence {
+                ui.add_space(8.0);
+                self.fx_step_keyboard_card(ui);
             }
         });
     }
 
-    fn fx_library_panel(&mut self, ui: &mut egui::Ui) {
-        card(ui, "Effects", |ui| {
-            ui.label(RichText::new("BUILT-IN").size(10.5).color(pal::TEXT_DIM));
-            ui.add_space(2.0);
-            for (effect, label) in Effect::ALL {
-                if effect == Effect::Off {
-                    continue;
-                }
-                let name = label
-                    .split(" -")
-                    .next()
-                    .unwrap_or(label)
-                    .split(" (")
-                    .next()
-                    .unwrap_or(label);
+    fn fx_library_group(&self) -> FxLibraryGroup {
+        match self.fx_sel {
+            FxSel::Const(_) => FxLibraryGroup::BuiltIn,
+            FxSel::Press(_) => FxLibraryGroup::Press,
+            FxSel::Custom(_) => FxLibraryGroup::Mine,
+        }
+    }
+
+    fn fx_selector_card(&mut self, ui: &mut egui::Ui) {
+        card(ui, "Effect", |ui| {
+            let mut group = self.fx_library_group();
+            ui.horizontal_wrapped(|ui| {
                 if ui
-                    .selectable_label(self.fx_sel == FxSel::Const(effect), name)
+                    .selectable_value(&mut group, FxLibraryGroup::BuiltIn, "Built-in")
                     .clicked()
                 {
+                    let effect = Effect::ALL
+                        .iter()
+                        .map(|(effect, _)| *effect)
+                        .find(|effect| *effect != Effect::Off)
+                        .unwrap_or(Effect::Layout);
                     self.fx_sel = FxSel::Const(effect);
                 }
-            }
-
-            ui.add_space(8.0);
-            ui.label(
-                RichText::new("ON KEY PRESS")
-                    .size(10.5)
-                    .color(pal::TEXT_DIM),
-            );
-            ui.add_space(2.0);
-            for (effect, label) in PressEffect::ALL {
-                if effect == PressEffect::None {
-                    continue;
-                }
-                let name = label
-                    .replace("This key - ", "")
-                    .replace("Whole board - ", "Board · ");
                 if ui
-                    .selectable_label(self.fx_sel == FxSel::Press(effect), name)
+                    .selectable_value(&mut group, FxLibraryGroup::Press, "On key press")
                     .clicked()
                 {
+                    let effect = PressEffect::ALL
+                        .iter()
+                        .map(|(effect, _)| *effect)
+                        .find(|effect| *effect != PressEffect::None)
+                        .unwrap_or(PressEffect::Ripple);
                     self.fx_sel = FxSel::Press(effect);
                 }
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(6.0);
-            ui.label(RichText::new("MY EFFECTS").size(10.5).color(pal::TEXT_DIM));
-            ui.add_space(2.0);
-            let mut select = None;
-            for (i, custom) in self.custom_fx.iter().enumerate() {
-                if ui
-                    .selectable_label(
-                        self.fx_sel == FxSel::Custom(i),
-                        format!("★ {}", custom.name),
+                let mine = ui
+                    .add_enabled(
+                        !self.custom_fx.is_empty(),
+                        egui::Button::selectable(group == FxLibraryGroup::Mine, "My effects"),
                     )
+                    .on_disabled_hover_text("Create your first custom effect with + New");
+                if mine.clicked() {
+                    self.fx_sel = FxSel::Custom(0);
+                    self.fx_step = 0;
+                }
+            });
+            ui.add_space(6.0);
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Effect").size(11.0).color(pal::TEXT_DIM));
+                match self.fx_library_group() {
+                    FxLibraryGroup::BuiltIn => {
+                        let selected = match self.fx_sel {
+                            FxSel::Const(effect) => effect,
+                            _ => Effect::Layout,
+                        };
+                        egui::ComboBox::from_id_salt("fx_library_builtin")
+                            .width(250.0)
+                            .selected_text(selected.label())
+                            .show_ui(ui, |ui| {
+                                for (effect, label) in Effect::ALL {
+                                    if effect != Effect::Off {
+                                        ui.selectable_value(
+                                            &mut self.fx_sel,
+                                            FxSel::Const(effect),
+                                            label,
+                                        );
+                                    }
+                                }
+                            });
+                    }
+                    FxLibraryGroup::Press => {
+                        let selected = match self.fx_sel {
+                            FxSel::Press(effect) => effect,
+                            _ => PressEffect::Ripple,
+                        };
+                        egui::ComboBox::from_id_salt("fx_library_press")
+                            .width(250.0)
+                            .selected_text(selected.label())
+                            .show_ui(ui, |ui| {
+                                for (effect, label) in PressEffect::ALL {
+                                    if effect != PressEffect::None {
+                                        ui.selectable_value(
+                                            &mut self.fx_sel,
+                                            FxSel::Press(effect),
+                                            label,
+                                        );
+                                    }
+                                }
+                            });
+                    }
+                    FxLibraryGroup::Mine => {
+                        let selected = match self.fx_sel {
+                            FxSel::Custom(i) => self
+                                .custom_fx
+                                .get(i)
+                                .map(|c| c.name.as_str())
+                                .unwrap_or("My effect"),
+                            _ => "My effect",
+                        };
+                        egui::ComboBox::from_id_salt("fx_library_custom")
+                            .width(250.0)
+                            .selected_text(selected)
+                            .show_ui(ui, |ui| {
+                                for (i, custom) in self.custom_fx.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(
+                                            self.fx_sel == FxSel::Custom(i),
+                                            &custom.name,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.fx_sel = FxSel::Custom(i);
+                                        self.fx_step = 0;
+                                    }
+                                }
+                            });
+                    }
+                }
+
+                if ui
+                    .button("＋ New")
+                    .on_hover_text("Create a custom sequence")
                     .clicked()
                 {
-                    select = Some(i);
+                    let n = self.custom_fx.len() + 1;
+                    self.custom_fx.push(CustomFx {
+                        name: format!("my effect {n}"),
+                        steps: vec![FxStep {
+                            keys: Vec::new(),
+                            color: [138, 92, 246],
+                            ms: 220,
+                        }],
+                        speed: 1.0,
+                        background: config::FxBackgroundMode::Preserve,
+                        preset: None,
+                    });
+                    self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
+                    self.fx_step = 0;
+                    self.save_custom_fx();
                 }
-            }
-            if let Some(i) = select {
-                self.fx_sel = FxSel::Custom(i);
-                self.fx_step = 0;
-            }
-            ui.add_space(6.0);
-            if ui.button("＋ New custom effect").clicked() {
-                let n = self.custom_fx.len() + 1;
-                self.custom_fx.push(CustomFx {
-                    name: format!("my effect {n}"),
-                    steps: vec![FxStep {
-                        keys: Vec::new(),
-                        color: [138, 92, 246],
-                        ms: 220,
-                    }],
-                    speed: 1.0,
-                    background: config::FxBackgroundMode::Preserve,
-                    preset: None,
-                });
-                self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
-                self.fx_step = 0;
-                self.save_custom_fx();
-            }
+            });
         });
-    }
-
-    fn fx_editor_stack(&mut self, ui: &mut egui::Ui) {
-        self.fx_tune_card(ui);
-        let custom_sequence = match self.fx_sel {
-            FxSel::Custom(i) => self.custom_fx.get(i).is_some_and(|c| c.preset.is_none()),
-            _ => false,
-        };
-        if custom_sequence {
-            ui.add_space(8.0);
-            self.fx_step_keyboard_card(ui);
-        }
-        ui.add_space(8.0);
-        card(ui, "Active keyboard RGB", |ui| self.ui_rgb_effects(ui));
     }
 
     fn unique_fx_name(&self, base: &str) -> String {

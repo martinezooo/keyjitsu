@@ -27,6 +27,8 @@ mod macos_kb;
 mod macos_lockwatch;
 #[cfg(target_os = "macos")]
 mod macos_overlay;
+#[cfg(target_os = "macos")]
+mod macos_status;
 mod oryx_api;
 mod perf;
 mod platform;

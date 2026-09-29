@@ -99,6 +99,8 @@ pub fn run(serial: Option<String>) -> Result<()> {
         "keyjitsu",
         options,
         Box::new(move |cc| {
+            #[cfg(target_os = "macos")]
+            crate::macos_status::install();
             let mut app = App::new(cc, serial);
             // QA: preview the build modal without running a build.
             if std::env::var("KEYJITSU_BUILD_DEMO").is_ok() {
