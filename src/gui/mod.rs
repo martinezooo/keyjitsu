@@ -531,6 +531,14 @@ const HOLD_MS: u128 = 180;
 const PEEK_BOARD_UNITS_WIDE: f32 = 14.5;
 const PEEK_BOARD_UNITS_TALL: f32 = 6.45;
 
+// App-shell layout tokens. Keep top-level pages and sidebar chrome on one
+// spacing system instead of letting each screen drift independently.
+const SIDEBAR_WIDTH: f32 = 178.0;
+const PAGE_MAX_WIDTH: f32 = 1120.0;
+const PAGE_TOP_PAD: f32 = 14.0;
+const PAGE_SIDE_PAD: f32 = 12.0;
+const SIDEBAR_STATUS_H: f32 = 26.0;
+
 /// The app's color system: violet is the brand, cyan is the UI "selected"
 /// state, amber = unsaved/warning, red = error. Layout colors on the keys stay
 /// faithful but calm - these are for the app chrome.
@@ -1362,105 +1370,131 @@ impl App {
         // (layers, heat scope, FX categories) directly beneath it.
         egui::SidePanel::left("nav")
             .resizable(false)
-            .exact_width(178.0)
-            .frame(egui::Frame::new().fill(pal::SURFACE).stroke(egui::Stroke::new(1.0, pal::BORDER)).inner_margin(egui::Margin::symmetric(12, 12)))
+            .exact_width(SIDEBAR_WIDTH)
+            .frame(
+                egui::Frame::new()
+                    .fill(pal::SURFACE)
+                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .inner_margin(egui::Margin::symmetric(12, 12)),
+            )
             .show(ctx, |ui| {
-                ui.label(RichText::new("Keyjitsu").strong().size(19.0).color(pal::VIOLET));
+                ui.label(
+                    RichText::new("Keyjitsu")
+                        .strong()
+                        .size(19.0)
+                        .color(pal::VIOLET),
+                );
                 ui.add_space(10.0);
-                let nav_h = ui.available_height() - 34.0; // keep room for the CPU pill
-                egui::ScrollArea::vertical().max_height(nav_h).auto_shrink([false, true]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.spacing_mut().interact_size.y = 20.0;
-                    for (tab, name, icon, available) in [
-                        (Tab::Live, "Layout", "⌨", true),
-                        (Tab::Heatmap, "Heatmap", "🔥", true),
-                        (Tab::Peek, "Minimap", "⌨", true),
-                        (Tab::Fx, "FX Studio (exp)", "✨", true),
-                        (Tab::Perf, "Performance (exp)", "📈", perf::CPU_SUPPORTED),
-                        (Tab::Auto, "Autolayer", "⇆", cfg!(target_os = "macos")),
-                        (Tab::Tools, "Settings", "⚙", true),
-                    ] {
-                        if !available {
-                            continue;
-                        }
-                        nav_item(ui, &mut self.tab, tab, icon, name);
-                        if self.tab == tab {
-                            self.nav_children(ui, tab);
-                        }
-                    }
-                });
-                // Status chips pinned to the bottom of the sidebar: things
-                // that are "on" right now, plus an update notice.
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.add_space(4.0);
-                    if let Some(UpdateCheck::Available { tag, .. }) = &self.update_state {
-                        let tag = tag.clone();
-                        let resp = egui::Frame::new()
-                            .show(ui, |ui| status_pill(ui, &format!("⬆ {tag} available"), pal::AMBER))
-                            .response
-                            .interact(egui::Sense::click())
-                            .on_hover_text("A newer keyjitsu is out. Open Settings for the release link.");
-                        if resp.clicked() {
-                            self.tab = Tab::Tools;
-                        }
-                    }
-                    if let Some(e) = &self.persist_error {
-                        egui::Frame::new()
-                            .show(ui, |ui| status_pill(ui, "⚠ save failed", pal::RED))
-                            .response
-                            .on_hover_text(e);
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        #[cfg(target_os = "macos")]
-                        {
-                            let (label, color, hover) = self.guard_indicator();
-                            let action = if self.guard_enabled {
-                                "Click to turn the guard OFF and restore the built-in keyboard immediately."
-                            } else {
-                                "Click to turn the guard ON. It engages while the Voyager is connected."
-                            };
-                            let resp = egui::Frame::new()
-                                .show(ui, |ui| status_pill(ui, &label, color))
-                                .response
-                                .interact(egui::Sense::click())
-                                .on_hover_text(format!("{hover}
-{action}"));
-                            if resp.clicked() {
-                                self.set_guard_enabled(!self.guard_enabled);
+                // Reserve exactly as much room as the footer needs. The old
+                // fixed 34 px budget caused status controls to overlap/compress
+                // as soon as Guard + Minimap + another state were visible.
+                let mut footer_rows = 1usize; // minimap lock is always present
+                #[cfg(target_os = "macos")]
+                {
+                    footer_rows += 1; // guard
+                }
+                if cfg!(target_os = "macos") && self.autolayer_enabled {
+                    footer_rows += 1;
+                }
+                if perf::CPU_SUPPORTED && self.show_cpu_header {
+                    footer_rows += 1;
+                }
+                if self.persist_error.is_some() {
+                    footer_rows += 1;
+                }
+                if matches!(self.update_state, Some(UpdateCheck::Available { .. })) {
+                    footer_rows += 1;
+                }
+                let footer_h = sidebar_footer_height(footer_rows);
+                let nav_h = (ui.available_height() - footer_h).max(96.0);
+                egui::ScrollArea::vertical()
+                    .max_height(nav_h)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.spacing_mut().interact_size.y = 20.0;
+                        for (tab, name, icon, available) in [
+                            (Tab::Live, "Layout", "⌨", true),
+                            (Tab::Heatmap, "Heatmap", "🔥", true),
+                            (Tab::Peek, "Minimap", "⌨", true),
+                            (Tab::Fx, "FX Studio (exp)", "✨", true),
+                            (Tab::Perf, "Performance (exp)", "📈", perf::CPU_SUPPORTED),
+                            (Tab::Auto, "Autolayer", "⇆", cfg!(target_os = "macos")),
+                            (Tab::Tools, "Settings", "⚙", true),
+                        ] {
+                            if !available {
+                                continue;
+                            }
+                            nav_item(ui, &mut self.tab, tab, icon, name);
+                            if self.tab == tab {
+                                self.nav_children(ui, tab);
                             }
                         }
-                        let (label, color) = if self.minimap_locked {
-                            ("⌨ minimap locked", pal::VIOLET_HI)
-                        } else {
-                            ("⌨ minimap lock", pal::TEXT_DIM)
-                        };
-                        let resp = egui::Frame::new()
-                            .show(ui, |ui| status_pill(ui, label, color))
-                            .response
-                            .interact(egui::Sense::click())
-                            .on_hover_text(if self.minimap_locked {
-                                "Click to unpin the minimap overlay."
-                            } else {
-                                "Click to pin the real minimap overlay on screen."
-                            });
-                        if resp.clicked() {
-                            self.set_minimap_locked(!self.minimap_locked);
-                        }
-                        if cfg!(target_os = "macos") && self.autolayer_enabled {
-                            egui::Frame::new()
-                                .show(ui, |ui| status_pill(ui, "⇆ autolayer", pal::GREEN))
-                                .response
-                                .on_hover_text("Layers follow the frontmost app.");
-                        }
                     });
-                    if perf::CPU_SUPPORTED && self.show_cpu_header {
-                        let c = self.perf_live;
-                        let resp = egui::Frame::new()
-                            .show(ui, |ui| status_pill(ui, &format!("{c:.1}% CPU"), if c > 25.0 { pal::AMBER } else { pal::TEXT_DIM }))
-                            .response;
-                        resp.on_hover_text("keyjitsu\u{2019}s own CPU · % of one core (not system load)");
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                // Footer rows are deliberately vertical and full-width. Status
+                // chips looked compact but could not satisfy the sidebar's
+                // width constraints once two long states shared one row.
+                if let Some(UpdateCheck::Available { tag, .. }) = &self.update_state {
+                    let tag = tag.clone();
+                    let resp = sidebar_status_row(ui, &format!("Update · {tag}"), pal::AMBER, true)
+                        .on_hover_text(
+                            "A newer Keyjitsu is available. Open Settings for the release link.",
+                        );
+                    if resp.clicked() {
+                        self.tab = Tab::Tools;
                     }
-                });
+                }
+                if let Some(e) = &self.persist_error {
+                    sidebar_status_row(ui, "Save failed", pal::RED, false).on_hover_text(e);
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let (label, color, hover) = self.guard_indicator();
+                    let action = if self.guard_enabled {
+                        "Click to turn Guard off and restore the built-in keyboard immediately."
+                    } else {
+                        "Click to turn Guard on. It engages while the Voyager is connected."
+                    };
+                    let resp = sidebar_status_row(ui, &label, color, true)
+                        .on_hover_text(format!("{hover}\n{action}"));
+                    if resp.clicked() {
+                        self.set_guard_enabled(!self.guard_enabled);
+                    }
+                }
+                let (label, color) = if self.minimap_locked {
+                    ("Minimap · locked", pal::VIOLET_HI)
+                } else {
+                    ("Minimap · unlocked", pal::TEXT_DIM)
+                };
+                let resp = sidebar_status_row(ui, label, color, true).on_hover_text(
+                    if self.minimap_locked {
+                        "Click to unpin the minimap overlay."
+                    } else {
+                        "Click to pin the real minimap overlay on screen."
+                    },
+                );
+                if resp.clicked() {
+                    self.set_minimap_locked(!self.minimap_locked);
+                }
+                if cfg!(target_os = "macos") && self.autolayer_enabled {
+                    sidebar_status_row(ui, "Autolayer · on", pal::GREEN, false)
+                        .on_hover_text("Layers follow the frontmost app.");
+                }
+                if perf::CPU_SUPPORTED && self.show_cpu_header {
+                    let c = self.perf_live;
+                    sidebar_status_row(
+                        ui,
+                        &format!("CPU · {c:.1}%"),
+                        if c > 25.0 { pal::AMBER } else { pal::TEXT_DIM },
+                        false,
+                    )
+                    .on_hover_text("Keyjitsu's own CPU · % of one core (not system load)");
+                }
             });
 
         // Bottom key-config panel (inspector), only on the Live tab.
@@ -1676,6 +1710,52 @@ fn fetch_monitors(_ctx: &egui::Context) -> Vec<MonitorInfo> {
     }
 }
 
+fn sidebar_footer_height(rows: usize) -> f32 {
+    // separator + local spacing + one non-wrapping row per state.
+    12.0 + rows as f32 * SIDEBAR_STATUS_H
+}
+
+/// One full-width sidebar state/action. It deliberately paints text itself so
+/// a narrow sidebar can clip as a last resort but can never reflow a control
+/// into the two-line sliver seen with status pills.
+fn sidebar_status_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    color: egui::Color32,
+    clickable: bool,
+) -> egui::Response {
+    let sense = if clickable {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), SIDEBAR_STATUS_H), sense);
+    let fill = if response.hovered() && clickable {
+        pal::HOVER.gamma_multiply(0.55)
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if fill != egui::Color32::TRANSPARENT {
+        ui.painter().rect_filled(rect, 6.0, fill);
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    let cy = rect.center().y;
+    painter.circle_filled(egui::pos2(rect.left() + 6.0, cy), 3.5, color);
+    painter.text(
+        egui::pos2(rect.left() + 16.0, cy),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(11.5),
+        if clickable {
+            pal::TEXT_MUTED
+        } else {
+            pal::TEXT_DIM
+        },
+    );
+    response
+}
+
 /// A small colored status pill (e.g. "Ready", "Off", "4.2% CPU").
 fn status_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     egui::Frame::new()
@@ -1701,8 +1781,8 @@ fn live_board_size(avail_w: f32, avail_h: f32, cols: f32, rows: f32) -> (f32, f3
 fn centered_page(ui: &mut egui::Ui, max_width: f32, body: impl FnOnce(&mut egui::Ui)) {
     let full = ui.available_width();
     let width = full.min(max_width);
-    let pad = ((full - width) / 2.0).max(12.0);
-    ui.add_space(14.0);
+    let pad = ((full - width) / 2.0).max(PAGE_SIDE_PAD);
+    ui.add_space(PAGE_TOP_PAD);
     ui.horizontal(|ui| {
         ui.add_space(pad);
         ui.vertical(|ui| {
@@ -2776,5 +2856,24 @@ mod fx_board_restore_tests {
         assert_eq!(anim.custom_name, "before");
         assert_eq!(anim.custom.len(), 1);
         assert_eq!(anim.custom[0].keys, vec![1, 2]);
+    }
+}
+
+#[cfg(test)]
+mod app_shell_layout_tests {
+    use super::*;
+
+    #[test]
+    fn sidebar_footer_reserves_one_full_row_per_status() {
+        assert_eq!(sidebar_footer_height(1), 12.0 + SIDEBAR_STATUS_H);
+        assert_eq!(sidebar_footer_height(4), 12.0 + 4.0 * SIDEBAR_STATUS_H);
+        assert!(sidebar_footer_height(4) > sidebar_footer_height(2));
+    }
+
+    #[test]
+    fn page_shell_tokens_fit_the_minimum_window() {
+        let main_width = 760.0 - SIDEBAR_WIDTH;
+        assert!(main_width - 2.0 * PAGE_SIDE_PAD > 500.0);
+        assert!(PAGE_MAX_WIDTH >= main_width);
     }
 }

@@ -292,7 +292,7 @@ impl App {
     }
 
     pub(super) fn ui_peek_page(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1120.0, |ui| {
+        centered_page(ui, PAGE_MAX_WIDTH, |ui| {
             page_header(
                 ui,
                 "Minimap",

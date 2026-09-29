@@ -4,7 +4,7 @@ use super::*;
 
 impl App {
     pub(super) fn ui_tools(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1120.0, |ui| {
+        centered_page(ui, PAGE_MAX_WIDTH, |ui| {
             page_header(
                 ui,
                 "Settings",
@@ -89,7 +89,7 @@ impl App {
 
     /// Performance as its own page using the same page shell as the rest of the app.
     pub(super) fn ui_perf_page(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1120.0, |ui| {
+        centered_page(ui, PAGE_MAX_WIDTH, |ui| {
             page_header(
                 ui,
                 "Performance",
@@ -107,7 +107,7 @@ impl App {
 
     /// Autolayer as its own page.
     pub(super) fn ui_auto_page(&mut self, ui: &mut egui::Ui) {
-        centered_page(ui, 1120.0, |ui| {
+        centered_page(ui, PAGE_MAX_WIDTH, |ui| {
             page_header(
                 ui,
                 "Autolayer",
@@ -512,24 +512,28 @@ impl App {
 
         if !self.guard_enabled {
             return (
-                "guard off".into(),
+                "Guard · off".into(),
                 pal::TEXT_DIM,
                 "Built-in keyboard guard is off.".into(),
             );
         }
         if let Some(e) = &self.guard_error {
-            return ("⚠ guard".into(), pal::RED, format!("Guard failed: {e}"));
+            return (
+                "Guard · failed".into(),
+                pal::RED,
+                format!("Guard failed: {e}"),
+            );
         }
         if self.guard.is_none() {
             return if self.connected.is_some() {
                 (
-                    "guard starting".into(),
+                    "Guard · starting".into(),
                     pal::AMBER,
                     "Guard is enabled and waiting for the remap to engage.".into(),
                 )
             } else {
                 (
-                    "guard armed".into(),
+                    "Guard · armed".into(),
                     pal::TEXT_DIM,
                     "Guard is enabled and will engage when the Voyager connects.".into(),
                 )
@@ -537,7 +541,7 @@ impl App {
         }
         if !self.guard_hidutil_ok {
             return (
-                "⚠ guard".into(),
+                "Guard · failed".into(),
                 pal::RED,
                 "hidutil no longer reports the remap as applied.".into(),
             );
@@ -545,22 +549,22 @@ impl App {
 
         match self.guard_test_result {
             Some(GuardTestOutcome::Blocked) => (
-                "🔒 guard verified".into(),
+                "Guard · verified".into(),
                 pal::GREEN,
                 "Functional test confirmed that no key press reached macOS during the test window.".into(),
             ),
             Some(GuardTestOutcome::Leaked) => (
-                "⚠ guard leaks".into(),
+                "Guard · leak detected".into(),
                 pal::RED,
                 "A functional test detected a key press getting through the built-in keyboard guard.".into(),
             ),
             Some(GuardTestOutcome::PermissionNeeded) => (
-                "guard unverified".into(),
+                "Guard · unverified".into(),
                 pal::AMBER,
                 "The remap is applied, but Input Monitoring permission is needed for a functional test.".into(),
             ),
             None => (
-                "guard unverified".into(),
+                "Guard · unverified".into(),
                 pal::AMBER,
                 "hidutil reports the remap as applied, but that does not prove the built-in keyboard is blocked. Run Test the guard in Settings.".into(),
             ),
