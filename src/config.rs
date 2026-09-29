@@ -533,10 +533,9 @@ mod tests {
         assert!(old.custom_layer_sets.is_empty());
         assert!(old.minimap_layers.is_empty());
 
-        let old_layer: MinimapLayerConfig = serde_json::from_str(
-            r#"{"layer":2,"show_instructions":true,"instructions":[]}"#,
-        )
-        .unwrap();
+        let old_layer: MinimapLayerConfig =
+            serde_json::from_str(r#"{"layer":2,"show_instructions":true,"instructions":[]}"#)
+                .unwrap();
         assert_eq!(old_layer.instruction_scale, 1.0);
         assert_eq!(old_layer.instruction_placement, MinimapHintPlacement::Right);
         assert_eq!(old_layer.instruction_flow, MinimapHintFlow::Column);

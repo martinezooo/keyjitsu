@@ -37,10 +37,7 @@ fn minimap_hint_scale(board_scale: f32, layer_cfg: &config::MinimapLayerConfig) 
     (board_scale * layer_cfg.instruction_scale.clamp(0.5, 1.8)).clamp(0.30, 2.40)
 }
 
-fn minimap_hint_dimensions(
-    layer_cfg: &config::MinimapLayerConfig,
-    board_scale: f32,
-) -> (f32, f32) {
+fn minimap_hint_dimensions(layer_cfg: &config::MinimapLayerConfig, board_scale: f32) -> (f32, f32) {
     let count = layer_cfg
         .instructions
         .iter()
@@ -109,7 +106,10 @@ fn minimap_layer_header(
     ui.horizontal(|ui| {
         egui::Frame::new()
             .fill(Color32::from_rgba_unmultiplied(
-                accent.r(), accent.g(), accent.b(), alpha,
+                accent.r(),
+                accent.g(),
+                accent.b(),
+                alpha,
             ))
             .corner_radius(egui::CornerRadius::same(scaled_u8(7.0, s)))
             .inner_margin(egui::Margin::symmetric(
@@ -544,7 +544,11 @@ impl App {
         let geo = self.geometry();
         let glow = self.glow_colors(layer);
         let device_layer = self.device_layer(layer);
-        let legends = if c.show_legends { device_layer.as_ref() } else { None };
+        let legends = if c.show_legends {
+            device_layer.as_ref()
+        } else {
+            None
+        };
         let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
@@ -570,7 +574,10 @@ impl App {
                 egui::Stroke::new(
                     1.0,
                     Color32::from_rgba_unmultiplied(
-                        accent.r(), accent.g(), accent.b(), (a as f32 * 0.6) as u8,
+                        accent.r(),
+                        accent.g(),
+                        accent.b(),
+                        (a as f32 * 0.6) as u8,
                     ),
                 )
             } else {
@@ -598,14 +605,25 @@ impl App {
                     |ui| {
                         ui.set_width(kb_w);
                         draw_keyboard(
-                            ui, geo, legends, &glow, &press, None, Some(&combo_keys),
-                            c.opacity.clamp(0.08, 1.0), c.monochrome,
+                            ui,
+                            geo,
+                            legends,
+                            &glow,
+                            &press,
+                            None,
+                            Some(&combo_keys),
+                            c.opacity.clamp(0.08, 1.0),
+                            c.monochrome,
                         );
                         if c.show_combo {
                             ui.add_space(6.0 * preview_scale);
                             let entries = self.combo_recent();
                             combo_strip(
-                                ui, &entries, c.opacity.clamp(0.08, 1.0), accent, c.show_combo_ms,
+                                ui,
+                                &entries,
+                                c.opacity.clamp(0.08, 1.0),
+                                accent,
+                                c.show_combo_ms,
                             );
                         }
                     },
@@ -702,20 +720,18 @@ impl App {
         let width = content_w + pad * 2.0;
         let height = content_h + pad * 2.0;
 
-        let x = mx
-            + match c.halign {
+        let x =
+            mx + match c.halign {
                 HAlign::Left => edge,
                 HAlign::Center => (mw - width) / 2.0,
                 HAlign::Right => mw - width - edge,
-            }
-            + c.offset[0];
-        let y = my
-            + match c.valign {
+            } + c.offset[0];
+        let y =
+            my + match c.valign {
                 VAlign::Top => edge,
                 VAlign::Middle => (mh - height) / 2.0,
                 VAlign::Bottom => mh - height - edge - 24.0,
-            }
-            + c.offset[1];
+            } + c.offset[1];
 
         let builder = egui::ViewportBuilder::default()
             .with_title("keyjitsu minimap")
@@ -730,7 +746,11 @@ impl App {
 
         let device_layer = self.device_layer(self.peek_layer);
         let glow = self.glow_colors(self.peek_layer);
-        let legends = if c.show_legends { device_layer.as_ref() } else { None };
+        let legends = if c.show_legends {
+            device_layer.as_ref()
+        } else {
+            None
+        };
         let title = device_layer
             .as_ref()
             .and_then(|l| l.title.clone())
@@ -749,7 +769,11 @@ impl App {
         let mono = c.monochrome;
         let show_combo = c.show_combo;
         let show_combo_ms = c.show_combo_ms;
-        let combo = if show_combo { self.combo_recent() } else { Vec::new() };
+        let combo = if show_combo {
+            self.combo_recent()
+        } else {
+            Vec::new()
+        };
         let instructions = layer_cfg.instructions.clone();
         let hint_placement = layer_cfg.instruction_placement;
         let hint_flow = layer_cfg.instruction_flow;
@@ -769,7 +793,10 @@ impl App {
                     egui::Stroke::new(
                         1.0,
                         Color32::from_rgba_unmultiplied(
-                            accent.r(), accent.g(), accent.b(), (a as f32 * 0.6) as u8,
+                            accent.r(),
+                            accent.g(),
+                            accent.b(),
+                            (a as f32 * 0.6) as u8,
                         ),
                     )
                 } else {
@@ -806,8 +833,15 @@ impl App {
                             |ui| {
                                 ui.set_width(kb_w);
                                 draw_keyboard(
-                                    ui, geo, legends, &glow, &no_press, None, Some(&combo_keys),
-                                    opacity, mono,
+                                    ui,
+                                    geo,
+                                    legends,
+                                    &glow,
+                                    &no_press,
+                                    None,
+                                    Some(&combo_keys),
+                                    opacity,
+                                    mono,
                                 );
                                 if show_combo {
                                     ui.add_space(6.0 * scale);
@@ -816,7 +850,12 @@ impl App {
                             },
                             |ui| {
                                 minimap_instruction_panel(
-                                    ui, &instructions, opacity, accent, hint_scale, hint_flow,
+                                    ui,
+                                    &instructions,
+                                    opacity,
+                                    accent,
+                                    hint_scale,
+                                    hint_flow,
                                 );
                             },
                         );
@@ -868,11 +907,19 @@ fn minimap_instruction_panel(
         .filter(|r| !r.keys.trim().is_empty() || !r.desc.trim().is_empty())
         .collect::<Vec<_>>();
     egui::Frame::new()
-        .fill(Color32::from_rgba_unmultiplied(20, 21, 28, (a as f32 * 0.82) as u8))
+        .fill(Color32::from_rgba_unmultiplied(
+            20,
+            21,
+            28,
+            (a as f32 * 0.82) as u8,
+        ))
         .stroke(egui::Stroke::new(
             1.0,
             Color32::from_rgba_unmultiplied(
-                accent.r(), accent.g(), accent.b(), (a as f32 * 0.55) as u8,
+                accent.r(),
+                accent.g(),
+                accent.b(),
+                (a as f32 * 0.55) as u8,
             ),
         ))
         .corner_radius(egui::CornerRadius::same(scaled_u8(10.0, s)))
@@ -886,7 +933,8 @@ fn minimap_instruction_panel(
                             .fill(key_fill)
                             .corner_radius(egui::CornerRadius::same(scaled_u8(5.0, s)))
                             .inner_margin(egui::Margin::symmetric(
-                                scaled_i8(6.0, s), scaled_i8(3.0, s),
+                                scaled_i8(6.0, s),
+                                scaled_i8(3.0, s),
                             ))
                             .show(ui, |ui| {
                                 ui.label(
@@ -907,7 +955,8 @@ fn minimap_instruction_panel(
                             .fill(key_fill)
                             .corner_radius(egui::CornerRadius::same(scaled_u8(6.0, s)))
                             .inner_margin(egui::Margin::symmetric(
-                                scaled_i8(7.0, s), scaled_i8(4.0, s),
+                                scaled_i8(7.0, s),
+                                scaled_i8(4.0, s),
                             ))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
@@ -964,12 +1013,24 @@ mod minimap_layout_tests {
     #[test]
     fn layer_delete_drops_deleted_minimap_and_shifts_higher_layers() {
         let mut layers = vec![
-            config::MinimapLayerConfig { layer: 1, ..Default::default() },
-            config::MinimapLayerConfig { layer: 3, ..Default::default() },
-            config::MinimapLayerConfig { layer: 4, ..Default::default() },
+            config::MinimapLayerConfig {
+                layer: 1,
+                ..Default::default()
+            },
+            config::MinimapLayerConfig {
+                layer: 3,
+                ..Default::default()
+            },
+            config::MinimapLayerConfig {
+                layer: 4,
+                ..Default::default()
+            },
         ];
         shift_minimap_layers_after_delete(&mut layers, 3);
-        assert_eq!(layers.iter().map(|c| c.layer).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(
+            layers.iter().map(|c| c.layer).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
     }
 
     #[test]
@@ -993,5 +1054,4 @@ mod minimap_layout_tests {
         let (_, top_w, _) = App::minimap_preview_layout(760.0, &c, &top);
         assert!(top_w >= side_w);
     }
-
 }
