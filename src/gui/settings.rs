@@ -350,12 +350,11 @@ impl App {
 
     pub(super) fn ui_rgb_effects(&mut self, ui: &mut egui::Ui) {
         if self.connected.is_none() {
-            ui.weak("connect the keyboard to use effects");
+            ui.weak("Connect the keyboard to change active RGB.");
             return;
         }
 
         let Ok(mut a) = self.anim.lock() else { return };
-        let wide = 220.0;
         let before = (
             a.effect,
             a.color,
@@ -367,19 +366,21 @@ impl App {
             a.custom_replace_base,
         );
 
-        labeled(ui, "constant effect", |ui| {
+        let render_board = |ui: &mut egui::Ui, a: &mut Anim| {
+            ui.label(RichText::new("BOARD").size(10.5).color(pal::TEXT_DIM));
+            ui.add_space(3.0);
             let sel_text = if a.effect == Effect::Custom {
                 format!("★ {}", a.custom_name)
             } else {
                 a.effect.label().to_string()
             };
             egui::ComboBox::from_id_salt("rgbfx")
-                .width(wide)
+                .width(210.0)
                 .selected_text(sel_text)
                 .show_ui(ui, |ui| {
-                    for (e, label) in Effect::ALL {
-                        if ui.selectable_value(&mut a.effect, e, label).changed()
-                            && e != Effect::Custom
+                    for (effect, label) in Effect::ALL {
+                        if ui.selectable_value(&mut a.effect, effect, label).changed()
+                            && effect != Effect::Custom
                         {
                             a.custom_name.clear();
                             a.custom.clear();
@@ -394,58 +395,83 @@ impl App {
                     if !sequence_fx.is_empty() {
                         ui.separator();
                     }
-                    for c in sequence_fx {
-                        let is = a.effect == Effect::Custom && a.custom_name == c.name;
-                        if ui.selectable_label(is, format!("★ {}", c.name)).clicked() {
+                    for custom in sequence_fx {
+                        let selected = a.effect == Effect::Custom && a.custom_name == custom.name;
+                        if ui
+                            .selectable_label(selected, format!("★ {}", custom.name))
+                            .clicked()
+                        {
                             a.effect = Effect::Custom;
-                            a.custom = c.steps.clone();
-                            a.custom_name = c.name.clone();
+                            a.custom = custom.steps.clone();
+                            a.custom_name = custom.name.clone();
+                            a.speed = custom.speed;
                             a.custom_replace_base =
-                                matches!(c.background, config::FxBackgroundMode::Blackout);
+                                matches!(custom.background, config::FxBackgroundMode::Blackout);
                         }
                     }
                 });
-        });
-        if a.effect.uses_color() {
-            labeled(ui, "effect color", |ui| {
-                ui.color_edit_button_srgb(&mut a.color);
-            });
-        }
-        if a.effect != Effect::Off {
-            labeled(ui, "speed", |ui| {
+            ui.add_space(6.0);
+            if a.effect.uses_color() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Color").size(11.0).color(pal::TEXT_DIM));
+                    ui.color_edit_button_srgb(&mut a.color);
+                });
+            }
+            if a.effect != Effect::Off {
+                ui.label(RichText::new("Speed").size(10.5).color(pal::TEXT_DIM));
                 ui.add_sized(
-                    [wide, 20.0],
+                    [210.0, 18.0],
                     egui::Slider::new(&mut a.speed, 0.2..=3.0).show_value(false),
                 );
-            });
-        }
-        labeled(ui, "brightness", |ui| {
+            }
+            ui.label(RichText::new("Brightness").size(10.5).color(pal::TEXT_DIM));
             ui.add_sized(
-                [wide, 20.0],
+                [210.0, 18.0],
                 egui::Slider::new(&mut a.brightness, 0.05..=1.0).show_value(false),
             );
-        });
+        };
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-        ui.label(RichText::new("On key press").strong());
-        ui.weak("Instead of a static color, play an effect from the key you press.");
-        ui.add_space(2.0);
-        labeled(ui, "press effect", |ui| {
+        let render_press = |ui: &mut egui::Ui, a: &mut Anim| {
+            ui.label(
+                RichText::new("ON KEY PRESS")
+                    .size(10.5)
+                    .color(pal::TEXT_DIM),
+            );
+            ui.add_space(3.0);
             egui::ComboBox::from_id_salt("pressfx")
-                .width(wide)
+                .width(210.0)
                 .selected_text(a.press_effect.label())
                 .show_ui(ui, |ui| {
-                    for (e, label) in rgb_anim::PressEffect::ALL {
-                        ui.selectable_value(&mut a.press_effect, e, label);
+                    for (effect, label) in rgb_anim::PressEffect::ALL {
+                        ui.selectable_value(&mut a.press_effect, effect, label);
                     }
                 });
-        });
-        if a.press_effect != rgb_anim::PressEffect::None {
-            labeled(ui, "press color", |ui| {
-                ui.color_edit_button_srgb(&mut a.press_color);
+            if a.press_effect != rgb_anim::PressEffect::None {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Color").size(11.0).color(pal::TEXT_DIM));
+                    ui.color_edit_button_srgb(&mut a.press_color);
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Global fallback for keys without their own Layout assignment.")
+                    .size(10.5)
+                    .color(pal::TEXT_DIM),
+            );
+        };
+
+        if ui.available_width() >= 520.0 {
+            ui.columns(2, |cols| {
+                render_board(&mut cols[0], &mut a);
+                render_press(&mut cols[1], &mut a);
             });
+        } else {
+            render_board(ui, &mut a);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(8.0);
+            render_press(ui, &mut a);
         }
 
         let owns_leds = a.effect != Effect::Off;

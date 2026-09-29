@@ -93,6 +93,10 @@ pub enum FxPresetSource {
     },
 }
 
+fn default_custom_fx_speed() -> f32 {
+    1.0
+}
+
 /// A named, persisted user effect. `preset == None` is the original painted
 /// step-sequence format; `Some` is an editable copy of a built-in effect.
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
@@ -100,6 +104,8 @@ pub struct CustomFx {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<FxStep>,
+    #[serde(default = "default_custom_fx_speed")]
+    pub speed: f32,
     #[serde(default)]
     pub background: crate::config::FxBackgroundMode,
     #[serde(default)]
@@ -993,6 +999,15 @@ mod tests {
         );
         assert_eq!(f[1], [0, 255, 0]);
         assert_eq!(f[10], [0, 0, 0]);
+    }
+
+    #[test]
+    fn old_custom_effect_gets_default_speed() {
+        let custom: CustomFx = serde_json::from_str(
+            r#"{"name":"legacy","steps":[],"background":"Preserve","preset":null}"#,
+        )
+        .unwrap();
+        assert!((custom.speed - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

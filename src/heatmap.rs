@@ -148,6 +148,19 @@ mod tests {
     }
 
     #[test]
+    fn all_layers_sum_every_recorded_layer_by_physical_key() {
+        let mut s = HeatmapStore::default();
+        s.record(0, 2, 6);
+        s.record(1, 2, 6);
+        s.record(2, 4, 6);
+        s.record(2, 4, 6);
+        let all = s.counts(None, 6);
+        assert_eq!(all[2], 2);
+        assert_eq!(all[4], 2);
+        assert_eq!(all.iter().sum::<u64>(), 4);
+    }
+
+    #[test]
     fn rejects_unsafe_layout_hashes_before_building_paths() {
         assert!(HeatmapStore::path_for("../../escape").is_err());
         assert!(HeatmapStore::path_for("layout/other").is_err());

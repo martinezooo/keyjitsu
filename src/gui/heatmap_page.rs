@@ -3,6 +3,51 @@
 use super::*;
 
 impl App {
+    fn heatmap_key_label(&self, scope: Option<u8>, key: usize) -> String {
+        if let Some(layer) = scope {
+            return self
+                .device_key(layer, key)
+                .map(|k| labels_for(&k).tap)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("key {key}"));
+        }
+        let mut labels = Vec::new();
+        for layer in 0..self.layer_count() {
+            if let Some(label) = self
+                .device_key(layer, key)
+                .map(|k| labels_for(&k).tap)
+                .filter(|s| !s.is_empty())
+            {
+                if !labels.contains(&label) {
+                    labels.push(label);
+                }
+            }
+        }
+        if labels.len() == 1 {
+            labels.pop().unwrap_or_else(|| format!("key {key}"))
+        } else {
+            format!("key {key}")
+        }
+    }
+
+    fn heatmap_key_context(&self, key: usize) -> String {
+        let mut parts = Vec::new();
+        for layer in 0..self.layer_count() {
+            if let Some(label) = self
+                .device_key(layer, key)
+                .map(|k| labels_for(&k).tap)
+                .filter(|s| !s.is_empty())
+            {
+                parts.push(format!("{}: {label}", self.layer_name(layer)));
+            }
+        }
+        if parts.is_empty() {
+            format!("physical key {key}")
+        } else {
+            parts.join(" · ")
+        }
+    }
+
     pub(super) fn ui_heatmap(&mut self, ui: &mut egui::Ui, avail_h: f32) {
         let key_count = self.geometry().len();
         if self.heat.is_none() {
@@ -20,10 +65,7 @@ impl App {
         let Some(heat) = self.heat.as_ref() else {
             return;
         };
-        let (counts, total) = (
-            heat.counts(self.heat_layer, key_count),
-            heat.total_presses(),
-        );
+        let counts = heat.counts(self.heat_layer, key_count);
         let norm = normalize(&counts);
         let layer_total: u64 = counts.iter().sum();
         let mut ranked: Vec<(usize, u64)> = counts
@@ -33,13 +75,9 @@ impl App {
             .filter(|(_, c)| *c > 0)
             .collect();
         ranked.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
-        let layer = self.heat_layer.unwrap_or(self.view_layer);
-        let top_label = ranked.first().map(|(idx, _)| {
-            self.device_key(layer, *idx)
-                .map(|k| labels_for(&k).tap)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("key {idx}"))
-        });
+        let top_label = ranked
+            .first()
+            .map(|(idx, _)| self.heatmap_key_label(self.heat_layer, *idx));
 
         // --- Stats summary card --------------------------------------------
         ui.add_space(10.0);
@@ -58,7 +96,7 @@ impl App {
                         });
                         ui.add_space(26.0);
                     };
-                    stat(ui, format_thousands(total), "total presses");
+                    stat(ui, format_thousands(layer_total), "presses in scope");
                     stat(ui, top_label.unwrap_or_else(|| "-".into()), "most used key");
                     // Scope (all layers / per layer) is picked in the sidebar.
                     stat(
@@ -140,9 +178,14 @@ impl App {
         // Board width capped by the height budget (34px/unit legibility floor).
         let board_cap = (((budget - 76.0) / g_rows).clamp(34.0, 62.0) * g_cols + 48.0).min(left_w);
         let rank_rows = (((budget - 84.0) / 27.0) as usize).clamp(5, 20);
-        let device_layer = self.device_layer(layer);
+        // In all-layers scope the colors are physical-key aggregates, so do
+        // not borrow legends/combo markings from an arbitrary layer.
+        let device_layer = self.heat_layer.and_then(|layer| self.device_layer(layer));
         let layer_def = device_layer.as_ref();
-        let combo_keys = self.combo_member_mask(layer);
+        let combo_keys = self
+            .heat_layer
+            .map(|layer| self.combo_member_mask(layer))
+            .unwrap_or_else(|| vec![false; key_count]);
         let glow: Vec<Option<Color32>> = norm
             .iter()
             .map(|&t| (t > 0.0).then(|| widget::heat_color(t)))
@@ -178,11 +221,11 @@ impl App {
                                     false,
                                 );
                                 if let Some(i) = kb.hovered {
-                                    let label = layer_def
-                                        .and_then(|l| l.keys.get(i))
-                                        .map(|k| labels_for(k).tap)
-                                        .filter(|s| !s.is_empty())
-                                        .unwrap_or_else(|| format!("key {i}"));
+                                    let label = self.heatmap_key_label(self.heat_layer, i);
+                                    let context = self
+                                        .heat_layer
+                                        .is_none()
+                                        .then(|| self.heatmap_key_context(i));
                                     let c = counts.get(i).copied().unwrap_or(0);
                                     let pct = c as f64 / layer_total.max(1) as f64 * 100.0;
                                     egui::Tooltip::always_open(
@@ -197,6 +240,13 @@ impl App {
                                             "{} presses · {pct:.1}%",
                                             format_thousands(c)
                                         ));
+                                        if let Some(context) = context {
+                                            ui.label(
+                                                RichText::new(context)
+                                                    .size(10.5)
+                                                    .color(pal::TEXT_DIM),
+                                            );
+                                        }
                                     });
                                 }
                                 ui.add_space(8.0);
@@ -243,6 +293,13 @@ impl App {
                                 .size(14.5)
                                 .color(pal::TEXT),
                         );
+                        if self.heat_layer.is_none() {
+                            ui.label(
+                                RichText::new("All layers · summed by physical key")
+                                    .size(10.5)
+                                    .color(pal::TEXT_DIM),
+                            );
+                        }
                         ui.add_space(8.0);
                         if layer_total == 0 {
                             ui.label(
@@ -255,11 +312,11 @@ impl App {
                         ui.spacing_mut().item_spacing.y = 3.0;
                         ui.spacing_mut().interact_size.y = 18.0;
                         for (rank, (idx, count)) in ranked.iter().take(rank_rows).enumerate() {
-                            let label = layer_def
-                                .and_then(|l| l.keys.get(*idx))
-                                .map(|k| labels_for(k).tap)
-                                .filter(|s| !s.is_empty())
-                                .unwrap_or_else(|| format!("key {idx}"));
+                            let label = self.heatmap_key_label(self.heat_layer, *idx);
+                            let context = self
+                                .heat_layer
+                                .is_none()
+                                .then(|| self.heatmap_key_context(*idx));
                             let pct = *count as f64 / layer_total.max(1) as f64 * 100.0;
                             ui.horizontal(|ui| {
                                 ui.add_sized(
@@ -270,11 +327,14 @@ impl App {
                                             .color(pal::TEXT_DIM),
                                     ),
                                 );
-                                ui.add_sized(
-                                    [40.0, 16.0],
-                                    egui::Label::new(RichText::new(label).strong().size(13.0))
+                                let response = ui.add_sized(
+                                    [56.0, 16.0],
+                                    egui::Label::new(RichText::new(label).strong().size(12.0))
                                         .halign(egui::Align::LEFT),
                                 );
+                                if let Some(context) = &context {
+                                    response.on_hover_text(context);
+                                }
                                 perf_bar(
                                     ui,
                                     *count as f32 / max,
@@ -304,9 +364,6 @@ impl App {
         layer_total: u64,
     ) -> anyhow::Result<std::path::PathBuf> {
         use std::io::Write as _;
-        let layer = self.heat_layer.unwrap_or(self.view_layer);
-        let device_layer = self.device_layer(layer);
-        let layer_def = device_layer.as_ref();
         let scope = match self.heat_layer {
             None => "all-layers".to_string(),
             Some(n) => format!("layer{n}"),
@@ -324,11 +381,7 @@ impl App {
         let mut ranked: Vec<(usize, u64)> = counts.iter().copied().enumerate().collect();
         ranked.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
         for (rank, (idx, count)) in ranked.iter().enumerate() {
-            let label = layer_def
-                .and_then(|l| l.keys.get(*idx))
-                .map(|k| labels_for(k).tap)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| format!("key {idx}"));
+            let label = self.heatmap_key_label(self.heat_layer, *idx);
             let pct = *count as f64 / layer_total.max(1) as f64 * 100.0;
             // Quote labels - some are commas/quotes themselves.
             writeln!(

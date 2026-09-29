@@ -1070,7 +1070,7 @@ impl App {
     /// Persist user effects and keep an already-running custom sequence in sync
     /// with edits made in FX Studio.
     pub(super) fn save_custom_fx(&mut self) {
-        if let Ok(mut a) = self.anim.lock() {
+        let rgb = if let Ok(mut a) = self.anim.lock() {
             if a.effect == Effect::Custom {
                 if let Some(custom) = self
                     .custom_fx
@@ -1078,14 +1078,33 @@ impl App {
                     .find(|c| c.preset.is_none() && c.name == a.custom_name)
                 {
                     a.custom = custom.steps.clone();
+                    a.speed = custom.speed;
                     a.custom_replace_base =
                         matches!(custom.background, config::FxBackgroundMode::Blackout);
+                    Some(config::RgbState {
+                        effect: a.effect,
+                        color: a.color,
+                        speed: a.speed,
+                        brightness: a.brightness,
+                        press_effect: a.press_effect,
+                        press_color: a.press_color,
+                        custom_name: a.custom_name.clone(),
+                    })
+                } else {
+                    None
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
         let custom_fx = self.custom_fx.clone();
         self.persist_config("saving custom effects", move |cfg| {
             cfg.custom_fx = custom_fx;
+            if let Some(rgb) = rgb {
+                cfg.rgb = rgb;
+            }
         });
     }
 

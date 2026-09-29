@@ -120,6 +120,10 @@ fn fitted_font(unit: f32, text: &str, base_scale: f32) -> FontId {
     FontId::proportional(unit * scale)
 }
 
+/// Canonical keyboard-map renderer shared by Layout, Heatmap, Minimap and
+/// the FX step key picker. Views supply state/color semantics; geometry,
+/// legends, hit testing and key shapes stay in this one implementation.
+///
 /// `glow[i]` = the color of key `i` (None → unlit). `selected` draws an accent
 /// ring. `alpha` (0..1) fades the whole drawing so it can be made see-through.
 /// The board is fitted to the available width and centered.

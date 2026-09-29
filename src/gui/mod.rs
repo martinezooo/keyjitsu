@@ -400,7 +400,6 @@ struct App {
     fx_color: [u8; 3],
     fx_speed: f32,
     fx_bright: f32,
-    fx_playing: bool,
     /// User-built step sequences (FX Studio), persisted in config.
     custom_fx: Vec<CustomFx>,
     /// FX Studio library category (picked in the sidebar).
@@ -445,11 +444,8 @@ struct App {
     draft_sc: config::CustomShortcut,
     /// Active step being painted in the custom-effect editor.
     fx_step: usize,
-    /// Board test in progress: restore the exact animation state at this time.
-    fx_board_restore: Option<FxBoardRestore>,
-    fx_t0: Instant,
-    fx_events: Vec<FxEvent>,
-    fx_last_fire: Instant,
+    /// Delayed physical-keyboard test of the currently selected FX.
+    fx_test_run: Option<FxTestRun>,
 
     // Heatmap extras
     csv_saved: Option<std::path::PathBuf>,
@@ -485,7 +481,6 @@ struct PerfRun {
 
 #[derive(Clone)]
 struct FxBoardRestore {
-    until: Instant,
     effect: Effect,
     color: [u8; 3],
     speed: f32,
@@ -496,9 +491,8 @@ struct FxBoardRestore {
 }
 
 impl FxBoardRestore {
-    fn capture(a: &Anim, until: Instant) -> Self {
+    fn capture(a: &Anim) -> Self {
         Self {
-            until,
             effect: a.effect,
             color: a.color,
             speed: a.speed,
@@ -518,6 +512,36 @@ impl FxBoardRestore {
         a.custom_name = self.custom_name;
         a.custom_replace_base = self.custom_replace_base;
     }
+}
+
+#[derive(Clone)]
+enum FxTestSpec {
+    Board {
+        effect: Effect,
+        color: [u8; 3],
+        speed: f32,
+        brightness: f32,
+    },
+    Press {
+        effect: PressEffect,
+        color: [u8; 3],
+    },
+    Custom {
+        steps: Vec<FxStep>,
+        name: String,
+        speed: f32,
+        replace_base: bool,
+    },
+}
+
+struct FxTestRun {
+    restore: FxBoardRestore,
+    spec: FxTestSpec,
+    starts_at: Instant,
+    effect_ends_at: Instant,
+    restore_at: Instant,
+    started: bool,
+    effect_ended: bool,
 }
 
 /// A press held longer than this (ms) reads as a "hold" gesture in the combo
@@ -931,13 +955,9 @@ impl App {
             fx_color: [140, 108, 246],
             fx_speed: 1.0,
             fx_bright: 0.9,
-            fx_playing: true,
             custom_fx: cfg.custom_fx.clone(),
             fx_step: 0,
-            fx_board_restore: None,
-            fx_t0: Instant::now(),
-            fx_events: Vec::new(),
-            fx_last_fire: Instant::now(),
+            fx_test_run: None,
             csv_saved: None,
         };
         // No keyboard yet? Show the last layout from cache instead of a wall of
@@ -1329,19 +1349,9 @@ impl App {
             self.peek_layer = self.active_layer;
             self.peek_until = Some(Instant::now() + Duration::from_millis(1200));
         }
-        // A "test on keyboard" run of a custom sequence restores every
-        // animation field it temporarily replaced, including a prior custom.
-        let restore_fx = self
-            .fx_board_restore
-            .as_ref()
-            .is_some_and(|restore| Instant::now() >= restore.until);
-        if restore_fx {
-            if let Ok(mut a) = self.anim.lock() {
-                if let Some(restore) = self.fx_board_restore.take() {
-                    restore.restore(&mut a);
-                }
-            }
-        }
+        // FX tests run only on the physical keyboard. A short lead-in and
+        // tail make the transition readable instead of flashing on/off.
+        self.tick_fx_test(ctx);
         // Idle poll to drain channels; cheap now that per-frame work is cached.
         ctx.request_repaint_after(Duration::from_millis(250));
         // Refresh the monitor list occasionally (cheap, but not per frame).
@@ -2841,7 +2851,7 @@ mod fx_board_restore_tests {
             }],
             ..Anim::default()
         };
-        let restore = FxBoardRestore::capture(&anim, Instant::now());
+        let restore = FxBoardRestore::capture(&anim);
         anim.effect = Effect::Rainbow;
         anim.color = [200, 100, 50];
         anim.speed = 0.4;
