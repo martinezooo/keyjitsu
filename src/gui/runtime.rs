@@ -337,7 +337,42 @@ impl App {
         self.build_progress = self.build_progress.max(prog);
     }
 
+    #[cfg(target_os = "macos")]
+    pub(super) fn reload_autolayer_config_from_disk(&mut self) -> anyhow::Result<bool> {
+        let cfg = config::load_snapshot()?;
+        let mut changed = false;
+
+        if cfg.autolayer_enabled != self.autolayer_enabled {
+            self.autolayer_enabled = cfg.autolayer_enabled;
+            changed = true;
+        }
+
+        // Never clobber a rule currently being edited in the GUI. Once the
+        // user saves/discards it, the next poll may accept external changes.
+        if !self.rules_dirty && cfg.autolayer_rules != self.rules {
+            self.rules = cfg.autolayer_rules;
+            changed = true;
+        }
+
+        if changed {
+            // Dropping the old watcher releases its active layer. The normal
+            // reconciliation below immediately starts a fresh watcher using
+            // the new rules and re-evaluates the current frontmost app.
+            self.autolayer = None;
+        }
+
+        Ok(changed)
+    }
+
     pub(super) fn reconcile_background_jobs(&mut self, _ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.autolayer_config_checked.elapsed() >= Duration::from_millis(750) {
+                self.autolayer_config_checked = Instant::now();
+                let _ = self.reload_autolayer_config_from_disk();
+            }
+        }
+
         // Guard: seize while enabled AND a keyboard is connected.
         #[cfg(target_os = "macos")]
         {

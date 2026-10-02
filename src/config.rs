@@ -463,6 +463,26 @@ pub fn load() -> Config {
     }
 }
 
+/// Read the current config without creating recovery files on parse errors.
+/// Used by the running GUI for hot reloads, where a third-party editor may
+/// briefly expose an incomplete write before its final atomic replacement.
+pub fn load_snapshot() -> Result<Config> {
+    let p = path()?;
+    let bytes = match std::fs::read(&p) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Config {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                ..Config::default()
+            });
+        }
+        Err(e) => return Err(e).with_context(|| format!("reading {}", p.display())),
+    };
+    let cfg: Config =
+        serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", p.display()))?;
+    migrate(cfg)
+}
+
 pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
     let mut cfg = load_checked()?;
     f(&mut cfg);

@@ -876,6 +876,21 @@ impl App {
                     status_pill(ui, "unsaved rules", pal::AMBER);
                 });
             }
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let reload = ui
+                    .add_enabled(!self.rules_dirty, egui::Button::new("Reload config"))
+                    .on_hover_text(
+                        "Reload Autolayer rules and enabled state without quitting Keyjitsu.",
+                    );
+                if reload.clicked() {
+                    if let Err(e) = self.reload_autolayer_config_from_disk() {
+                        self.persist_error = Some(format!("reloading Autolayer config: {e:#}"));
+                    }
+                }
+                ui.weak("External config changes reload automatically.");
+            });
         }
         #[cfg(not(target_os = "macos"))]
         ui.weak("(macOS only)");

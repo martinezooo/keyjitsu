@@ -384,6 +384,8 @@ struct App {
     rules_dirty: bool,
     autolayer_enabled: bool,
     autolayer: Option<worker::AutolayerHandle>,
+    #[cfg(target_os = "macos")]
+    autolayer_config_checked: Instant,
 
     // Flash tab
     flash_rx: Option<Receiver<FlashState>>,
@@ -949,6 +951,8 @@ impl App {
             rules_dirty: false,
             autolayer_enabled: cfg.autolayer_enabled,
             autolayer: None,
+            #[cfg(target_os = "macos")]
+            autolayer_config_checked: Instant::now(),
             flash_rx: None,
             flash_state: None,
             flash_input: String::new(),
