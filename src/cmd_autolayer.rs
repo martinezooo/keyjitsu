@@ -11,12 +11,36 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use crate::config::AutolayerRule;
 use crate::device::Keyboard;
 use crate::protocol::Command;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FrontmostApp {
+    pub bundle: String,
+    pub command: Option<String>,
+}
 
 pub(crate) fn rule_matches(bundle: &str, pattern: &str) -> bool {
     let pattern = pattern.trim();
     !pattern.is_empty() && bundle.contains(pattern)
+}
+
+pub(crate) fn rule_matches_app(app: &FrontmostApp, rule: &AutolayerRule) -> bool {
+    if !rule_matches(&app.bundle, &rule.bundle) {
+        return false;
+    }
+    let Some(pattern) = rule
+        .command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return true;
+    };
+    app.command
+        .as_deref()
+        .is_some_and(|command| command.contains(pattern))
 }
 
 pub(crate) fn layer_transition(
@@ -109,22 +133,44 @@ pub fn run(serial: Option<&str>, rules: &[(String, u8)], poll_ms: u64) -> Result
     Ok(())
 }
 
-/// Bundle id of the frontmost app, via `lsappinfo` (ships with macOS).
-pub fn frontmost_bundle_id() -> Option<String> {
+/// Frontmost app identity via `lsappinfo` (ships with macOS). The process
+/// command is best-effort and lets a rule distinguish dedicated instances of
+/// the same app without requiring Accessibility or Screen Recording access.
+pub(crate) fn frontmost_app() -> Option<FrontmostApp> {
     let out = Proc::new("/bin/sh")
-        .args(["-c", "lsappinfo info -only bundleid $(lsappinfo front)"])
+        .args(["-c", "lsappinfo info -only bundleid,pid $(lsappinfo front)"])
         .output()
         .ok()?;
-    // Output looks like: "CFBundleIdentifier"="com.apple.Terminal"
-    // Apps without a bundle id (e.g. a bare binary) yield `=[ NULL ]`.
     let text = String::from_utf8_lossy(&out.stdout);
-    let value = text.split('=').nth(1)?;
-    let bundle = value.trim().trim_matches('"').trim();
-    if bundle.is_empty() || bundle.starts_with('[') {
-        None
-    } else {
-        Some(bundle.to_string())
+    let mut bundle: Option<String> = None;
+    let mut pid: Option<u32> = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"').trim();
+        if key.contains("CFBundleIdentifier") && !value.is_empty() && !value.starts_with('[') {
+            bundle = Some(value.to_string());
+        } else if key.contains("pid") {
+            pid = value.parse().ok();
+        }
     }
+    let bundle = bundle?;
+    let command = pid.and_then(|pid| {
+        Proc::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    Some(FrontmostApp { bundle, command })
+}
+
+/// Bundle-only compatibility helper for the CLI and simple UI callers.
+pub fn frontmost_bundle_id() -> Option<String> {
+    frontmost_app().map(|app| app.bundle)
 }
 
 /// Currently-running apps as `(name, bundle_id)`, for the rule picker.
@@ -158,7 +204,8 @@ pub fn running_apps() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{layer_transition, parse_rule, rule_matches};
+    use super::{layer_transition, parse_rule, rule_matches, rule_matches_app, FrontmostApp};
+    use crate::config::AutolayerRule;
 
     #[test]
     fn empty_or_whitespace_rules_never_match_every_app() {
@@ -169,6 +216,35 @@ mod tests {
             parse_rule(" com.apple.Terminal = 2").unwrap(),
             ("com.apple.Terminal".into(), 2)
         );
+    }
+
+    #[test]
+    fn optional_process_command_qualifies_same_bundle() {
+        let app = FrontmostApp {
+            bundle: "net.kovidgoyal.kitty".into(),
+            command: Some(
+                "/Applications/kitty.app/Contents/MacOS/kitty --title homelab-tui (HA Green)"
+                    .into(),
+            ),
+        };
+        let dedicated = AutolayerRule {
+            bundle: "net.kovidgoyal.kitty".into(),
+            command: Some("homelab-tui (HA Green)".into()),
+            layer: 3,
+        };
+        let other = AutolayerRule {
+            bundle: "net.kovidgoyal.kitty".into(),
+            command: Some("other-terminal".into()),
+            layer: 4,
+        };
+        let generic = AutolayerRule {
+            bundle: "net.kovidgoyal.kitty".into(),
+            command: None,
+            layer: 2,
+        };
+        assert!(rule_matches_app(&app, &dedicated));
+        assert!(!rule_matches_app(&app, &other));
+        assert!(rule_matches_app(&app, &generic));
     }
 
     #[test]

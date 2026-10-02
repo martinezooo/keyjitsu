@@ -739,15 +739,15 @@ impl App {
             }
             // Live feedback: what the frontmost app is and whether a rule hits.
             if self.autolayer_enabled {
-                if let Some(front) = crate::cmd_autolayer::frontmost_bundle_id() {
+                if let Some(front) = crate::cmd_autolayer::frontmost_app() {
                     let hit = self
                         .rules
                         .iter()
-                        .find(|r| crate::cmd_autolayer::rule_matches(&front, &r.bundle));
+                        .find(|r| crate::cmd_autolayer::rule_matches_app(&front, r));
                     ui.horizontal(|ui| {
                         ui.weak("frontmost:");
                         ui.label(
-                            RichText::new(&front)
+                            RichText::new(&front.bundle)
                                 .size(11.5)
                                 .monospace()
                                 .color(pal::TEXT_MUTED),
@@ -777,20 +777,29 @@ impl App {
                 ui.add_space(2.0);
             }
             egui::Grid::new("rules")
-                .num_columns(3)
+                .num_columns(4)
                 .spacing([10.0, 6.0])
                 .show(ui, |ui| {
                     if !self.rules.is_empty() {
                         ui.strong("app (bundle id contains)");
+                        ui.strong("process command contains (optional)");
                         ui.strong("switch to layer");
                         ui.strong("");
                         ui.end_row();
                     }
                     for (i, rule) in self.rules.iter_mut().enumerate() {
                         if ui
-                            .add(egui::TextEdit::singleline(&mut rule.bundle).desired_width(240.0))
+                            .add(egui::TextEdit::singleline(&mut rule.bundle).desired_width(210.0))
                             .changed()
                         {
+                            self.rules_dirty = true;
+                        }
+                        let mut command = rule.command.clone().unwrap_or_default();
+                        if ui
+                            .add(egui::TextEdit::singleline(&mut command).desired_width(220.0))
+                            .changed()
+                        {
+                            rule.command = (!command.trim().is_empty()).then_some(command);
                             self.rules_dirty = true;
                         }
                         egui::ComboBox::from_id_salt(("rule_layer", i))
@@ -840,7 +849,11 @@ impl App {
                                     .selectable_label(false, format!("{name}  ·  {bundle}"))
                                     .clicked()
                                 {
-                                    self.rules.push(AutolayerRule { bundle, layer: 1 });
+                                    self.rules.push(AutolayerRule {
+                                        bundle,
+                                        command: None,
+                                        layer: 1,
+                                    });
                                     self.rules_dirty = true;
                                 }
                             }
@@ -848,6 +861,7 @@ impl App {
                     if ui.button("＋ blank rule").clicked() {
                         self.rules.push(AutolayerRule {
                             bundle: String::new(),
+                            command: None,
                             layer: 1,
                         });
                         self.rules_dirty = true;

@@ -495,15 +495,15 @@ pub fn spawn_autolayer(
     let stop = Arc::new(AtomicBool::new(false));
     let stop_t = stop.clone();
     let thread = std::thread::spawn(move || {
-        let mut last_bundle: Option<String> = None;
+        let mut last_app: Option<crate::cmd_autolayer::FrontmostApp> = None;
         let mut active_rule_layer: Option<u8> = None;
         while !stop_t.load(Ordering::SeqCst) {
-            let observed = crate::cmd_autolayer::frontmost_bundle_id();
-            if observed != last_bundle {
-                let target = observed.as_deref().and_then(|bundle| {
+            let observed = crate::cmd_autolayer::frontmost_app();
+            if observed != last_app {
+                let target = observed.as_ref().and_then(|app| {
                     rules
                         .iter()
-                        .find(|r| crate::cmd_autolayer::rule_matches(bundle, &r.bundle))
+                        .find(|r| crate::cmd_autolayer::rule_matches_app(app, r))
                         .map(|r| r.layer)
                 });
                 let (release, enable) =
@@ -528,7 +528,7 @@ pub fn spawn_autolayer(
                     active_rule_layer = target;
                     ctx.request_repaint();
                 }
-                last_bundle = observed;
+                last_app = observed;
             }
             for _ in 0..8 {
                 if stop_t.load(Ordering::SeqCst) {

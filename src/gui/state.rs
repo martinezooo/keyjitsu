@@ -1468,14 +1468,17 @@ mod autolayer_layer_ref_tests {
         let mut rules = vec![
             AutolayerRule {
                 bundle: "one".into(),
+                command: None,
                 layer: 1,
             },
             AutolayerRule {
                 bundle: "deleted".into(),
+                command: None,
                 layer: 3,
             },
             AutolayerRule {
                 bundle: "higher".into(),
+                command: None,
                 layer: 4,
             },
         ];

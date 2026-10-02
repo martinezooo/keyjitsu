@@ -14,6 +14,11 @@ use crate::oryx_api::cache_dir;
 pub struct AutolayerRule {
     /// Substring matched against the frontmost app's bundle id.
     pub bundle: String,
+    /// Optional substring matched against the frontmost app process command.
+    /// This can distinguish dedicated windows/processes of the same app, e.g.
+    /// a Kitty instance launched with a unique --title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
     pub layer: u8,
 }
 
