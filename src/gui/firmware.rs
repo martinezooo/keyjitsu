@@ -209,6 +209,7 @@ impl App {
                     slots: slots.clone(),
                 })
                 .collect(),
+            self.removed_layers.clone(),
             self.custom_layers.clone(),
             self.glow_work
                 .iter()
@@ -315,6 +316,7 @@ impl App {
                 revision: id.revision.clone(),
                 edits,
                 dances,
+                removed_layers: self.removed_layers.clone(),
                 new_layers,
                 glow,
                 firmware_serial: Some(firmware_serial),
@@ -324,117 +326,123 @@ impl App {
         ));
     }
 
-    /// Live state bar: device/firmware truth, pending firmware edits, and
-    /// local glow edits are separate states with separate actions.
-    pub(super) fn ui_edit_bar(&mut self, ui: &mut egui::Ui) {
+    /// One persistent publication bar for the Layout workspace. Every change
+    /// description comes from the same canonical diff used by the build.
+    pub(super) fn ui_publish_bar(&mut self, ui: &mut egui::Ui) {
+        let pending_changes = self.pending_firmware_changes();
+        let pending = pending_changes.len();
+        let glow_unsaved = self.unsaved_glow_count();
+        let unknown_state = matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        );
+        let flashing = matches!(
+            self.flash_state,
+            Some(
+                FlashState::Working { .. }
+                    | FlashState::WaitingForBootloader
+                    | FlashState::Downloading
+            )
+        );
+
         ui.horizontal(|ui| {
-            if ui
-                .checkbox(&mut self.sync_glow, "show glow on keyboard")
-                .on_hover_text("mirror these colors onto the physical LEDs (takes RGB control)")
-                .changed()
-            {
-                if self.sync_glow {
-                    self.needs_push = true;
-                } else {
-                    let _ = self.cmd_tx.send(KbCmd::RgbRelease);
-                }
-            }
-
-            ui.separator();
-            let pending = self.pending_firmware_count();
-            if matches!(
-                self.device_state_kind(),
-                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-            ) {
-                status_pill(ui, "⚠ device state unknown", pal::AMBER);
+            let (title, detail, color) = if flashing {
+                ("Writing firmware", "Keep Keyjitsu open and the keyboard connected.", pal::AMBER)
+            } else if unknown_state {
+                (
+                    "Device state unknown",
+                    "Building is paused so an unknown firmware state cannot be overwritten.",
+                    pal::AMBER,
+                )
             } else if pending > 0 {
-                status_pill(
-                    ui,
-                    &format!(
-                        "{pending} pending firmware change{}",
-                        if pending == 1 { "" } else { "s" }
-                    ),
+                (
+                    "Draft ready",
+                    "Review the exact firmware diff, then publish it to the keyboard.",
                     pal::AMBER,
-                );
+                )
             } else if self.firmware_state_verified() {
-                status_pill(ui, "firmware synced", pal::GREEN);
+                ("Keyboard is up to date", "No unpublished firmware changes.", pal::GREEN)
             } else if self.device_state_kind() == DeviceStateKind::RecoveredLocalBuild {
-                status_pill(ui, "local firmware state restored", pal::GREEN);
-            } else if self.connected.is_some() {
-                status_pill(ui, "device state unverified", pal::AMBER);
+                ("Local state restored", "No unpublished firmware changes.", pal::GREEN)
             } else {
-                ui.weak("no pending firmware changes");
+                ("No unpublished changes", "Select a key or layer to start editing.", pal::TEXT_MUTED)
+            };
+
+            status_dot(ui, color == pal::GREEN);
+            ui.vertical(|ui| {
+                ui.label(RichText::new(title).strong().size(12.5).color(color));
+                ui.label(RichText::new(detail).size(10.5).color(pal::TEXT_DIM));
+            });
+
+            if pending > 0 {
+                ui.add_space(8.0);
+                ui.menu_button(
+                    RichText::new(format!(
+                        "Review {pending} change{}  ▾",
+                        if pending == 1 { "" } else { "s" }
+                    ))
+                    .strong()
+                    .color(pal::AMBER),
+                    |ui| {
+                        ui.set_min_width(340.0);
+                        ui.label(
+                            RichText::new("Next firmware build")
+                                .strong()
+                                .color(pal::TEXT),
+                        );
+                        ui.label(
+                            RichText::new("This list is generated from the build state, not maintained separately.")
+                                .size(10.5)
+                                .color(pal::TEXT_DIM),
+                        );
+                        ui.separator();
+                        for change in &pending_changes {
+                            ui.label(RichText::new(format!("• {change}")).color(pal::TEXT_MUTED));
+                        }
+                    },
+                );
             }
 
-            let glow_unsaved = self.unsaved_glow_count();
             if glow_unsaved > 0 {
-                ui.separator();
-                ui.colored_label(
-                    pal::AMBER,
-                    format!(
-                        "{glow_unsaved} unsaved glow change{}",
-                        if glow_unsaved == 1 { "" } else { "s" }
-                    ),
-                );
                 let save_label = if self.active_profile.is_some() {
-                    "save profile"
+                    "Save profile"
                 } else {
-                    "save draft"
+                    "Save draft"
                 };
-                if ui.button(save_label).clicked() {
+                if ui.small_button(save_label).clicked() {
                     let _ = self.save_glow();
                 }
-                if ui.button("discard glow draft").clicked() {
+                if ui.small_button("Discard glow").clicked() {
                     self.discard_glow();
                 }
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Flash file…").clicked() {
-                    self.show_flash = true;
-                }
-                self.layout_profile_controls(ui);
                 if pending > 0 {
                     let ready = self.env.is_ready()
                         && self.connected.is_some()
-                        && !matches!(
-                            self.device_state_kind(),
-                            DeviceStateKind::MissingFirmwareState
-                                | DeviceStateKind::UnknownDeviceIdentity
-                        )
+                        && !unknown_state
                         && !self.build_busy
                         && !self.flash_in_progress();
                     if ui
                         .add_enabled(
                             ready,
                             egui::Button::new(
-                                RichText::new("⚙ Build & flash").color(Color32::WHITE),
+                                RichText::new("Build & flash").strong().color(Color32::WHITE),
                             )
-                            .fill(pal::VIOLET),
+                            .fill(pal::VIOLET)
+                            .min_size(egui::vec2(126.0, 32.0)),
+                        )
+                        .on_disabled_hover_text(
+                            "Connect the keyboard and configure the local QMK toolchain to publish.",
                         )
                         .clicked()
                     {
                         self.start_local_build(true);
                     }
                 }
-                if let Some(
-                    FlashState::Working { .. }
-                    | FlashState::WaitingForBootloader
-                    | FlashState::Downloading,
-                ) = self.flash_state
-                {
-                    status_pill(ui, "flashing…", pal::AMBER);
-                }
-                if self.layout.is_none() && self.connected.is_some() {
-                    ui.label(
-                        RichText::new("no Oryx layout - keys light without legends")
-                            .size(11.5)
-                            .color(pal::TEXT_DIM),
-                    );
-                }
             });
         });
-        self.layout_profile_editor(ui);
     }
 
     pub(super) fn ui_localbuild(&mut self, ui: &mut egui::Ui) {

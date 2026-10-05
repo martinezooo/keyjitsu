@@ -497,6 +497,7 @@ fn cmd_build_local(
         revision,
         edits,
         dances,
+        removed_layers: vec![],
         new_layers,
         glow: vec![],
         firmware_serial: None,

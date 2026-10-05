@@ -50,7 +50,9 @@ use crate::config::{
 use crate::firmware_state::{self, FirmwareDance, FirmwareEdit, FirmwareGlow, FirmwareState};
 use crate::geometry::{self, Geometry};
 use crate::heatmap::{normalize, HeatmapStore};
-use crate::key_action::{hold_wrap, synth_key, synth_slots, unknown_device_key};
+use crate::key_action::{
+    hold_wrap, renumber_layer_ref, synth_key, synth_slots, unknown_device_key,
+};
 use crate::keycodes;
 use crate::legend::{self, labels_for};
 use crate::localbuild::{self, BuildMsg, KeyEdit};
@@ -86,8 +88,8 @@ pub fn run(serial: Option<String>) -> Result<()> {
         // Request an alpha-capable framebuffer so the peek viewport can be
         // genuinely see-through (not just fade against an opaque clear).
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1020.0, 620.0])
-            .with_min_inner_size([760.0, 420.0])
+            .with_inner_size([1280.0, 760.0])
+            .with_min_inner_size([980.0, 600.0])
             .with_transparent(true)
             .with_icon(
                 eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon_256.png"))
@@ -255,6 +257,8 @@ struct App {
     layout_hash: Option<String>,
     /// User-authored extra layers for the current layout (persisted).
     custom_layers: Vec<config::CustomLayer>,
+    /// Original Oryx layer positions removed from the current firmware draft.
+    removed_layers: Vec<u8>,
     /// Synthesized `Layer`s for `custom_layers`, so `layer_def` can hand out
     /// references. Rebuilt whenever `custom_layers` changes.
     synth_layers: Vec<Layer>,
@@ -267,7 +271,7 @@ struct App {
     delete_layer_confirm: Option<u8>,
     glow_work: HashMap<(u8, usize), [u8; 3]>, // being edited
     glow_saved: HashMap<(u8, usize), [u8; 3]>, // persisted snapshot
-    selected_key: Option<usize>,              // shown in the bottom config panel
+    selected_key: Option<usize>,              // shown in the Layout inspector
     edit_color: [u8; 3],
     sync_glow: bool,  // mirror the glow onto the physical keyboard
     needs_push: bool, // re-push colors on next frame
@@ -699,16 +703,20 @@ fn reconcile_confirmed_layout_config(
     cfg: &mut config::Config,
     hash: &str,
     confirmed_layers: &[config::CustomLayer],
+    confirmed_removed_layers: &[u8],
     edits: Vec<StagedEdit>,
     dances: Vec<StagedDance>,
 ) {
     replace_staged_config(cfg, hash, edits, dances);
     cfg.custom_layer_sets
         .retain(|set| !(set.layout == hash && set.layers == confirmed_layers));
+    cfg.removed_layer_sets
+        .retain(|set| !(set.layout == hash && set.layers.as_slice() == confirmed_removed_layers));
 }
 
 struct LayoutScopedState {
     custom_layers: Vec<config::CustomLayer>,
+    removed_layers: Vec<u8>,
     glow_overrides: Vec<GlowOverride>,
     key_fx: Vec<config::KeyFx>,
     staged_edits: Vec<StagedEdit>,
@@ -721,6 +729,11 @@ fn replace_layout_scoped_state(cfg: &mut config::Config, hash: &str, state: Layo
     cfg.custom_layer_sets.push(config::CustomLayerSet {
         layout: hash.to_string(),
         layers: state.custom_layers,
+    });
+    cfg.removed_layer_sets.retain(|set| set.layout != hash);
+    cfg.removed_layer_sets.push(config::RemovedLayerSet {
+        layout: hash.to_string(),
+        layers: state.removed_layers,
     });
 
     cfg.glow_overrides.retain(|entry| entry.layout != hash);
@@ -781,6 +794,12 @@ impl App {
             }
         }
         let anim_handle = rgb_anim::spawn(anim.clone(), cmd_tx.clone(), cc.egui_ctx.clone());
+        // QA helpers: open a deterministic layer/key without mutating the
+        // user's saved draft. Invalid layer indices simply render empty.
+        let qa_view_layer = std::env::var("KEYJITSU_LAYER")
+            .ok()
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(0);
         let mut app = App {
             egui_ctx: cc.egui_ctx.clone(),
             _device_handle: device_handle,
@@ -794,8 +813,8 @@ impl App {
             heat: None,
             heat_error: None,
             active_layer: 0,
-            view_layer: 0,
-            follow: true,
+            view_layer: qa_view_layer,
+            follow: qa_view_layer == 0,
             pressed: vec![false; key_count],
             // KEYJITSU_TAB lets tooling/screenshots open straight on a tab.
             tab: match std::env::var("KEYJITSU_TAB").as_deref() {
@@ -860,6 +879,7 @@ impl App {
             confirm_reset: false,
             layout_hash: None,
             custom_layers: Vec::new(),
+            removed_layers: Vec::new(),
             synth_layers: Vec::new(),
             new_layer_open: false,
             new_layer_name: String::new(),
@@ -1196,43 +1216,100 @@ impl App {
             .count()
     }
 
-    fn custom_layers_pending(&self) -> bool {
-        match &self.firmware_state {
-            Some(state) => self.custom_layers != state.custom_layers,
-            None => !self.custom_layers.is_empty(),
-        }
-    }
-
-    fn pending_glow_count(&self) -> usize {
-        let device = self.device_glow_map();
-        let mut keys: std::collections::HashSet<(u8, usize)> =
-            self.glow_work.keys().copied().collect();
-        keys.extend(device.keys().copied());
-        keys.into_iter()
-            .filter(|k| self.glow_work.get(k) != device.get(k))
-            .count()
-    }
-
-    fn pending_key_change_count(&self) -> usize {
+    /// One canonical, user-facing projection of the firmware draft diff. Both
+    /// badges and the detail menu consume this list so new firmware-edit types
+    /// cannot silently increment a counter without becoming inspectable.
+    fn pending_firmware_changes(&self) -> Vec<String> {
+        let mut changes = Vec::new();
         let (actual_edits, actual_dances) = self.actual_firmware_maps();
         let (desired_edits, desired_dances) = self.desired_firmware_maps();
-        firmware_map_diff_count(
-            &actual_edits,
-            &actual_dances,
-            &desired_edits,
-            &desired_dances,
-        )
+        let mut keys = std::collections::BTreeSet::new();
+        keys.extend(actual_edits.keys().copied());
+        keys.extend(actual_dances.keys().copied());
+        keys.extend(desired_edits.keys().copied());
+        keys.extend(desired_dances.keys().copied());
+        for (layer, key) in keys {
+            if actual_edits.get(&(layer, key)) != desired_edits.get(&(layer, key))
+                || actual_dances.get(&(layer, key)) != desired_dances.get(&(layer, key))
+            {
+                changes.push(format!(
+                    "{} · key {} — assignment",
+                    self.layer_name(layer),
+                    key + 1
+                ));
+            }
+        }
+
+        let device_glow = self.device_glow_map();
+        let mut glow_keys = std::collections::BTreeSet::new();
+        glow_keys.extend(self.glow_work.keys().copied());
+        glow_keys.extend(device_glow.keys().copied());
+        for (layer, key) in glow_keys {
+            if self.glow_work.get(&(layer, key)) != device_glow.get(&(layer, key)) {
+                changes.push(format!(
+                    "{} · key {} — glow",
+                    self.layer_name(layer),
+                    key + 1
+                ));
+            }
+        }
+
+        let actual_removed = self
+            .firmware_state
+            .as_ref()
+            .map(|state| state.removed_layers.as_slice())
+            .unwrap_or(&[]);
+        for source in &self.removed_layers {
+            if !actual_removed.contains(source) {
+                let name = self
+                    .layout
+                    .as_ref()
+                    .and_then(|layout| {
+                        layout
+                            .revision
+                            .layers
+                            .iter()
+                            .find(|layer| layer.position == *source)
+                    })
+                    .and_then(|layer| layer.title.as_deref())
+                    .unwrap_or("unnamed layer");
+                changes.push(format!("Remove layer {name}"));
+            }
+        }
+        for source in actual_removed {
+            if !self.removed_layers.contains(source) {
+                changes.push(format!("Restore Oryx layer {source}"));
+            }
+        }
+
+        let actual_custom = self
+            .firmware_state
+            .as_ref()
+            .map(|state| state.custom_layers.as_slice())
+            .unwrap_or(&[]);
+        for index in 0..actual_custom.len().max(self.custom_layers.len()) {
+            match (actual_custom.get(index), self.custom_layers.get(index)) {
+                (None, Some(layer)) => changes.push(format!("Add layer {}", layer.name)),
+                (Some(layer), None) => changes.push(format!("Remove layer {}", layer.name)),
+                (Some(actual), Some(desired)) if actual != desired => {
+                    changes.push(format!("Update layer {}", desired.name));
+                }
+                _ => {}
+            }
+        }
+
+        if self
+            .firmware_state
+            .as_ref()
+            .is_some_and(FirmwareState::needs_action_normalization)
+        {
+            changes.push("Normalize legacy key actions".into());
+        }
+        changes
     }
 
     fn pending_firmware_count(&self) -> usize {
-        self.pending_key_change_count()
-            + self.pending_glow_count()
-            + usize::from(self.custom_layers_pending())
-            + usize::from(
-                self.firmware_state
-                    .as_ref()
-                    .is_some_and(FirmwareState::needs_action_normalization),
-            )
+        self.pending_firmware_changes().len()
     }
 
     fn save_glow(&mut self) -> bool {
@@ -1498,7 +1575,7 @@ impl App {
                                 continue;
                             }
                             nav_item(ui, &mut self.tab, tab, icon, name);
-                            if self.tab == tab {
+                            if self.tab == tab && tab != Tab::Live {
                                 self.nav_children(ui, tab);
                             }
                         }
@@ -1569,36 +1646,57 @@ impl App {
                 }
             });
 
-        // Bottom key-config panel (inspector), only on the Live tab.
+        // Layout is a workspace, not a stack of dashboards. Its primary canvas,
+        // contextual inspector and publish bar keep stable positions so selecting
+        // a key never makes a second table appear under the keyboard.
         if self.tab == Tab::Live {
-            // Size the inspector from its visible slot rows, with a compact empty state.
-            let cap = (ctx.screen_rect().height() * 0.44).clamp(170.0, 300.0);
-            let h = if self.selected_key.is_some() {
-                let rows = 1
-                    + (1..4)
-                        .filter(|&sl| self.edit_slots[sl].is_some() || self.slot_added[sl])
-                        .count();
-                let warn = if self.edit_slots[2].is_some() || self.edit_slots[3].is_some() {
-                    18.0
-                } else {
-                    0.0
-                };
-                (148.0 + rows as f32 * 34.0 + warn).min(cap)
-            } else {
-                46.0
-            };
-            egui::TopBottomPanel::bottom("keycfg")
+            egui::TopBottomPanel::bottom("layout_publish")
                 .resizable(false)
-                .exact_height(h)
+                .exact_height(58.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(pal::CARD)
+                        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                        .inner_margin(egui::Margin::symmetric(16, 9)),
+                )
+                .show(ctx, |ui| self.ui_publish_bar(ui));
+
+            egui::SidePanel::right("layout_inspector")
+                .resizable(true)
+                .default_width(326.0)
+                .width_range(286.0..=390.0)
                 .frame(
                     egui::Frame::new()
                         .fill(pal::SURFACE)
                         .stroke(egui::Stroke::new(1.0, pal::BORDER))
-                        .inner_margin(egui::Margin::symmetric(16, 12)),
+                        .inner_margin(egui::Margin::symmetric(14, 12)),
                 )
                 .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("KEY INSPECTOR")
+                                .strong()
+                                .size(10.5)
+                                .color(pal::TEXT_DIM),
+                        );
+                        if self.selected_key.is_some() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button("Close")
+                                        .on_hover_text("Clear key selection")
+                                        .clicked()
+                                    {
+                                        self.selected_key = None;
+                                    }
+                                },
+                            );
+                        }
+                    });
+                    ui.add_space(8.0);
                     egui::ScrollArea::vertical()
-                        .auto_shrink([false, true])
+                        .auto_shrink([false, false])
                         .show(ui, |ui| self.ui_key_panel(ui));
                 });
         }
@@ -2272,44 +2370,6 @@ fn combo_strip(ui: &mut egui::Ui, entries: &[ComboChip], a: f32, accent: Color32
     });
 }
 
-/// Rewrite the target layer in a layer-switch keycode after layer `del` was
-/// removed: a reference to a layer ABOVE `del` shifts down by one; references
-/// to `del` or below (and non-layer codes) are unchanged.
-fn renumber_layer_ref(code: &str, del: u8) -> String {
-    if code.contains('\n') {
-        return code
-            .split('\n')
-            .map(|step| renumber_layer_ref(step, del))
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-
-    let target = |n: &str| n.trim().parse::<u8>().ok();
-    for fam in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
-        if let Some(rest) = code
-            .strip_prefix(fam)
-            .and_then(|r| r.strip_prefix('('))
-            .and_then(|r| r.strip_suffix(')'))
-        {
-            return match target(rest) {
-                Some(v) if v == del => "KC_NO".to_string(),
-                Some(v) if v > del => format!("{fam}({})", v - 1),
-                _ => code.to_string(),
-            };
-        }
-    }
-    if let Some(rest) = code.strip_prefix("LT(").and_then(|r| r.strip_suffix(')')) {
-        if let Some((n, tap)) = rest.split_once(',') {
-            return match target(n) {
-                Some(v) if v == del => tap.trim().to_string(),
-                Some(v) if v > del => format!("LT({},{})", v - 1, tap.trim()),
-                _ => code.to_string(),
-            };
-        }
-    }
-    code.to_string()
-}
-
 /// Turn a QMK keycode string into an `OryxKey` for display: layer-switch
 /// families render as `CODE → layer` (via the layer field), everything else
 /// as its plain legend. A dual-role `LT(n,tap)` shows the tap with a hold hint.
@@ -2368,6 +2428,7 @@ fn merge_firmware_maps(
     (edits, dances)
 }
 
+#[cfg(test)]
 fn firmware_map_diff_count(
     actual_edits: &FirmwareEdits,
     actual_dances: &FirmwareDances,
@@ -2565,6 +2626,7 @@ mod state_composition_tests {
                     name: "Renumbered".into(),
                     keys: vec![],
                 }],
+                removed_layers: vec![],
                 glow_overrides: vec![],
                 key_fx: vec![],
                 staged_edits: vec![StagedEdit {
@@ -2630,6 +2692,7 @@ mod state_composition_tests {
             &mut cfg,
             "target",
             &confirmed_layers,
+            &[],
             vec![StagedEdit {
                 layout: "target".into(),
                 layer: 0,
@@ -2719,6 +2782,7 @@ mod state_composition_tests {
             }],
             vec![],
             vec![],
+            vec![],
         );
         let staged_edits = HashMap::from([((0, 3), "KC_NO".to_string())]);
         let staged_dances = HashMap::from([(
@@ -2753,6 +2817,7 @@ mod state_composition_tests {
                 key: 2,
                 slots: [Some("KC_B".into()), None, None, None],
             }],
+            vec![],
             vec![],
             vec![],
         );

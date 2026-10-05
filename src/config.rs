@@ -219,6 +219,15 @@ pub struct CustomLayerSet {
     pub layers: Vec<CustomLayer>,
 }
 
+/// Oryx layer positions intentionally removed from a layout draft. Positions
+/// refer to the immutable Oryx source, so the draft survives renumbering and
+/// can be rebuilt deterministically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemovedLayerSet {
+    pub layout: String,
+    pub layers: Vec<u8>,
+}
+
 /// A user-added entry in the Shortcuts cheatsheet (built-ins ship in the
 /// binary; these extend/customize them and survive restarts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -307,6 +316,8 @@ pub struct Config {
     /// Desired custom-layer sets that differ from (or have not yet been
     /// confirmed against) the running firmware.
     pub custom_layer_sets: Vec<CustomLayerSet>,
+    /// Desired removals from the immutable Oryx layer set, keyed by layout.
+    pub removed_layer_sets: Vec<RemovedLayerSet>,
     /// Per-key remaps staged in the editor but not yet built into firmware.
     pub staged_edits: Vec<StagedEdit>,
     /// Per-key tap dances staged in the editor but not yet built into firmware.

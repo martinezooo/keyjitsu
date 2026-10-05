@@ -30,9 +30,283 @@ impl App {
         }
     }
 
+    /// Stable workspace header for Layout. Layers are first-class tabs here,
+    /// rather than nested navigation items mixed with app destinations.
+    fn ui_layout_header(&mut self, ui: &mut egui::Ui) {
+        let layer_count = self.layer_count();
+        let names: Vec<String> = (0..layer_count).map(|n| self.layer_name(n)).collect();
+        let view = self.view_layer.min(layer_count.saturating_sub(1));
+        let active = self.active_layer;
+        let oryx = self.oryx_layer_count();
+
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("LAYOUT EDITOR")
+                        .strong()
+                        .size(10.5)
+                        .color(pal::TEXT_DIM),
+                );
+                ui.label(
+                    RichText::new(names.get(view as usize).cloned().unwrap_or_default())
+                        .strong()
+                        .size(21.0)
+                        .color(pal::TEXT),
+                );
+                let source = if view >= oryx {
+                    "Keyjitsu layer"
+                } else {
+                    "Oryx layer"
+                };
+                let activity = if view == active {
+                    "active on keyboard"
+                } else {
+                    "previewing"
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "Layer {} of {} · {source} · {activity}",
+                        view + 1,
+                        layer_count
+                    ))
+                    .size(11.5)
+                    .color(if view == active {
+                        pal::CYAN
+                    } else {
+                        pal::TEXT_MUTED
+                    }),
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.layout_profile_controls(ui);
+            });
+        });
+        ui.add_space(8.0);
+
+        let mut select_layer = None;
+        let mut begin_rename = false;
+        let mut request_remove = false;
+        egui::Frame::new()
+            .fill(pal::CARD)
+            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(10, 7))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("LAYERS")
+                            .strong()
+                            .size(10.0)
+                            .color(pal::TEXT_DIM),
+                    );
+                    for (n, name) in names.iter().enumerate() {
+                        let n = n as u8;
+                        let label = if n == active {
+                            format!("● {name}")
+                        } else {
+                            name.clone()
+                        };
+                        let button = egui::Button::new(RichText::new(label).size(11.5).color(
+                            if n == view {
+                                Color32::WHITE
+                            } else {
+                                pal::TEXT_MUTED
+                            },
+                        ))
+                        .fill(if n == view { pal::VIOLET } else { pal::INPUT })
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            if n == active { pal::CYAN } else { pal::BORDER },
+                        ));
+                        if ui.add(button).clicked() {
+                            select_layer = Some(n);
+                        }
+                    }
+
+                    ui.menu_button("＋ Layer", |ui| {
+                        if ui.button("Blank layer").clicked() {
+                            self.new_layer_open = true;
+                            self.new_layer_source = None;
+                            self.new_layer_name = format!("Layer {layer_count}");
+                            self.delete_layer_confirm = None;
+                            ui.close();
+                        }
+                        if !names.is_empty() {
+                            ui.separator();
+                            ui.weak("Duplicate existing layer");
+                            for (n, name) in names.iter().enumerate() {
+                                if ui.button(name).clicked() {
+                                    self.new_layer_open = true;
+                                    self.new_layer_source = Some(n as u8);
+                                    self.new_layer_name = format!("{name} copy");
+                                    self.delete_layer_confirm = None;
+                                    ui.close();
+                                }
+                            }
+                        }
+                    });
+
+                    ui.menu_button("Layer actions", |ui| {
+                        if view >= oryx && ui.button("Rename layer…").clicked() {
+                            begin_rename = true;
+                            ui.close();
+                        }
+                        if layer_count > 1
+                            && ui
+                                .button(RichText::new("Remove layer…").color(pal::RED))
+                                .clicked()
+                        {
+                            request_remove = true;
+                            ui.close();
+                        }
+                    });
+
+                    ui.separator();
+                    let mut follow = self.follow;
+                    if toggle(ui, &mut follow)
+                        .on_hover_text("Keep this view on the layer active on the keyboard")
+                        .changed()
+                    {
+                        self.follow = follow;
+                        if follow {
+                            self.view_layer = active;
+                        }
+                    }
+                    ui.label(RichText::new("Follow").size(11.0).color(pal::TEXT_MUTED));
+
+                    let mut glow = self.sync_glow;
+                    if toggle(ui, &mut glow)
+                        .on_hover_text("Mirror preview colors on the physical keyboard")
+                        .changed()
+                    {
+                        self.sync_glow = glow;
+                        if glow {
+                            self.needs_push = true;
+                        } else {
+                            let _ = self.cmd_tx.send(KbCmd::RgbRelease);
+                        }
+                    }
+                    ui.label(RichText::new("Live glow").size(11.0).color(pal::TEXT_MUTED));
+                });
+            });
+
+        if let Some(layer) = select_layer {
+            self.view_layer = layer;
+            self.follow = false;
+            self.selected_key = None;
+            self.delete_layer_confirm = None;
+        }
+        if begin_rename {
+            self.rename_layer_target = Some(view);
+            self.rename_layer_name = self.layer_name(view);
+            self.delete_layer_confirm = None;
+        }
+        if request_remove {
+            self.delete_layer_confirm = Some(view);
+            self.rename_layer_target = None;
+        }
+
+        if self.new_layer_open {
+            ui.add_space(7.0);
+            egui::Frame::new()
+                .fill(pal::INPUT)
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(10, 7))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("New layer").strong());
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.new_layer_name)
+                                .hint_text("Layer name")
+                                .desired_width(180.0),
+                        );
+                        let can_create = !self.new_layer_name.trim().is_empty();
+                        if ui
+                            .add_enabled(can_create, egui::Button::new("Create"))
+                            .clicked()
+                        {
+                            let name = self.new_layer_name.trim().to_string();
+                            let source = self.new_layer_source;
+                            self.add_custom_layer_from(name, source);
+                            self.new_layer_open = false;
+                            self.new_layer_name.clear();
+                            self.new_layer_source = None;
+                        }
+                        if ui.small_button("Cancel").clicked() {
+                            self.new_layer_open = false;
+                            self.new_layer_name.clear();
+                            self.new_layer_source = None;
+                        }
+                    });
+                });
+        }
+
+        if self.rename_layer_target == Some(view) {
+            ui.add_space(7.0);
+            egui::Frame::new()
+                .fill(pal::INPUT)
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(10, 7))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Rename layer").strong());
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.rename_layer_name)
+                                .desired_width(180.0),
+                        );
+                        let ok = !self.rename_layer_name.trim().is_empty();
+                        if ui.add_enabled(ok, egui::Button::new("Save")).clicked() {
+                            self.rename_custom_layer(
+                                view,
+                                self.rename_layer_name.trim().to_string(),
+                            );
+                            self.rename_layer_target = None;
+                            self.rename_layer_name.clear();
+                        }
+                        if ui.small_button("Cancel").clicked() {
+                            self.rename_layer_target = None;
+                            self.rename_layer_name.clear();
+                        }
+                    });
+                });
+        }
+
+        if self.delete_layer_confirm == Some(view) {
+            ui.add_space(7.0);
+            egui::Frame::new()
+                .fill(pal::RED.gamma_multiply(0.12))
+                .stroke(egui::Stroke::new(1.0, pal::RED.gamma_multiply(0.55)))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(10, 7))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Remove ‘{}’? Layer references will be renumbered in this draft.",
+                                self.layer_name(view)
+                            ))
+                            .color(pal::TEXT),
+                        );
+                        if ui
+                            .button(RichText::new("Remove").color(Color32::WHITE))
+                            .clicked()
+                        {
+                            self.remove_layer(view);
+                            self.delete_layer_confirm = None;
+                            self.rename_layer_target = None;
+                        }
+                        if ui.small_button("Keep layer").clicked() {
+                            self.delete_layer_confirm = None;
+                        }
+                    });
+                });
+        }
+        self.layout_profile_editor(ui);
+    }
+
     pub(super) fn ui_live(&mut self, ui: &mut egui::Ui, avail_h: f32) {
-        self.ui_edit_bar(ui);
-        ui.add_space(4.0);
+        self.ui_layout_header(ui);
+        ui.add_space(10.0);
         // No layout at all (first run, nothing cached): a friendly hint beats a
         // grid of blank keys.
         if self.layout.is_none() {
@@ -241,7 +515,8 @@ impl App {
         let key_col = self.layout_glow(view, i).unwrap_or(pal::VIOLET);
         let combo_summaries = self.combo_summaries_for_key(view, i);
 
-        // --- header: ONE compact row - badge · identity · status · actions --
+        // Inspector header: identity first, local draft state second. Build
+        // actions live in the page toolbar, never inside a selected key.
         let (preview, warns) = self.compose_slots();
         let staged_dance = self.key_dances.contains_key(&(view, i));
         ui.add_space(2.0);
@@ -252,7 +527,7 @@ impl App {
             .inner_margin(egui::Margin::symmetric(12, 6))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     egui::Frame::new()
                         .fill(pal::INPUT)
                         .stroke(egui::Stroke::new(2.0, key_col))
@@ -286,34 +561,40 @@ impl App {
                             .size(13.0)
                             .color(pal::VIOLET_HI),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.inspector_build_actions(ui);
-                        // Staged/preview status lives here, not on its own row.
-                        if staged_dance {
-                            ui.colored_label(pal::AMBER, format!("staged: tap dance (#{pos})"));
-                            if ui.small_button("✕").on_hover_text("unstage").clicked() {
-                                self.key_dances.remove(&(view, i));
-                                self.save_staged();
-                                self.sync_editor_from_key(view, i);
-                            }
-                        } else if let Some(sc) = &staged {
-                            // A multi-step macro's steps are newline-joined in
-                            // storage; keep this compact status strip one line.
-                            let sc_display = sc.replace('\n', " → ");
-                            ui.colored_label(pal::AMBER, format!("staged: {sc_display} (#{pos})"));
-                            if ui.small_button("✕").on_hover_text("unstage").clicked() {
-                                self.key_edits.remove(&(view, i));
-                                self.save_staged();
-                                self.sync_editor_from_key(view, i);
-                            }
-                        } else {
-                            ui.label(
-                                RichText::new(format!("→ {preview}"))
-                                    .size(11.5)
-                                    .color(pal::TEXT_DIM),
-                            );
-                        }
-                    });
+                });
+                ui.add_space(3.0);
+                ui.horizontal_wrapped(|ui| {
+                    if staged_dance {
+                        ui.colored_label(
+                            pal::AMBER,
+                            format!("Pending · tap dance · firmware position {pos}"),
+                        );
+                    } else if let Some(sc) = &staged {
+                        ui.colored_label(
+                            pal::AMBER,
+                            format!(
+                                "Pending · {} · firmware position {pos}",
+                                sc.replace('\n', " → ")
+                            ),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new(format!("Effective action · {preview}"))
+                                .size(11.5)
+                                .color(pal::TEXT_DIM),
+                        );
+                    }
+                    if (staged_dance || staged.is_some())
+                        && ui
+                            .small_button("Revert this key")
+                            .on_hover_text("Remove the pending firmware assignment for this key")
+                            .clicked()
+                    {
+                        self.key_edits.remove(&(view, i));
+                        self.key_dances.remove(&(view, i));
+                        self.save_staged();
+                        self.sync_editor_from_key(view, i);
+                    }
                 });
             });
         if !combo_summaries.is_empty() {
@@ -334,8 +615,9 @@ impl App {
         }
         ui.add_space(6.0);
 
-        // --- binding rows: one per action slot ------------------------------
-        // Columns: type | key (click → picker) | glow | on-press | ✕.
+        // Action cards are stacked for scanning and narrow-window resilience.
+        // Each gesture owns its controls; key-level appearance stays with the
+        // primary action instead of becoming another spreadsheet column.
         let assignment_editable = self.assignment_editable(view, i);
         if !assignment_editable {
             ui.colored_label(
@@ -346,267 +628,292 @@ impl App {
         }
         let mut open_picker: Option<usize> = None;
         let mut clear_slot: Option<usize> = None;
-        egui::Grid::new("slot_rows")
-            .num_columns(5)
-            .spacing([14.0, 6.0])
-            .with_row_color(|row, _style| {
-                if row == 0 {
-                    None
-                } else {
-                    Some(Color32::from_rgb(0x23, 0x26, 0x32))
+        ui.label(
+            RichText::new("ACTIONS")
+                .strong()
+                .size(10.5)
+                .color(pal::TEXT_DIM),
+        );
+        ui.add_space(3.0);
+        ui.vertical(|ui| {
+            let mut first = true;
+            for slot in 0..4 {
+                let visible = slot == 0 || self.edit_slots[slot].is_some() || self.slot_added[slot];
+                if !visible {
+                    continue;
                 }
-            })
-            .show(ui, |ui| {
-                let head = |ui: &mut egui::Ui, t: &str| {
-                    ui.label(RichText::new(t).size(10.5).color(pal::TEXT_DIM));
-                };
-                head(ui, "TYPE");
-                head(ui, "KEY");
-                head(ui, "GLOW");
-                head(ui, "ON PRESS");
-                head(ui, "");
-                ui.end_row();
-
-                let mut first = true;
-                for slot in 0..4 {
-                    let visible =
-                        slot == 0 || self.edit_slots[slot].is_some() || self.slot_added[slot];
-                    if !visible {
-                        continue;
-                    }
-                    // Type badge: a distinct color per action tier, clearly visible.
-                    let tc = SLOT_COLORS[slot];
-                    egui::Frame::new()
-                        .fill(tc.gamma_multiply(0.28))
-                        .stroke(egui::Stroke::new(1.2, tc))
-                        .corner_radius(egui::CornerRadius::same(7))
-                        .inner_margin(egui::Margin::symmetric(10, 3))
-                        .show(ui, |ui| {
-                            ui.label(
-                                RichText::new(SLOT_LABELS[slot])
-                                    .size(12.0)
-                                    .strong()
-                                    .color(pal::TEXT),
-                            );
-                        });
-
-                    // Key chip(s) - click one to change it via the picker. A slot
-                    // can hold more than one step ("then press another key"),
-                    // tapped in order when the gesture fires; each step gets its
-                    // own chip so it can be changed or removed on its own.
-                    let steps: Vec<String> = match &self.edit_slots[slot] {
-                        Some(c) => c.split('\n').map(str::to_string).collect(),
-                        None => Vec::new(),
-                    };
-                    let mut remove_step: Option<usize> = None;
-                    ui.horizontal_wrapped(|ui| {
-                        if steps.is_empty() {
-                            let chip_btn = egui::Button::new(
-                                RichText::new("- pick…").size(13.0).color(pal::TEXT),
-                            )
-                            .fill(pal::INPUT)
-                            .stroke(egui::Stroke::new(1.0, pal::BORDER))
-                            .min_size(egui::vec2(96.0, 22.0));
-                            if ui
-                                .add_enabled(assignment_editable, chip_btn)
-                                .on_hover_text(if assignment_editable {
-                                    "click to pick a key"
-                                } else {
-                                    "read-only: unsupported Oryx action semantics"
-                                })
-                                .clicked()
-                            {
-                                open_picker = Some(slot);
-                                self.picker_step_index = None;
-                                self.picker_append = false;
-                            }
-                        } else {
-                            for (step_i, s) in steps.iter().enumerate() {
-                                if step_i > 0 {
-                                    ui.label(RichText::new("then").size(10.5).color(pal::TEXT_DIM));
-                                }
-                                let chip_btn = egui::Button::new(
-                                    RichText::new(self.slot_chip_label(s))
-                                        .size(13.0)
+                egui::Frame::new()
+                    .fill(pal::CARD)
+                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .corner_radius(egui::CornerRadius::same(9))
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        // Type badge: a distinct color per action tier, clearly visible.
+                        let tc = SLOT_COLORS[slot];
+                        egui::Frame::new()
+                            .fill(tc.gamma_multiply(0.28))
+                            .stroke(egui::Stroke::new(1.2, tc))
+                            .corner_radius(egui::CornerRadius::same(7))
+                            .inner_margin(egui::Margin::symmetric(10, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(SLOT_LABELS[slot])
+                                        .size(12.0)
+                                        .strong()
                                         .color(pal::TEXT),
+                                );
+                            });
+
+                        // Key chip(s) - click one to change it via the picker. A slot
+                        // can hold more than one step ("then press another key"),
+                        // tapped in order when the gesture fires; each step gets its
+                        // own chip so it can be changed or removed on its own.
+                        ui.add_space(5.0);
+                        ui.label(RichText::new("Binding").size(10.0).color(pal::TEXT_DIM));
+                        let steps: Vec<String> = match &self.edit_slots[slot] {
+                            Some(c) => c.split('\n').map(str::to_string).collect(),
+                            None => Vec::new(),
+                        };
+                        let mut remove_step: Option<usize> = None;
+                        ui.horizontal_wrapped(|ui| {
+                            if steps.is_empty() {
+                                let chip_btn = egui::Button::new(
+                                    RichText::new("- pick…").size(13.0).color(pal::TEXT),
                                 )
                                 .fill(pal::INPUT)
                                 .stroke(egui::Stroke::new(1.0, pal::BORDER))
-                                .min_size(egui::vec2(80.0, 22.0));
+                                .min_size(egui::vec2(96.0, 22.0));
                                 if ui
                                     .add_enabled(assignment_editable, chip_btn)
                                     .on_hover_text(if assignment_editable {
-                                        "click to change this step"
+                                        "click to pick a key"
                                     } else {
                                         "read-only: unsupported Oryx action semantics"
                                     })
                                     .clicked()
                                 {
                                     open_picker = Some(slot);
-                                    self.picker_step_index = Some(step_i);
+                                    self.picker_step_index = None;
                                     self.picker_append = false;
                                 }
-                                if steps.len() > 1
-                                    && ui
-                                        .add_enabled(
-                                            assignment_editable,
-                                            egui::Button::new("✕").small(),
-                                        )
-                                        .on_hover_text("remove this step")
+                            } else {
+                                for (step_i, s) in steps.iter().enumerate() {
+                                    if step_i > 0 {
+                                        ui.label(
+                                            RichText::new("then").size(10.5).color(pal::TEXT_DIM),
+                                        );
+                                    }
+                                    let chip_btn = egui::Button::new(
+                                        RichText::new(self.slot_chip_label(s))
+                                            .size(13.0)
+                                            .color(pal::TEXT),
+                                    )
+                                    .fill(pal::INPUT)
+                                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                                    .min_size(egui::vec2(80.0, 22.0));
+                                    if ui
+                                        .add_enabled(assignment_editable, chip_btn)
+                                        .on_hover_text(if assignment_editable {
+                                            "click to change this step"
+                                        } else {
+                                            "read-only: unsupported Oryx action semantics"
+                                        })
                                         .clicked()
-                                {
-                                    remove_step = Some(step_i);
+                                    {
+                                        open_picker = Some(slot);
+                                        self.picker_step_index = Some(step_i);
+                                        self.picker_append = false;
+                                    }
+                                    if steps.len() > 1
+                                        && ui
+                                            .add_enabled(
+                                                assignment_editable,
+                                                egui::Button::new("✕").small(),
+                                            )
+                                            .on_hover_text("remove this step")
+                                            .clicked()
+                                    {
+                                        remove_step = Some(step_i);
+                                    }
                                 }
-                            }
-                        }
-                        if ui
-                            .add_enabled(assignment_editable, egui::Button::new("+").small())
-                            .on_hover_text("then press another key (taps in order when this fires)")
-                            .clicked()
-                        {
-                            open_picker = Some(slot);
-                            self.picker_step_index = None;
-                            self.picker_append = true;
-                        }
-                    });
-                    if let Some(step_i) = remove_step {
-                        let mut steps = steps.clone();
-                        steps.remove(step_i);
-                        self.edit_slots[slot] = if steps.is_empty() {
-                            None
-                        } else {
-                            Some(steps.join("\n"))
-                        };
-                        self.stage_slots(view, i);
-                    }
-
-                    if first {
-                        // Glow color (key-level).
-                        ui.horizontal(|ui| {
-                            if ui.color_edit_button_srgb(&mut self.edit_color).changed() {
-                                self.set_glow(view, i, self.edit_color);
                             }
                             if ui
-                                .small_button("↺")
-                                .on_hover_text("reset to layout color")
+                                .add_enabled(assignment_editable, egui::Button::new("+").small())
+                                .on_hover_text(
+                                    "then press another key (taps in order when this fires)",
+                                )
                                 .clicked()
                             {
-                                self.clear_glow(view, i);
-                                self.edit_color = self.current_key_srgb(view, i);
+                                open_picker = Some(slot);
+                                self.picker_step_index = None;
+                                self.picker_append = true;
                             }
                         });
-                        // On-press effect (key-level): built-ins + ★ sequences.
-                        ui.horizontal(|ui| {
-                            let mut fx = self.key_fx.get(&(view, i)).cloned().unwrap_or((
-                                FxTrigger::Press,
-                                PressEffect::None,
-                                [255, 255, 255],
-                                None,
-                            ));
-                            let mut changed = false;
-                            let custom_names: Vec<String> = self
-                                .custom_fx
-                                .iter()
-                                .filter(|c| c.preset.is_none())
-                                .map(|c| c.name.clone())
-                                .collect();
-                            let saved_press: Vec<(String, PressEffect, [u8; 3])> = self
-                                .custom_fx
-                                .iter()
-                                .filter_map(|c| match c.preset {
-                                    Some(FxPresetSource::Press { effect, color }) => {
-                                        Some((c.name.clone(), effect, color))
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
-                            let sel_text = match &fx.3 {
-                                Some(n) => format!("★ {n}"),
-                                None => fx.1.label().to_string(),
+                        if let Some(step_i) = remove_step {
+                            let mut steps = steps.clone();
+                            steps.remove(step_i);
+                            self.edit_slots[slot] = if steps.is_empty() {
+                                None
+                            } else {
+                                Some(steps.join("\n"))
                             };
-                            egui::ComboBox::from_id_salt(("keyfx", i))
-                                .width(170.0)
-                                .selected_text(sel_text)
-                                .show_ui(ui, |ui| {
-                                    for (e, label) in PressEffect::ALL {
-                                        let is = fx.3.is_none() && fx.1 == e;
-                                        if ui.selectable_label(is, label).clicked() {
-                                            fx.1 = e;
-                                            fx.3 = None;
-                                            changed = true;
+                            self.stage_slots(view, i);
+                        }
+
+                        if first {
+                            ui.add_space(8.0);
+                            ui.separator();
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new("APPEARANCE")
+                                    .strong()
+                                    .size(10.0)
+                                    .color(pal::TEXT_DIM),
+                            );
+                            ui.add_space(3.0);
+                            // Glow color (key-level).
+                            ui.horizontal(|ui| {
+                                ui.label("Glow");
+                                if ui.color_edit_button_srgb(&mut self.edit_color).changed() {
+                                    self.set_glow(view, i, self.edit_color);
+                                }
+                                if ui
+                                    .small_button("↺")
+                                    .on_hover_text("reset to layout color")
+                                    .clicked()
+                                {
+                                    self.clear_glow(view, i);
+                                    self.edit_color = self.current_key_srgb(view, i);
+                                }
+                            });
+                            // On-press effect (key-level): built-ins + ★ sequences.
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("On press").size(10.0).color(pal::TEXT_DIM));
+                                let mut fx = self.key_fx.get(&(view, i)).cloned().unwrap_or((
+                                    FxTrigger::Press,
+                                    PressEffect::None,
+                                    [255, 255, 255],
+                                    None,
+                                ));
+                                let mut changed = false;
+                                let custom_names: Vec<String> = self
+                                    .custom_fx
+                                    .iter()
+                                    .filter(|c| c.preset.is_none())
+                                    .map(|c| c.name.clone())
+                                    .collect();
+                                let saved_press: Vec<(String, PressEffect, [u8; 3])> = self
+                                    .custom_fx
+                                    .iter()
+                                    .filter_map(|c| match c.preset {
+                                        Some(FxPresetSource::Press { effect, color }) => {
+                                            Some((c.name.clone(), effect, color))
                                         }
-                                    }
-                                    if !saved_press.is_empty() || !custom_names.is_empty() {
-                                        ui.separator();
-                                    }
-                                    for (name, effect, color) in &saved_press {
-                                        if ui.selectable_label(false, format!("★ {name}")).clicked()
-                                        {
-                                            fx.1 = *effect;
-                                            fx.2 = *color;
-                                            fx.3 = None;
-                                            changed = true;
-                                        }
-                                    }
-                                    for name in &custom_names {
-                                        let is = fx.3.as_deref() == Some(name.as_str());
-                                        if ui.selectable_label(is, format!("★ {name}")).clicked()
-                                        {
-                                            fx.3 = Some(name.clone());
-                                            fx.1 = PressEffect::None;
-                                            changed = true;
-                                        }
-                                    }
-                                });
-                            if fx.1 != PressEffect::None || fx.3.is_some() {
-                                egui::ComboBox::from_id_salt(("keyfxtrig", i))
-                                    .width(110.0)
-                                    .selected_text(fx.0.label())
+                                        _ => None,
+                                    })
+                                    .collect();
+                                let sel_text = match &fx.3 {
+                                    Some(n) => format!("★ {n}"),
+                                    None => fx.1.label().to_string(),
+                                };
+                                egui::ComboBox::from_id_salt(("keyfx", i))
+                                    .width(ui.available_width().min(260.0))
+                                    .selected_text(sel_text)
                                     .show_ui(ui, |ui| {
-                                        for (t, label) in FxTrigger::ALL {
-                                            changed |=
-                                                ui.selectable_value(&mut fx.0, t, label).changed();
+                                        for (e, label) in PressEffect::ALL {
+                                            let is = fx.3.is_none() && fx.1 == e;
+                                            if ui.selectable_label(is, label).clicked() {
+                                                fx.1 = e;
+                                                fx.3 = None;
+                                                changed = true;
+                                            }
+                                        }
+                                        if !saved_press.is_empty() || !custom_names.is_empty() {
+                                            ui.separator();
+                                        }
+                                        for (name, effect, color) in &saved_press {
+                                            if ui
+                                                .selectable_label(false, format!("★ {name}"))
+                                                .clicked()
+                                            {
+                                                fx.1 = *effect;
+                                                fx.2 = *color;
+                                                fx.3 = None;
+                                                changed = true;
+                                            }
+                                        }
+                                        for name in &custom_names {
+                                            let is = fx.3.as_deref() == Some(name.as_str());
+                                            if ui
+                                                .selectable_label(is, format!("★ {name}"))
+                                                .clicked()
+                                            {
+                                                fx.3 = Some(name.clone());
+                                                fx.1 = PressEffect::None;
+                                                changed = true;
+                                            }
                                         }
                                     });
-                                if fx.3.is_none() && fx.1.uses_color() {
-                                    changed |= ui.color_edit_button_srgb(&mut fx.2).changed();
+                                if fx.1 != PressEffect::None || fx.3.is_some() {
+                                    egui::ComboBox::from_id_salt(("keyfxtrig", i))
+                                        .width(ui.available_width().min(180.0))
+                                        .selected_text(fx.0.label())
+                                        .show_ui(ui, |ui| {
+                                            for (t, label) in FxTrigger::ALL {
+                                                changed |= ui
+                                                    .selectable_value(&mut fx.0, t, label)
+                                                    .changed();
+                                            }
+                                        });
+                                    if fx.3.is_none() && fx.1.uses_color() {
+                                        changed |= ui.color_edit_button_srgb(&mut fx.2).changed();
+                                    }
                                 }
-                            }
-                            if changed {
-                                if fx.1 == PressEffect::None && fx.3.is_none() {
-                                    self.key_fx.remove(&(view, i));
-                                } else {
-                                    self.key_fx.insert((view, i), fx);
+                                if changed {
+                                    if fx.1 == PressEffect::None && fx.3.is_none() {
+                                        self.key_fx.remove(&(view, i));
+                                    } else {
+                                        self.key_fx.insert((view, i), fx);
+                                    }
+                                    self.save_key_fx();
                                 }
-                                self.save_key_fx();
-                            }
-                        });
-                    } else {
-                        ui.label("");
-                        ui.label("");
-                    }
-
-                    let can_clear = self.edit_slots[slot].is_some() || self.slot_added[slot];
-                    if can_clear {
-                        let hover = if slot == 0 {
-                            "clear this key assignment (firmware: KC_NO)"
-                        } else {
-                            "remove this action"
-                        };
-                        if ui
-                            .add_enabled(assignment_editable, egui::Button::new("✕").small())
-                            .on_hover_text(hover)
-                            .clicked()
-                        {
-                            clear_slot = Some(slot);
+                            });
                         }
-                    } else {
-                        ui.label("");
-                    }
-                    ui.end_row();
-                    first = false;
-                }
-            });
+
+                        let can_clear = self.edit_slots[slot].is_some() || self.slot_added[slot];
+                        if can_clear {
+                            let hover = if slot == 0 {
+                                "clear this key assignment (firmware: KC_NO)"
+                            } else {
+                                "remove this action"
+                            };
+                            let label = if slot == 0 {
+                                "Clear assignment"
+                            } else {
+                                "Remove action"
+                            };
+                            if ui
+                                .add_enabled(
+                                    assignment_editable,
+                                    egui::Button::new(
+                                        RichText::new(label).size(10.5).color(pal::TEXT_DIM),
+                                    )
+                                    .small(),
+                                )
+                                .on_hover_text(hover)
+                                .clicked()
+                            {
+                                clear_slot = Some(slot);
+                            }
+                        } else {
+                            ui.add_space(1.0);
+                        }
+                    });
+                ui.add_space(5.0);
+                first = false;
+            }
+        });
 
         // ＋ under the table, centered.
         let missing: Vec<usize> = (1..4)
@@ -810,71 +1117,6 @@ impl App {
         // Window's own ✕ closes it (only when not busy).
         if !open && !self.build_busy {
             self.build_open = false;
-        }
-    }
-
-    /// Build actions for firmware changes shown in the inspector header.
-    pub(super) fn inspector_build_actions(&mut self, ui: &mut egui::Ui) {
-        let pending = self.pending_firmware_count();
-        if self.build_busy {
-            ui.spinner();
-            let flash_is_writing = flash_is_writing(self.flash_state.as_ref());
-            if flash_is_writing {
-                ui.label(RichText::new("flashing…").size(11.0).color(pal::TEXT_DIM));
-            } else if ui.button("✕ cancel").clicked() {
-                self.build_cancel.store(true, Ordering::SeqCst);
-                self.flash_cancel.store(true, Ordering::SeqCst);
-                self.build_log.push_str("canceling…\n");
-            }
-            return;
-        }
-        if pending == 0 {
-            return;
-        }
-
-        let ready = self.env.is_ready()
-            && self.connected.is_some()
-            && !matches!(
-                self.device_state_kind(),
-                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-            );
-        if ui
-            .add_enabled(
-                ready,
-                egui::Button::new(RichText::new("⚙ Build & flash").color(Color32::WHITE))
-                    .fill(pal::VIOLET),
-            )
-            .clicked()
-        {
-            self.start_local_build(true);
-        }
-        if ui
-            .add_enabled(ready, egui::Button::new("Build only"))
-            .on_hover_text("compile without flashing")
-            .clicked()
-        {
-            self.start_local_build(false);
-        }
-        if (!self.key_edits.is_empty() || !self.key_dances.is_empty())
-            && ui.button("Clear key changes").clicked()
-        {
-            self.key_edits.clear();
-            self.key_dances.clear();
-            self.save_staged();
-        }
-
-        if !ready {
-            let reason = if matches!(
-                self.device_state_kind(),
-                DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-            ) {
-                "Device state is unknown; rebuilding is blocked to protect working firmware changes."
-            } else if self.connected.is_none() {
-                "Connect the keyboard to build firmware."
-            } else {
-                "Set up QMK and the ARM toolchain in Settings before building."
-            };
-            ui.label(RichText::new(reason).size(10.5).color(pal::TEXT_DIM));
         }
     }
 

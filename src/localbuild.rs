@@ -50,6 +50,8 @@ pub struct BuildSpec {
     pub revision: String,
     pub edits: Vec<KeyEdit>,
     pub dances: Vec<crate::keymap::DanceSpec>,
+    /// Immutable Oryx source positions to remove before applying logical edits.
+    pub removed_layers: Vec<u8>,
     pub new_layers: Vec<NewLayer>,
     pub glow: Vec<GlowEdit>,
     pub firmware_serial: Option<String>,
@@ -150,6 +152,7 @@ pub fn build(spec: &BuildSpec, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -
     let revision = spec.revision.as_str();
     let edits = spec.edits.as_slice();
     let dances = spec.dances.as_slice();
+    let removed_layers = spec.removed_layers.as_slice();
     let new_layers = spec.new_layers.as_slice();
     let glow = spec.glow.as_slice();
     let firmware_serial = spec.firmware_serial.as_deref();
@@ -186,6 +189,20 @@ pub fn build(spec: &BuildSpec, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -
         format!("MACRO_KJ_{id}")
     };
 
+    let mut patched = keymap_c;
+    let mut removed_before = 0u8;
+    let mut sorted_removed = removed_layers.to_vec();
+    sorted_removed.sort_unstable();
+    sorted_removed.dedup();
+    for source in sorted_removed {
+        let logical = source
+            .checked_sub(removed_before)
+            .ok_or_else(|| anyhow!("invalid removed layer order at Oryx layer {source}"))?;
+        log(format!("Removing Oryx layer [{source}]…"));
+        patched = keymap::remove_layer(&patched, logical)?;
+        removed_before = removed_before.saturating_add(1);
+    }
+
     log(format!(
         "Applying {} key change(s) to keymap.c…",
         edits.len()
@@ -198,7 +215,7 @@ pub fn build(spec: &BuildSpec, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -
             keycode: macro_for(&e.keycode),
         })
         .collect();
-    let mut patched = keymap::apply_edits(&keymap_c, &km_edits)?;
+    patched = keymap::apply_edits(&patched, &km_edits)?;
     for nl in new_layers {
         log(format!(
             "Adding layer [{}] ({} keys)…",

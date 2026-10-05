@@ -143,7 +143,7 @@ impl App {
         if let Some(target) = switch {
             self.switch_profile(target);
         }
-        ui.menu_button("＋", |ui| {
+        ui.menu_button("Manage", |ui| {
             if ui.button("Save current layout…").clicked() {
                 self.prof_new_open = true;
                 self.profile_draft.clear();
@@ -263,22 +263,25 @@ impl App {
                     }
                 }
 
-                if self.view_layer >= oryx && self.view_layer < self.layer_count() {
+                if self.view_layer < self.layer_count() && self.layer_count() > 1 {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        if ui.small_button("rename").clicked() {
+                        if self.view_layer >= oryx && ui.small_button("rename").clicked() {
                             self.rename_layer_target = Some(self.view_layer);
                             self.rename_layer_name = self.layer_name(self.view_layer);
                             self.delete_layer_confirm = None;
                         }
                         let deleting = self.delete_layer_confirm == Some(self.view_layer);
                         if ui
-                            .small_button(if deleting { "confirm delete" } else { "delete" })
+                            .small_button(if deleting { "confirm remove" } else { "remove" })
+                            .on_hover_text(
+                                "Remove this layer from the current firmware draft and renumber layer references. The Oryx source is not modified.",
+                            )
                             .clicked()
                         {
                             if deleting {
                                 let deleted = self.view_layer;
-                                self.remove_custom_layer(deleted);
+                                self.remove_layer(deleted);
                                 self.delete_layer_confirm = None;
                                 self.rename_layer_target = None;
                             } else {

@@ -7,6 +7,8 @@
 
 use anyhow::{anyhow, bail, Result};
 
+use crate::key_action::renumber_layer_ref;
+
 /// One remap to apply: on layer `layer`, set `LAYOUT` position `position` to
 /// the QMK `keycode` string.
 #[derive(Debug, Clone)]
@@ -574,7 +576,7 @@ fn split_braced_entries(inner: &str) -> Vec<String> {
     out
 }
 
-fn find_ledmap_layer_block(source: &str, layer: u8) -> Result<(usize, usize)> {
+fn find_ledmap_layer_block(source: &str, layer: u8) -> Result<(usize, usize, usize)> {
     let map = source
         .find("const uint8_t PROGMEM ledmap")
         .ok_or_else(|| anyhow!("no Oryx ledmap in keymap.c"))?;
@@ -601,7 +603,7 @@ fn find_ledmap_layer_block(source: &str, layer: u8) -> Result<(usize, usize)> {
         };
         if after[..open_rel].contains('=') {
             let open = after_start + open_rel;
-            return Ok((open + 1, matching_brace(source, open)?));
+            return Ok((idx, open + 1, matching_brace(source, open)?));
         }
         search_from = after_start;
     }
@@ -612,7 +614,7 @@ fn find_ledmap_layer_block(source: &str, layer: u8) -> Result<(usize, usize)> {
 pub fn apply_glow(source: &str, edits: &[GlowEdit]) -> Result<String> {
     let mut out = source.to_string();
     for edit in edits {
-        let (start, end) = find_ledmap_layer_block(&out, edit.layer)?;
+        let (_, start, end) = find_ledmap_layer_block(&out, edit.layer)?;
         let inner = &out[start..end];
         let mut entries = split_braced_entries(inner);
         if edit.led >= entries.len() {
@@ -679,6 +681,185 @@ pub fn add_layer(source: &str, position: u8, keys: &[(usize, String)]) -> Result
     out.push_str(&source[..close]);
     out.push_str(&block);
     out.push_str(&source[close..]);
+    Ok(out)
+}
+
+/// Remove one layer from `keymaps[]`, renumber subsequent designators, and
+/// rewrite layer-switch keycodes in every remaining layer. The deleted layer
+/// is a logical index in the source as it exists when this function is called.
+pub fn remove_layer(source: &str, layer: u8) -> Result<String> {
+    let positions: Vec<u8> = (0..32)
+        .filter(|position| find_layer_block(source, *position).is_ok())
+        .collect();
+    if !positions.contains(&layer) {
+        bail!("layer [{layer}] does not exist in keymap.c");
+    }
+    if positions.len() <= 1 {
+        bail!("cannot remove the only layer in keymap.c");
+    }
+
+    // First rewrite references while the original designators still exist.
+    let mut out = source.to_string();
+    for &position in positions.iter().filter(|&&position| position != layer) {
+        let (_, start, end) = find_layer_block(&out, position)?;
+        let tokens = split_top_level(&out[start..end]);
+        for (slot, token) in tokens.iter().enumerate() {
+            let old = token.trim();
+            let new = renumber_layer_ref(old, layer);
+            if new != old {
+                out = apply_one(
+                    &out,
+                    &Edit {
+                        layer: position,
+                        position: slot,
+                        keycode: new,
+                    },
+                )?;
+            }
+        }
+    }
+
+    // Drop the full declaration line, including its trailing comma/newline.
+    let (block_start, _, block_end) = find_layer_block(&out, layer)?;
+    let line_start = out[..block_start]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(block_start);
+    let bytes = out.as_bytes();
+    let mut end = block_end + 1; // closing `)`
+    while end < bytes.len() && matches!(bytes[end], b' ' | b'\t' | b'\r') {
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b',' {
+        end += 1;
+    }
+    while end < bytes.len() && matches!(bytes[end], b' ' | b'\t' | b'\r') {
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b'\n' {
+        end += 1;
+    }
+    out.replace_range(line_start..end, "");
+
+    // Resolve offsets first and mutate right-to-left so replacements cannot
+    // invalidate later offsets (also handles two-digit layer indices).
+    let mut designators: Vec<(usize, u8)> = positions
+        .into_iter()
+        .filter(|position| *position > layer)
+        .map(|position| find_layer_block(&out, position).map(|(start, _, _)| (start, position)))
+        .collect::<Result<_>>()?;
+    designators.sort_by_key(|(start, _)| std::cmp::Reverse(*start));
+    for (start, old) in designators {
+        let old_text = format!("[{old}]");
+        let new_text = format!("[{}]", old - 1);
+        out.replace_range(start..start + old_text.len(), &new_text);
+    }
+
+    // Oryx stores per-layer LED colors in a parallel designated array. Keep
+    // it structurally aligned with keymaps[] when it exists.
+    if let Ok((entry_start, _, entry_end)) = find_ledmap_layer_block(&out, layer) {
+        let line_start = out[..entry_start]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(entry_start);
+        let bytes = out.as_bytes();
+        let mut end = entry_end + 1; // closing `}`
+        while end < bytes.len() && matches!(bytes[end], b' ' | b'\t' | b'\r') {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b',' {
+            end += 1;
+        }
+        while end < bytes.len() && matches!(bytes[end], b' ' | b'\t' | b'\r') {
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end] == b'\n' {
+            end += 1;
+        }
+        out.replace_range(line_start..end, "");
+
+        let mut led_designators: Vec<(usize, u8)> = (layer.saturating_add(1)..32)
+            .filter_map(|old| {
+                find_ledmap_layer_block(&out, old)
+                    .ok()
+                    .map(|(start, _, _)| (start, old))
+            })
+            .collect();
+        led_designators.sort_by_key(|(start, _)| std::cmp::Reverse(*start));
+        for (start, old) in led_designators {
+            let old_text = format!("[{old}]");
+            let new_text = format!("[{}]", old - 1);
+            out.replace_range(start..start + old_text.len(), &new_text);
+        }
+        out = renumber_layer_color_switch(&out, layer)?;
+    }
+    Ok(out)
+}
+
+/// Oryx emits a switch that maps the active layer to the parallel ledmap.
+/// Remove the deleted arm and shift the numeric arms that follow it.
+fn renumber_layer_color_switch(source: &str, deleted: u8) -> Result<String> {
+    let Some(switch_start) = source.find("switch (biton32(layer_state))") else {
+        return Ok(source.to_string());
+    };
+    let open = switch_start
+        + source[switch_start..]
+            .find('{')
+            .ok_or_else(|| anyhow!("layer color switch has no opening brace"))?;
+    let close = matching_brace(source, open)?;
+    let body = &source[open + 1..close];
+    let mut rebuilt = String::new();
+    let mut skip_arm = false;
+    let mut shifted_arm: Option<(u8, u8)> = None;
+    for line in body.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(number) = trimmed
+            .strip_prefix("case ")
+            .and_then(|rest| rest.split_once(':'))
+            .and_then(|(number, _)| number.trim().parse::<u8>().ok())
+        {
+            skip_arm = number == deleted;
+            shifted_arm = if number > deleted {
+                Some((number, number - 1))
+            } else {
+                None
+            };
+            if skip_arm {
+                continue;
+            }
+            let mut rewritten = line.to_string();
+            if number > deleted {
+                rewritten = rewritten.replacen(
+                    &format!("case {number}:"),
+                    &format!("case {}:", number - 1),
+                    1,
+                );
+                rewritten = rewritten.replace(
+                    &format!("set_layer_color({number})"),
+                    &format!("set_layer_color({})", number - 1),
+                );
+            }
+            rebuilt.push_str(&rewritten);
+            continue;
+        }
+        if trimmed.starts_with("default:") {
+            skip_arm = false;
+            shifted_arm = None;
+        }
+        if !skip_arm {
+            if let Some((old, new)) = shifted_arm {
+                rebuilt.push_str(&line.replace(
+                    &format!("set_layer_color({old})"),
+                    &format!("set_layer_color({new})"),
+                ));
+            } else {
+                rebuilt.push_str(line);
+            }
+        }
+    }
+
+    let mut out = source.to_string();
+    out.replace_range(open + 1..close, &rebuilt);
     Ok(out)
 }
 
@@ -1049,6 +1230,42 @@ const uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {
         assert!(l2.matches("KC_TRANSPARENT").count() >= 7);
         // The array still closes cleanly (parse layer 0 still works).
         assert_eq!(layer_key_count(&out, 0).unwrap(), 9);
+    }
+
+    #[test]
+    fn remove_layer_drops_block_renumbers_and_rewrites_references() {
+        let src = add_layer(
+            SAMPLE,
+            2,
+            &[
+                (0, "MO(1)".into()),
+                (1, "TO(2)".into()),
+                (2, "LT(2,KC_A)".into()),
+            ],
+        )
+        .unwrap();
+        let out = remove_layer(&src, 1).unwrap();
+        assert!(find_layer_block(&out, 0).is_ok());
+        assert!(find_layer_block(&out, 1).is_ok());
+        assert!(find_layer_block(&out, 2).is_err());
+        assert!(out.contains("KC_NO"));
+        assert!(out.contains("TO(1)"));
+        assert!(out.contains("LT(1,KC_A)"));
+    }
+
+    #[test]
+    fn remove_layer_keeps_ledmap_indices_aligned() {
+        let src = format!(
+            "const uint8_t PROGMEM ledmap[][1][3] = {{\n  [0] = {{{{0,0,0}}}},\n  [1] = {{{{1,1,1}}}},\n  [2] = {{{{2,2,2}}}},\n}};\nvoid colors(void) {{ switch (biton32(layer_state)) {{\n  case 0:\n    set_layer_color(0);\n    break;\n  case 1:\n    set_layer_color(1);\n    break;\n  case 2:\n    set_layer_color(2);\n    break;\n  default:\n    break;\n}} }}\n{}",
+            add_layer(SAMPLE, 2, &[]).unwrap()
+        );
+        let out = remove_layer(&src, 1).unwrap();
+        assert!(out.contains("[0] = {{0,0,0}}"));
+        assert!(out.contains("[1] = {{2,2,2}}"));
+        assert!(!out.contains("[2] = {{2,2,2}}"));
+        assert_eq!(out.matches("case 1:").count(), 1);
+        assert!(out.contains("set_layer_color(1)"));
+        assert!(!out.contains("case 2:"));
     }
 
     #[test]
