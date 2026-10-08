@@ -45,6 +45,49 @@ pub(crate) fn canonicalize_qmk_code(code: &str) -> String {
     canonicalize_one_qmk_code(code)
 }
 
+/// Rewrite layer-switch targets after logical layer `deleted` is removed.
+/// This is shared by GUI draft state and the QMK source patcher so both use
+/// identical semantics for references to the deleted and shifted layers.
+pub(crate) fn renumber_layer_ref(code: &str, deleted: u8) -> String {
+    if code.contains('\n') {
+        return code
+            .split('\n')
+            .map(|step| renumber_layer_ref(step, deleted))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+
+    let target = |n: &str| n.trim().parse::<u8>().ok();
+    for family in ["MO", "TO", "TG", "TT", "OSL", "DF"] {
+        if let Some(rest) = code
+            .strip_prefix(family)
+            .and_then(|rest| rest.strip_prefix('('))
+            .and_then(|rest| rest.strip_suffix(')'))
+        {
+            return match target(rest) {
+                Some(value) if value == deleted => "KC_NO".to_string(),
+                Some(value) if value > deleted => format!("{family}({})", value - 1),
+                _ => code.to_string(),
+            };
+        }
+    }
+    if let Some(rest) = code
+        .strip_prefix("LT(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        if let Some((layer, tap)) = rest.split_once(',') {
+            return match target(layer) {
+                Some(value) if value == deleted => tap.trim().to_string(),
+                Some(value) if value > deleted => {
+                    format!("LT({},{})", value - 1, tap.trim())
+                }
+                _ => code.to_string(),
+            };
+        }
+    }
+    code.to_string()
+}
+
 pub(crate) fn hold_wrap(hold: &str, tap: &str) -> Option<String> {
     if let Some(n) = hold.strip_prefix("MO(").and_then(|r| r.strip_suffix(')')) {
         return Some(format!("LT({},{tap})", n.trim()));
@@ -208,5 +251,13 @@ mod tests {
             lt.hold.as_ref().and_then(KeyAction::qmk_code).as_deref(),
             Some("MO(2)")
         );
+    }
+
+    #[test]
+    fn removed_layer_references_are_cleared_or_shifted() {
+        assert_eq!(renumber_layer_ref("MO(2)", 2), "KC_NO");
+        assert_eq!(renumber_layer_ref("MO(4)", 2), "MO(3)");
+        assert_eq!(renumber_layer_ref("LT(2,KC_A)", 2), "KC_A");
+        assert_eq!(renumber_layer_ref("LT(4,KC_A)", 2), "LT(3,KC_A)");
     }
 }

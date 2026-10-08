@@ -69,9 +69,8 @@ impl App {
         geometry::voyager()
     }
 
-    /// Number of layers that come from the Oryx source (not counting the
-    /// user's own custom layers).
-    pub(super) fn oryx_layer_count(&self) -> u8 {
+    /// Number of layers in the immutable Oryx source, before draft removals.
+    fn oryx_source_layer_count(&self) -> u8 {
         self.layout
             .as_ref()
             .and_then(|l| l.revision.layers.iter().map(|layer| layer.position).max())
@@ -79,12 +78,31 @@ impl App {
             .unwrap_or(0)
     }
 
+    fn base_layer_count_for(&self, removed: &[u8]) -> u8 {
+        self.oryx_source_layer_count()
+            .saturating_sub(removed.len().min(u8::MAX as usize) as u8)
+    }
+
+    fn source_layer_for(removed: &[u8], logical: u8, source_count: u8) -> Option<u8> {
+        (0..source_count)
+            .filter(|source| !removed.contains(source))
+            .nth(logical as usize)
+    }
+
+    /// Number of Oryx-backed layers in the desired draft. The name is kept
+    /// because the rest of the UI treats this as the custom-layer boundary.
+    pub(super) fn oryx_layer_count(&self) -> u8 {
+        self.base_layer_count_for(&self.removed_layers)
+    }
+
     pub(super) fn layer_def(&self, n: u8) -> Option<&Layer> {
         let oryx = self.oryx_layer_count();
         if n < oryx {
+            let source =
+                Self::source_layer_for(&self.removed_layers, n, self.oryx_source_layer_count())?;
             self.layout
                 .as_ref()
-                .and_then(|l| l.revision.layers.iter().find(|la| la.position == n))
+                .and_then(|l| l.revision.layers.iter().find(|la| la.position == source))
         } else {
             self.synth_layers.get((n - oryx) as usize)
         }
@@ -96,7 +114,7 @@ impl App {
         layer: u8,
         key: usize,
     ) -> Option<OryxKey> {
-        let oryx = self.oryx_layer_count();
+        let oryx = self.base_layer_count_for(&state.removed_layers);
         if layer >= oryx {
             let custom = state.custom_layers.get((layer - oryx) as usize)?;
             return Some(
@@ -122,7 +140,19 @@ impl App {
         {
             return Some(synth_key(&edit.code));
         }
-        self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned()
+        let source =
+            Self::source_layer_for(&state.removed_layers, layer, self.oryx_source_layer_count())?;
+        self.layout
+            .as_ref()
+            .and_then(|layout| {
+                layout
+                    .revision
+                    .layers
+                    .iter()
+                    .find(|candidate| candidate.position == source)
+            })
+            .and_then(|layer| layer.keys.get(key))
+            .cloned()
     }
 
     /// Best available runtime projection for a physical key on the device.
@@ -135,7 +165,18 @@ impl App {
         }
         match self.firmware_state.as_ref() {
             Some(state) => self.key_from_firmware_state(state, layer, key),
-            None => self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned(),
+            None => self
+                .layout
+                .as_ref()
+                .and_then(|layout| {
+                    layout
+                        .revision
+                        .layers
+                        .iter()
+                        .find(|candidate| candidate.position == layer)
+                })
+                .and_then(|layer| layer.keys.get(key))
+                .cloned(),
         }
     }
 
@@ -158,6 +199,13 @@ impl App {
                 return self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned();
             }
             return self.key_from_firmware_state(profile, layer, key);
+        }
+        if self
+            .firmware_state
+            .as_ref()
+            .is_some_and(|state| state.removed_layers != self.removed_layers)
+        {
+            return self.layer_def(layer).and_then(|l| l.keys.get(key)).cloned();
         }
         self.device_key(layer, key)
     }
@@ -215,14 +263,28 @@ impl App {
             return Some(out);
         }
 
-        let oryx = self.oryx_layer_count();
+        let actual_removed = self
+            .firmware_state
+            .as_ref()
+            .map(|state| state.removed_layers.as_slice())
+            .unwrap_or(&[]);
+        let oryx = self.base_layer_count_for(actual_removed);
         if layer >= oryx {
             let state = self.firmware_state.as_ref()?;
             let custom = state.custom_layers.get((layer - oryx) as usize)?;
             return Some(self.synth_custom_layer(layer, custom));
         }
 
-        let mut out = self.layer_def(layer)?.clone();
+        let source = Self::source_layer_for(actual_removed, layer, self.oryx_source_layer_count())?;
+        let mut out = self
+            .layout
+            .as_ref()?
+            .revision
+            .layers
+            .iter()
+            .find(|candidate| candidate.position == source)?
+            .clone();
+        out.position = layer;
         for key in 0..out.keys.len() {
             if let Some(device) = self.device_key(layer, key) {
                 out.keys[key] = device;
@@ -274,7 +336,17 @@ impl App {
         if layer >= self.oryx_layer_count() {
             return self.layer_def(layer).cloned();
         }
-        let mut out = self.device_layer(layer)?;
+        let mut out = if self
+            .firmware_state
+            .as_ref()
+            .is_some_and(|state| state.removed_layers != self.removed_layers)
+        {
+            let mut desired = self.layer_def(layer)?.clone();
+            desired.position = layer;
+            desired
+        } else {
+            self.device_layer(layer)?
+        };
         for key in 0..out.keys.len() {
             if let Some(editing) = self.editing_key(layer, key) {
                 out.keys[key] = editing;
@@ -302,11 +374,16 @@ impl App {
         let Some(layout) = &self.layout else {
             return mask;
         };
+        let Some(source_layer) =
+            Self::source_layer_for(&self.removed_layers, layer, self.oryx_source_layer_count())
+        else {
+            return mask;
+        };
         for combo in layout
             .revision
             .combos
             .iter()
-            .filter(|combo| combo.layer_idx == layer)
+            .filter(|combo| combo.layer_idx == source_layer)
         {
             for &key in &combo.key_indices {
                 if let Some(member) = mask.get_mut(key) {
@@ -324,11 +401,16 @@ impl App {
         let Some(layout) = &self.layout else {
             return Vec::new();
         };
+        let Some(source_layer) =
+            Self::source_layer_for(&self.removed_layers, layer, self.oryx_source_layer_count())
+        else {
+            return Vec::new();
+        };
         layout
             .revision
             .combos
             .iter()
-            .filter(|combo| combo.layer_idx == layer && combo.key_indices.contains(&key))
+            .filter(|combo| combo.layer_idx == source_layer && combo.key_indices.contains(&key))
             .map(|combo| {
                 let chord = combo
                     .key_indices
@@ -398,6 +480,7 @@ impl App {
                     slots,
                 })
                 .collect(),
+            self.removed_layers.clone(),
             self.custom_layers.clone(),
             self.glow_work
                 .iter()
@@ -418,6 +501,7 @@ impl App {
             .as_ref()
             .filter(|state| self.profile_matches_layout(state))
         {
+            self.removed_layers = profile.removed_layers.clone();
             self.custom_layers = profile.custom_layers.clone();
             self.glow_work = profile
                 .glow
@@ -425,6 +509,11 @@ impl App {
                 .map(|g| ((g.layer, g.key as usize), g.rgb))
                 .collect();
         } else {
+            self.removed_layers = self
+                .firmware_state
+                .as_ref()
+                .map(|state| state.removed_layers.clone())
+                .unwrap_or_default();
             self.custom_layers = self
                 .firmware_state
                 .as_ref()
@@ -442,9 +531,7 @@ impl App {
     }
 
     pub(super) fn layer_count(&self) -> u8 {
-        (self.oryx_layer_count() + self.custom_layers.len() as u8)
-            .max(1)
-            .max(self.active_layer + 1)
+        (self.oryx_layer_count() + self.custom_layers.len() as u8).max(1)
     }
 
     /// True if layer `n` is one the user authored (editable in place, no Oryx
@@ -467,11 +554,24 @@ impl App {
             .as_ref()
             .filter(|state| state.layout_hash == hash && self.profile_matches_layout(state))
         {
+            self.removed_layers = profile.removed_layers.clone();
             self.custom_layers = profile.custom_layers.clone();
             self.rebuild_synth_layers();
             return;
         }
         let cfg = config::load();
+        self.removed_layers = cfg
+            .removed_layer_sets
+            .iter()
+            .find(|set| set.layout == hash)
+            .map(|set| set.layers.clone())
+            .unwrap_or_else(|| {
+                self.firmware_state
+                    .as_ref()
+                    .filter(|state| state.layout_hash == hash)
+                    .map(|state| state.removed_layers.clone())
+                    .unwrap_or_default()
+            });
         if let Some(set) = cfg.custom_layer_sets.iter().find(|s| s.layout == hash) {
             self.custom_layers = set.layers.clone();
         } else {
@@ -503,12 +603,18 @@ impl App {
             return;
         };
         let layers = self.custom_layers.clone();
+        let removed_layers = self.removed_layers.clone();
         self.persist_config("saving custom layers", move |cfg| {
             cfg.custom_layers.retain(|c| c.layout != hash);
             cfg.custom_layer_sets.retain(|s| s.layout != hash);
             cfg.custom_layer_sets.push(config::CustomLayerSet {
-                layout: hash,
+                layout: hash.clone(),
                 layers,
+            });
+            cfg.removed_layer_sets.retain(|set| set.layout != hash);
+            cfg.removed_layer_sets.push(config::RemovedLayerSet {
+                layout: hash,
+                layers: removed_layers,
             });
         });
         self.rebuild_synth_layers();
@@ -521,6 +627,7 @@ impl App {
         let minimap_layers = self.minimap_layers.clone();
         let state = LayoutScopedState {
             custom_layers: self.custom_layers.clone(),
+            removed_layers: self.removed_layers.clone(),
             glow_overrides: self
                 .glow_work
                 .iter()
@@ -647,14 +754,28 @@ impl App {
         self.follow = false;
     }
 
-    /// Remove custom layer `n`, renumbering everything that referred to a
-    /// higher layer down by one - so colors/effects/staged edits and
-    /// layer-switch keycodes don't silently point at the wrong layer.
-    pub(super) fn remove_custom_layer(&mut self, del: u8) {
-        let Some(i) = self.custom_index(del) else {
+    /// Remove any layer from the desired firmware draft. Oryx-backed layers
+    /// are identified by their immutable source position; custom layers are
+    /// removed from the appended layer list. Everything keyed by the logical
+    /// layer number is then shifted exactly once.
+    pub(super) fn remove_layer(&mut self, del: u8) {
+        if self.layer_count() <= 1 || del >= self.layer_count() {
             return;
-        };
-        self.custom_layers.remove(i);
+        }
+
+        let (before_edits, before_dances) = self.desired_firmware_maps();
+        if let Some(i) = self.custom_index(del) {
+            self.custom_layers.remove(i);
+        } else {
+            let Some(source) =
+                Self::source_layer_for(&self.removed_layers, del, self.oryx_source_layer_count())
+            else {
+                return;
+            };
+            self.removed_layers.push(source);
+            self.removed_layers.sort_unstable();
+            self.removed_layers.dedup();
+        }
 
         // 1. (layer, key)-keyed maps: drop the deleted layer, shift higher down.
         fn shift<V>(map: &mut HashMap<(u8, usize), V>, del: u8) {
@@ -668,8 +789,6 @@ impl App {
         shift(&mut self.glow_work, del);
         shift(&mut self.glow_saved, del);
         shift(&mut self.key_fx, del);
-        shift(&mut self.key_edits, del);
-        shift(&mut self.key_dances, del);
         super::peek::shift_minimap_layers_after_delete(&mut self.minimap_layers, del);
         let autolayer_rules_changed = shift_autolayer_rules_after_delete(&mut self.rules, del);
         self.peek_layer = if self.peek_layer > del {
@@ -686,40 +805,26 @@ impl App {
                 k.code = renumber_layer_ref(&k.code, del);
             }
         }
-        for code in self.key_edits.values_mut() {
-            *code = renumber_layer_ref(code, del);
-        }
-        for slots in self.key_dances.values_mut() {
-            for slot in slots.iter_mut().flatten() {
-                *slot = renumber_layer_ref(slot, del);
-            }
-        }
-
-        if let Some(state) = &self.firmware_state {
-            for edit in &state.edits {
-                let pos = (edit.layer, edit.key as usize);
-                let rewritten = renumber_layer_ref(&edit.code, del);
-                if rewritten != edit.code
-                    && !self.key_edits.contains_key(&pos)
-                    && !self.key_dances.contains_key(&pos)
-                {
-                    self.key_edits.insert(pos, rewritten);
-                }
-            }
-            for dance in &state.dances {
-                let pos = (dance.layer, dance.key as usize);
-                let mut rewritten = dance.slots.clone();
-                for slot in rewritten.iter_mut().flatten() {
+        self.key_edits = before_edits
+            .into_iter()
+            .filter(|((layer, _), _)| *layer != del)
+            .map(|((layer, key), code)| {
+                (
+                    (if layer > del { layer - 1 } else { layer }, key),
+                    renumber_layer_ref(&code, del),
+                )
+            })
+            .collect();
+        self.key_dances = before_dances
+            .into_iter()
+            .filter(|((layer, _), _)| *layer != del)
+            .map(|((layer, key), mut slots)| {
+                for slot in slots.iter_mut().flatten() {
                     *slot = renumber_layer_ref(slot, del);
                 }
-                if rewritten != dance.slots
-                    && !self.key_edits.contains_key(&pos)
-                    && !self.key_dances.contains_key(&pos)
-                {
-                    self.key_dances.insert(pos, rewritten);
-                }
-            }
-        }
+                ((if layer > del { layer - 1 } else { layer }, key), slots)
+            })
+            .collect();
 
         // Persist all layout-scoped state in one atomic config replacement.
         // A crash or disk error can no longer leave layer numbers renumbered in
@@ -995,6 +1100,7 @@ impl App {
 
         let layout_hash = state.layout_hash.clone();
         let custom_layers = state.custom_layers.clone();
+        let removed_layers = state.removed_layers.clone();
         let edits: Vec<_> = pending_edits
             .iter()
             .map(|(&(layer, key), code)| StagedEdit {
@@ -1014,7 +1120,14 @@ impl App {
             })
             .collect();
         if self.persist_config("confirming applied firmware state", move |cfg| {
-            reconcile_confirmed_layout_config(cfg, &layout_hash, &custom_layers, edits, dances);
+            reconcile_confirmed_layout_config(
+                cfg,
+                &layout_hash,
+                &custom_layers,
+                &removed_layers,
+                edits,
+                dances,
+            );
         }) {
             self.key_edits = pending_edits;
             self.key_dances = pending_dances;

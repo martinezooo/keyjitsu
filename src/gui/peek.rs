@@ -842,6 +842,7 @@ impl App {
                                     &no_press,
                                     None,
                                     Some(&combo_keys),
+                                    None,
                                     opacity,
                                     mono,
                                 );

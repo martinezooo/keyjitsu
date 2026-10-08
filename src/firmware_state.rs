@@ -59,6 +59,10 @@ pub struct FirmwareState {
     pub revision: String,
     pub edits: Vec<FirmwareEdit>,
     pub dances: Vec<FirmwareDance>,
+    /// Original Oryx layer positions removed before edits/custom layers are
+    /// applied. Stored centrally with the rest of the authored firmware state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_layers: Vec<u8>,
     pub custom_layers: Vec<CustomLayer>,
     #[serde(default)]
     pub glow: Vec<FirmwareGlow>,
@@ -70,6 +74,7 @@ impl FirmwareState {
         revision: String,
         mut edits: Vec<FirmwareEdit>,
         mut dances: Vec<FirmwareDance>,
+        mut removed_layers: Vec<u8>,
         mut custom_layers: Vec<CustomLayer>,
         mut glow: Vec<FirmwareGlow>,
     ) -> Self {
@@ -90,6 +95,8 @@ impl FirmwareState {
         }
         edits.sort_by_key(|e| (e.layer, e.key));
         dances.sort_by_key(|d| (d.layer, d.key));
+        removed_layers.sort_unstable();
+        removed_layers.dedup();
         for layer in &mut custom_layers {
             layer.keys.sort_by_key(|k| k.key);
         }
@@ -99,6 +106,7 @@ impl FirmwareState {
             revision,
             edits,
             dances,
+            removed_layers,
             custom_layers,
             glow,
         }
@@ -319,6 +327,7 @@ mod tests {
             "rev".into(),
             vec![],
             vec![],
+            vec![],
             vec![CustomLayer {
                 layout: "layout".into(),
                 name: "Extra".into(),
@@ -338,6 +347,7 @@ mod tests {
         let b = FirmwareState::new(
             "layout".into(),
             "rev".into(),
+            vec![],
             vec![],
             vec![],
             vec![CustomLayer {
@@ -379,6 +389,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         let b = FirmwareState::new(
             "layout".into(),
@@ -398,6 +409,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         );
         assert_eq!(a.state_id().unwrap(), b.state_id().unwrap());
         assert_eq!(a.state_id().unwrap().len(), STATE_ID_HEX_LEN);
@@ -405,8 +417,17 @@ mod tests {
 
     #[test]
     fn state_id_is_order_independent_for_glow_entries() {
-        let mk =
-            |glow| FirmwareState::new("layout".into(), "rev".into(), vec![], vec![], vec![], glow);
+        let mk = |glow| {
+            FirmwareState::new(
+                "layout".into(),
+                "rev".into(),
+                vec![],
+                vec![],
+                vec![],
+                vec![],
+                glow,
+            )
+        };
         let a = mk(vec![
             FirmwareGlow {
                 layer: 1,
@@ -449,6 +470,7 @@ mod tests {
                 key: 2,
                 slots: [Some("LGUI(LGUI(KC_A))".into()), None, None, None],
             }],
+            vec![],
             vec![CustomLayer {
                 layout: "layout".into(),
                 name: "Extra".into(),
@@ -479,6 +501,7 @@ mod tests {
             vec![],
             vec![],
             vec![],
+            vec![],
         );
         let path = dir.path().join("state.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
@@ -501,6 +524,7 @@ mod tests {
                 code: "LALT(LALT(KC_TAB))".into(),
             }],
             dances: vec![],
+            removed_layers: vec![],
             custom_layers: vec![],
             glow: vec![],
         };

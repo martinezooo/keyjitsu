@@ -12,6 +12,8 @@ use crate::legend::{key_kind, keycap_labels_for, KeyKind};
 use crate::oryx_api::Layer;
 
 pub const SELECTED: Color32 = Color32::from_rgb(0x22, 0xD3, 0xEE); // UI "selected" cyan
+/// Unpublished firmware change marker (orange, same family as the Draft banner).
+pub const PENDING: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
 const CAP: Color32 = Color32::from_rgb(242, 238, 220); // warm ivory
 const CAP_TOP: Color32 = Color32::from_rgb(250, 247, 234);
 const LEGEND: Color32 = Color32::from_rgb(30, 31, 34);
@@ -125,7 +127,8 @@ fn fitted_font(unit: f32, text: &str, base_scale: f32) -> FontId {
 /// legends, hit testing and key shapes stay in this one implementation.
 ///
 /// `glow[i]` = the color of key `i` (None → unlit). `selected` draws an accent
-/// ring. `alpha` (0..1) fades the whole drawing so it can be made see-through.
+/// ring. `pending_keys[i]` marks keys whose firmware change is not yet
+/// published (orange halo + outline). `alpha` (0..1) fades the whole drawing so it can be made see-through.
 /// The board is fitted to the available width and centered.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_keyboard(
@@ -136,6 +139,7 @@ pub fn draw_keyboard(
     pressed: &[bool],
     selected: Option<usize>,
     combo_keys: Option<&[bool]>,
+    pending_keys: Option<&[bool]>,
     alpha: f32,
     mono: bool,
 ) -> KbResponse {
@@ -196,11 +200,24 @@ pub fn draw_keyboard(
             .and_then(|keys| keys.get(i))
             .copied()
             .unwrap_or(false);
+        let is_pending = pending_keys
+            .and_then(|keys| keys.get(i))
+            .copied()
+            .unwrap_or(false);
         let color = glow.get(i).and_then(|c| *c);
 
         // Rotated path for the thumb keys (polygon + rotated text).
         if angle != 0.0 {
             let r = unit * 0.16;
+            if is_pending {
+                for (grow_mul, a) in [(1.0f32, 26u8), (0.62, 44), (0.3, 70)] {
+                    painter.add(eframe::egui::Shape::convex_polygon(
+                        key_poly(center, kw, kh, r, angle, gap * grow_mul),
+                        fade(Color32::from_rgba_unmultiplied(0xF5, 0x9E, 0x0B, a), alpha),
+                        Stroke::NONE,
+                    ));
+                }
+            }
             if mono {
                 let ink = Color32::WHITE;
                 let fill_a = if is_pressed { 0.55 } else { 0.14 };
@@ -235,6 +252,13 @@ pub fn draw_keyboard(
                     fade(tint, alpha),
                     Stroke::new(1.4, fade(edge, alpha)),
                 ));
+                if is_pending {
+                    painter.add(eframe::egui::Shape::convex_polygon(
+                        key_poly(center, kw, kh, r, angle, 1.5),
+                        Color32::TRANSPARENT,
+                        Stroke::new(2.2, fade(PENDING, alpha)),
+                    ));
+                }
                 if selected == Some(i) {
                     painter.add(eframe::egui::Shape::convex_polygon(
                         key_poly(center, kw, kh, r, angle, 3.0),
@@ -319,6 +343,17 @@ pub fn draw_keyboard(
             continue;
         }
 
+        if is_pending {
+            for (grow_mul, a) in [(1.0f32, 26u8), (0.62, 44), (0.3, 70)] {
+                let grow = gap * grow_mul;
+                painter.rect_filled(
+                    cap.expand(grow),
+                    CornerRadius::same(key_round + (grow * 0.5) as u8),
+                    fade(Color32::from_rgba_unmultiplied(0xF5, 0x9E, 0x0B, a), alpha),
+                );
+            }
+        }
+
         if mono {
             // High-contrast black & white: white outline + white legends, only
             // a faint fill so the desktop shows through. No colored glow.
@@ -401,6 +436,15 @@ pub fn draw_keyboard(
             Stroke::new(1.4, fade(edge, alpha)),
             StrokeKind::Inside,
         );
+
+        if is_pending {
+            painter.rect_stroke(
+                cap.expand(0.5),
+                radius,
+                Stroke::new(2.2, fade(PENDING, alpha)),
+                StrokeKind::Inside,
+            );
+        }
 
         // Selected is a UI state, distinct from the layout colors → cyan.
         if selected == Some(i) {

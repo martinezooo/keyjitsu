@@ -670,6 +670,7 @@ impl App {
                 &no_press,
                 None,
                 Some(&combo),
+                None,
                 1.0,
                 false,
             );
