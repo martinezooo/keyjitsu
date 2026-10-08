@@ -5,6 +5,8 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-10-08
+
 ### Changed
 - Layout: when **Build & flash** is disabled, the publish bar and Settings now
   say why (build or flash running, keyboard not connected, unknown firmware
