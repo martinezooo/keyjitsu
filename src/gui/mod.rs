@@ -119,6 +119,34 @@ pub fn run(serial: Option<String>) -> Result<()> {
     .map_err(|e| anyhow!("gui failed: {e}"))
 }
 
+/// One entry of the firmware draft diff. `target` is where the change lives
+/// in the Layout workspace (layer, optional key) so it can be revealed.
+struct PendingChange {
+    label: String,
+    target: Option<(u8, Option<usize>)>,
+}
+
+impl PendingChange {
+    fn key(label: String, layer: u8, key: usize) -> Self {
+        Self {
+            label,
+            target: Some((layer, Some(key))),
+        }
+    }
+    fn layer(label: String, layer: u8) -> Self {
+        Self {
+            label,
+            target: Some((layer, None)),
+        }
+    }
+    fn general(label: String) -> Self {
+        Self {
+            label,
+            target: None,
+        }
+    }
+}
+
 #[derive(PartialEq, Clone, Copy)]
 enum Tab {
     Live,
@@ -272,6 +300,8 @@ struct App {
     glow_work: HashMap<(u8, usize), [u8; 3]>, // being edited
     glow_saved: HashMap<(u8, usize), [u8; 3]>, // persisted snapshot
     selected_key: Option<usize>,              // shown in the Layout inspector
+    /// Which pending change the next "Review" click reveals (cycles).
+    review_cursor: usize,
     edit_color: [u8; 3],
     sync_glow: bool,  // mirror the glow onto the physical keyboard
     needs_push: bool, // re-push colors on next frame
@@ -870,6 +900,7 @@ impl App {
                 desc: String::new(),
                 high: true,
             },
+            review_cursor: 0,
             // KEYJITSU_SEL=<key index> preselects a key (QA screenshots).
             selected_key: std::env::var("KEYJITSU_SEL")
                 .ok()
@@ -1219,8 +1250,8 @@ impl App {
     /// One canonical, user-facing projection of the firmware draft diff. Both
     /// badges and the detail menu consume this list so new firmware-edit types
     /// cannot silently increment a counter without becoming inspectable.
-    fn pending_firmware_changes(&self) -> Vec<String> {
-        let mut changes = Vec::new();
+    fn pending_firmware_change_items(&self) -> Vec<PendingChange> {
+        let mut changes: Vec<PendingChange> = Vec::new();
         let (actual_edits, actual_dances) = self.actual_firmware_maps();
         let (desired_edits, desired_dances) = self.desired_firmware_maps();
         let mut keys = std::collections::BTreeSet::new();
@@ -1232,10 +1263,10 @@ impl App {
             if actual_edits.get(&(layer, key)) != desired_edits.get(&(layer, key))
                 || actual_dances.get(&(layer, key)) != desired_dances.get(&(layer, key))
             {
-                changes.push(format!(
-                    "{} · key {} — assignment",
-                    self.layer_name(layer),
-                    key + 1
+                changes.push(PendingChange::key(
+                    format!("{} · key {} — assignment", self.layer_name(layer), key + 1),
+                    layer,
+                    key,
                 ));
             }
         }
@@ -1246,10 +1277,10 @@ impl App {
         glow_keys.extend(device_glow.keys().copied());
         for (layer, key) in glow_keys {
             if self.glow_work.get(&(layer, key)) != device_glow.get(&(layer, key)) {
-                changes.push(format!(
-                    "{} · key {} — glow",
-                    self.layer_name(layer),
-                    key + 1
+                changes.push(PendingChange::key(
+                    format!("{} · key {} — glow", self.layer_name(layer), key + 1),
+                    layer,
+                    key,
                 ));
             }
         }
@@ -1273,12 +1304,14 @@ impl App {
                     })
                     .and_then(|layer| layer.title.as_deref())
                     .unwrap_or("unnamed layer");
-                changes.push(format!("Remove layer {name}"));
+                changes.push(PendingChange::general(format!("Remove layer {name}")));
             }
         }
         for source in actual_removed {
             if !self.removed_layers.contains(source) {
-                changes.push(format!("Restore Oryx layer {source}"));
+                changes.push(PendingChange::general(format!(
+                    "Restore Oryx layer {source}"
+                )));
             }
         }
 
@@ -1289,10 +1322,19 @@ impl App {
             .unwrap_or(&[]);
         for index in 0..actual_custom.len().max(self.custom_layers.len()) {
             match (actual_custom.get(index), self.custom_layers.get(index)) {
-                (None, Some(layer)) => changes.push(format!("Add layer {}", layer.name)),
-                (Some(layer), None) => changes.push(format!("Remove layer {}", layer.name)),
+                (None, Some(layer)) => changes.push(PendingChange::layer(
+                    format!("Add layer {}", layer.name),
+                    self.oryx_layer_count().saturating_add(index as u8),
+                )),
+                (Some(layer), None) => changes.push(PendingChange::general(format!(
+                    "Remove layer {}",
+                    layer.name
+                ))),
                 (Some(actual), Some(desired)) if actual != desired => {
-                    changes.push(format!("Update layer {}", desired.name));
+                    changes.push(PendingChange::layer(
+                        format!("Update layer {}", desired.name),
+                        self.oryx_layer_count().saturating_add(index as u8),
+                    ));
                 }
                 _ => {}
             }
@@ -1303,9 +1345,49 @@ impl App {
             .as_ref()
             .is_some_and(FirmwareState::needs_action_normalization)
         {
-            changes.push("Normalize legacy key actions".into());
+            changes.push(PendingChange::general(
+                "Normalize legacy key actions".into(),
+            ));
         }
         changes
+    }
+
+    fn pending_firmware_changes(&self) -> Vec<String> {
+        self.pending_firmware_change_items()
+            .into_iter()
+            .map(|change| change.label)
+            .collect()
+    }
+
+    /// Keys on `layer` that differ from what is currently on the keyboard,
+    /// used to mark them on the board map.
+    fn pending_key_mask(&self, layer: u8) -> Vec<bool> {
+        let mut mask = vec![false; self.geometry().len()];
+        for change in self.pending_firmware_change_items() {
+            if let Some((l, Some(key))) = change.target {
+                if l == layer {
+                    if let Some(slot) = mask.get_mut(key) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+        mask
+    }
+
+    /// Jump the Layout workspace to a pending change: switch to its layer and
+    /// select the key so the inspector opens on it.
+    fn jump_to_change(&mut self, target: (u8, Option<usize>)) {
+        let (layer, key) = target;
+        self.tab = Tab::Live;
+        self.follow = false;
+        self.view_layer = layer.min(self.layer_count().saturating_sub(1));
+        if let Some(key) = key {
+            self.selected_key = Some(key);
+            self.edit_color = self.current_key_srgb(self.view_layer, key);
+            self.sync_editor_from_key(self.view_layer, key);
+            self.edit_synced = Some((self.view_layer, key));
+        }
     }
 
     fn pending_firmware_count(&self) -> usize {

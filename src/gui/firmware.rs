@@ -326,11 +326,60 @@ impl App {
         ));
     }
 
+    /// Why "Build & flash" cannot run right now, in plain words (None = it can).
+    /// The publish bar shows this next to the disabled button so the user never
+    /// has to guess.
+    pub(super) fn publish_blocker(&self) -> Option<String> {
+        if self.build_busy {
+            return Some("A firmware build is already running.".into());
+        }
+        if self.flash_in_progress() {
+            return Some("Flashing is in progress.".into());
+        }
+        if self.connected.is_none() {
+            return Some(
+                "Keyboard not connected. Plug in the Voyager (and quit Keymapp) to publish.".into(),
+            );
+        }
+        if matches!(
+            self.device_state_kind(),
+            DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
+        ) {
+            return Some(
+                "Device firmware state is unknown, so building is paused to avoid overwriting it."
+                    .into(),
+            );
+        }
+        if !self.env.is_ready() {
+            let mut missing = Vec::new();
+            if !self.env.qmk_cli {
+                missing.push("qmk CLI");
+            }
+            if !self.env.arm_gcc {
+                missing.push("arm-gcc");
+            }
+            if self.env.firmware_dir.is_none() {
+                missing.push("qmk_firmware tree");
+            }
+            return Some(format!(
+                "Local QMK toolchain incomplete (missing: {}). See Settings → Local build.",
+                missing.join(", ")
+            ));
+        }
+        None
+    }
+
     /// One persistent publication bar for the Layout workspace. Every change
     /// description comes from the same canonical diff used by the build.
     pub(super) fn ui_publish_bar(&mut self, ui: &mut egui::Ui) {
-        let pending_changes = self.pending_firmware_changes();
-        let pending = pending_changes.len();
+        let pending_items = self.pending_firmware_change_items();
+        let pending = pending_items.len();
+        let blocker = if pending > 0 {
+            self.publish_blocker()
+        } else {
+            None
+        };
+        let mut jump: Option<(u8, Option<usize>)> = None;
         let glow_unsaved = self.unsaved_glow_count();
         let unknown_state = matches!(
             self.device_state_kind(),
@@ -355,11 +404,14 @@ impl App {
                     pal::AMBER,
                 )
             } else if pending > 0 {
-                (
-                    "Draft ready",
-                    "Review the exact firmware diff, then publish it to the keyboard.",
-                    pal::AMBER,
-                )
+                match &blocker {
+                    Some(reason) => ("Draft ready · can't publish yet", reason.as_str(), pal::AMBER),
+                    None => (
+                        "Draft ready",
+                        "Changed keys glow orange on the map. Review them, then publish to the keyboard.",
+                        pal::AMBER,
+                    ),
+                }
             } else if self.firmware_state_verified() {
                 ("Keyboard is up to date", "No unpublished firmware changes.", pal::GREEN)
             } else if self.device_state_kind() == DeviceStateKind::RecoveredLocalBuild {
@@ -369,38 +421,78 @@ impl App {
             };
 
             status_dot(ui, color == pal::GREEN);
+            // Leave room for the Review / Build buttons on the right; long
+            // reasons truncate here and show in full on hover.
+            let text_w = (ui.available_width() - 400.0).max(180.0);
             ui.vertical(|ui| {
-                ui.label(RichText::new(title).strong().size(12.5).color(color));
-                ui.label(RichText::new(detail).size(10.5).color(pal::TEXT_DIM));
+                ui.set_max_width(text_w);
+                ui.add(egui::Label::new(RichText::new(title).strong().size(12.5).color(color)).truncate());
+                ui.add(
+                    egui::Label::new(RichText::new(detail).size(10.5).color(pal::TEXT_DIM))
+                        .truncate(),
+                )
+                .on_hover_text(detail);
             });
 
             if pending > 0 {
                 ui.add_space(8.0);
-                ui.menu_button(
-                    RichText::new(format!(
-                        "Review {pending} change{}  ▾",
-                        if pending == 1 { "" } else { "s" }
-                    ))
-                    .strong()
-                    .color(pal::AMBER),
-                    |ui| {
-                        ui.set_min_width(340.0);
-                        ui.label(
-                            RichText::new("Next firmware build")
-                                .strong()
-                                .color(pal::TEXT),
-                        );
-                        ui.label(
-                            RichText::new("This list is generated from the build state, not maintained separately.")
-                                .size(10.5)
-                                .color(pal::TEXT_DIM),
-                        );
-                        ui.separator();
-                        for change in &pending_changes {
-                            ui.label(RichText::new(format!("• {change}")).color(pal::TEXT_MUTED));
+                // Clicking walks through the changed keys one by one: it
+                // switches to the right layer and selects the key. The ▾ menu
+                // lists them all for direct access.
+                let review = ui
+                    .button(
+                        RichText::new(format!(
+                            "Review {pending} change{}",
+                            if pending == 1 { "" } else { "s" }
+                        ))
+                        .strong()
+                        .color(pal::AMBER),
+                    )
+                    .on_hover_text("Jump to the changed key (click again for the next one). Changed keys glow orange on the map.");
+                if review.clicked() {
+                    let targets: Vec<_> = pending_items.iter().filter_map(|c| c.target).collect();
+                    if !targets.is_empty() {
+                        let idx = self.review_cursor % targets.len();
+                        jump = Some(targets[idx]);
+                        self.review_cursor = idx + 1;
+                    }
+                }
+                ui.menu_button(RichText::new("▾").strong().color(pal::AMBER), |ui| {
+                    ui.set_min_width(340.0);
+                    ui.label(
+                        RichText::new("Next firmware build")
+                            .strong()
+                            .color(pal::TEXT),
+                    );
+                    ui.label(
+                        RichText::new("Click a change to jump to it.")
+                            .size(10.5)
+                            .color(pal::TEXT_DIM),
+                    );
+                    ui.separator();
+                    for change in &pending_items {
+                        match change.target {
+                            Some(target) => {
+                                if ui
+                                    .add(egui::Button::new(
+                                        RichText::new(format!("• {}", change.label))
+                                            .color(pal::TEXT_MUTED),
+                                    ).frame(false))
+                                    .clicked()
+                                {
+                                    jump = Some(target);
+                                    ui.close();
+                                }
+                            }
+                            None => {
+                                ui.label(
+                                    RichText::new(format!("• {}", change.label))
+                                        .color(pal::TEXT_MUTED),
+                                );
+                            }
                         }
-                    },
-                );
+                    }
+                });
             }
 
             if glow_unsaved > 0 {
@@ -419,11 +511,10 @@ impl App {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if pending > 0 {
-                    let ready = self.env.is_ready()
-                        && self.connected.is_some()
-                        && !unknown_state
-                        && !self.build_busy
-                        && !self.flash_in_progress();
+                    let ready = blocker.is_none() && !unknown_state;
+                    let why = blocker.clone().unwrap_or_else(|| {
+                        "Device state is unknown, so building is paused.".into()
+                    });
                     if ui
                         .add_enabled(
                             ready,
@@ -433,9 +524,7 @@ impl App {
                             .fill(pal::VIOLET)
                             .min_size(egui::vec2(126.0, 32.0)),
                         )
-                        .on_disabled_hover_text(
-                            "Connect the keyboard and configure the local QMK toolchain to publish.",
-                        )
+                        .on_disabled_hover_text(why)
                         .clicked()
                     {
                         self.start_local_build(true);
@@ -443,6 +532,9 @@ impl App {
                 }
             });
         });
+        if let Some(target) = jump {
+            self.jump_to_change(target);
+        }
     }
 
     pub(super) fn ui_localbuild(&mut self, ui: &mut egui::Ui) {

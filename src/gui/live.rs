@@ -411,6 +411,7 @@ impl App {
         let editing_layer = self.editing_layer(view);
         let layer = editing_layer.as_ref();
         let combo_keys = self.combo_member_mask(view);
+        let pending_keys = self.pending_key_mask(view);
         let sel = self.selected_key;
         // The keyboard sits on its own raised canvas card with a soft top
         // sheen + shadow, so it reads as the main object.
@@ -441,6 +442,7 @@ impl App {
                             &self.pressed,
                             sel,
                             Some(&combo_keys),
+                            Some(&pending_keys),
                             1.0,
                             false,
                         )
