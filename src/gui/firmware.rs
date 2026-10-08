@@ -607,19 +607,22 @@ impl App {
             ui.weak("No pending firmware changes. Build can still reproduce the confirmed device state.");
         }
         ui.add_space(6.0);
+        let blocker = self.publish_blocker();
+        // Say why the build buttons are off instead of leaving them silently grey.
+        if let Some(reason) = &blocker {
+            ui.colored_label(pal::AMBER, format!("Build disabled: {reason}"));
+            ui.add_space(4.0);
+        }
         ui.horizontal_wrapped(|ui| {
-            let can = self.connected.is_some()
-                && !self.build_busy
-                && !matches!(
-                    self.device_state_kind(),
-                    DeviceStateKind::MissingFirmwareState | DeviceStateKind::UnknownDeviceIdentity
-                );
+            let can = blocker.is_none();
+            let why = blocker.clone().unwrap_or_default();
             if ui
                 .add_enabled(
                     can,
                     egui::Button::new(RichText::new("⚙ Build firmware").color(Color32::WHITE))
                         .fill(pal::VIOLET),
                 )
+                .on_disabled_hover_text(why.clone())
                 .clicked()
             {
                 self.start_local_build(false);
@@ -630,6 +633,7 @@ impl App {
                     egui::Button::new(RichText::new("⚡ Build & flash").color(Color32::WHITE))
                         .fill(pal::VIOLET),
                 )
+                .on_disabled_hover_text(why)
                 .clicked()
             {
                 self.start_local_build(true);

@@ -5,6 +5,13 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+### Changed
+- Layout: when **Build & flash** is disabled, the publish bar and Settings now
+  say why (build or flash running, keyboard not connected, unknown firmware
+  state, or which local QMK tools are missing). Keys with an unpublished
+  change glow orange on the Layout map, and **Review N changes** jumps to the
+  changed key (click again for the next one; the ▾ list jumps to any change).
+
 ### Added
 - The keyboard guard now verifies with hidutil itself that the remap really
   applied, instead of trusting a successful exit code (hidutil can return
