@@ -20,7 +20,7 @@ jobs:
     name: macOS
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install Rust toolchain
@@ -35,7 +35,7 @@ jobs:
           base="keyjitsu-${RELEASE_TAG}-macos-${arch}"
           ditto -c -k --keepParent target/release/Keyjitsu.app "${base}.zip"
           cp target/release/keyjitsu "${base}-cli"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-macos
           path: |
@@ -46,7 +46,7 @@ jobs:
     name: Linux x86_64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install build dependencies
@@ -64,7 +64,7 @@ jobs:
           cp target/release/keyjitsu "${base}/"
           cp README.md "${base}/"
           tar -czf "${base}.tar.gz" "${base}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-linux-x86_64
           path: keyjitsu-*-linux-x86_64.tar.gz
@@ -73,7 +73,7 @@ jobs:
     name: Windows x86_64
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
       - name: Install Rust toolchain
@@ -90,7 +90,7 @@ jobs:
           Copy-Item target/release/keyjitsu.exe "$base/keyjitsu.exe"
           Copy-Item README.md "$base/README.md"
           Compress-Archive -Path "$base/*" -DestinationPath "$base.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-windows-x86_64
           path: keyjitsu-*-windows-x86_64.zip
@@ -102,10 +102,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ env.RELEASE_TAG }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: release-*
           path: dist
