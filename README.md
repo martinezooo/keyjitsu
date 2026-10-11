@@ -243,6 +243,12 @@ built-in keyboard, and so does this command:
 hidutil property --matching '{"Product":"Apple Internal Keyboard / Trackpad"}' --set '{"UserKeyMapping":[]}'
 ```
 
+## Support
+
+Keyjitsu is a hobby project and is free to use. If you find it useful, you can
+[support my work on GitHub Sponsors](https://github.com/sponsors/martinezooo).
+Feedback and kind words mean a lot too.
+
 ## Acknowledgements
 
 Keyjitsu stands on open work from ZSA and the QMK community, and on the Rust
