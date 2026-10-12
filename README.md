@@ -246,7 +246,8 @@ hidutil property --matching '{"Product":"Apple Internal Keyboard / Trackpad"}' -
 ## Support
 
 Keyjitsu is a hobby project and is free to use. If you find it useful, you can
-[support my work on GitHub Sponsors](https://github.com/sponsors/martinezooo).
+[support my work on GitHub Sponsors](https://github.com/sponsors/martinezooo)
+or [buy me a coffee on Ko-fi](https://ko-fi.com/martinezooo).
 Feedback and kind words mean a lot too.
 
 ## Acknowledgements
