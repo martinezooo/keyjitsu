@@ -578,7 +578,10 @@ fn fetch_source_files(revision: &str) -> Result<Vec<(String, Vec<u8>)>> {
         if !f.is_file() {
             continue;
         }
-        let name = f.name().to_string();
+        let name = f
+            .name()
+            .context("reading source zip entry name")?
+            .into_owned();
         // Only the compilable source, not build.log / README / the prebuilt bin.
         let is_source = name.contains("_source/")
             && (name.ends_with(".c")
