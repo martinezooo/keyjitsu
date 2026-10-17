@@ -17,7 +17,7 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev libxkbcommon-dev libwayland-dev
@@ -39,7 +39,7 @@ jobs:
         run: set -o pipefail; cargo test --locked 2>&1 | tee test.log
       - name: Upload CI diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-diagnostics-${{ matrix.os }}
           path: |
@@ -57,7 +57,7 @@ jobs:
       issues: write
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Audit dependencies
