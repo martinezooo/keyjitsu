@@ -88,7 +88,7 @@ impl App {
         let mut request_remove = false;
         egui::Frame::new()
             .fill(pal::CARD)
-            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
             .corner_radius(egui::CornerRadius::same(10))
             .inner_margin(egui::Margin::symmetric(10, 7))
             .show(ui, |ui| {
@@ -115,7 +115,7 @@ impl App {
                         ))
                         .fill(if n == view { pal::VIOLET } else { pal::INPUT })
                         .stroke(egui::Stroke::new(
-                            1.0,
+                            1.0_f32,
                             if n == active { pal::CYAN } else { pal::BORDER },
                         ));
                         if ui.add(button).clicked() {
@@ -275,7 +275,7 @@ impl App {
             ui.add_space(7.0);
             egui::Frame::new()
                 .fill(pal::RED.gamma_multiply(0.12))
-                .stroke(egui::Stroke::new(1.0, pal::RED.gamma_multiply(0.55)))
+                .stroke(egui::Stroke::new(1.0_f32, pal::RED.gamma_multiply(0.55)))
                 .corner_radius(egui::CornerRadius::same(8))
                 .inner_margin(egui::Margin::symmetric(10, 7))
                 .show(ui, |ui| {
@@ -418,7 +418,7 @@ impl App {
         let clicked = {
             let frame = egui::Frame::new()
                 .fill(pal::CARD)
-                .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                 .corner_radius(egui::CornerRadius::same(14))
                 .inner_margin(egui::Margin::symmetric(14, 16))
                 .shadow(egui::epaint::Shadow {
@@ -524,7 +524,7 @@ impl App {
         ui.add_space(2.0);
         egui::Frame::new()
             .fill(pal::CARD)
-            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
             .corner_radius(egui::CornerRadius::same(9))
             .inner_margin(egui::Margin::symmetric(12, 6))
             .show(ui, |ui| {
@@ -532,7 +532,7 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     egui::Frame::new()
                         .fill(pal::INPUT)
-                        .stroke(egui::Stroke::new(2.0, key_col))
+                        .stroke(egui::Stroke::new(2.0_f32, key_col))
                         .corner_radius(egui::CornerRadius::same(7))
                         .inner_margin(egui::Margin::symmetric(9, 3))
                         .show(ui, |ui| {
@@ -603,7 +603,7 @@ impl App {
             ui.add_space(6.0);
             egui::Frame::new()
                 .fill(pal::CARD)
-                .stroke(egui::Stroke::new(1.0, pal::AMBER.gamma_multiply(0.55)))
+                .stroke(egui::Stroke::new(1.0_f32, pal::AMBER.gamma_multiply(0.55)))
                 .corner_radius(egui::CornerRadius::same(8))
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
@@ -646,7 +646,7 @@ impl App {
                 }
                 egui::Frame::new()
                     .fill(pal::CARD)
-                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                     .corner_radius(egui::CornerRadius::same(9))
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
@@ -655,7 +655,7 @@ impl App {
                         let tc = SLOT_COLORS[slot];
                         egui::Frame::new()
                             .fill(tc.gamma_multiply(0.28))
-                            .stroke(egui::Stroke::new(1.2, tc))
+                            .stroke(egui::Stroke::new(1.2_f32, tc))
                             .corner_radius(egui::CornerRadius::same(7))
                             .inner_margin(egui::Margin::symmetric(10, 3))
                             .show(ui, |ui| {
@@ -684,7 +684,7 @@ impl App {
                                     RichText::new("- pick…").size(13.0).color(pal::TEXT),
                                 )
                                 .fill(pal::INPUT)
-                                .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                                .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                                 .min_size(egui::vec2(96.0, 22.0));
                                 if ui
                                     .add_enabled(assignment_editable, chip_btn)
@@ -712,7 +712,7 @@ impl App {
                                             .color(pal::TEXT),
                                     )
                                     .fill(pal::INPUT)
-                                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                                    .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                                     .min_size(egui::vec2(80.0, 22.0));
                                     if ui
                                         .add_enabled(assignment_editable, chip_btn)
@@ -1050,7 +1050,7 @@ impl App {
                     .show(ui, |ui| {
                         egui::Frame::new()
                             .fill(pal::BG)
-                            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                            .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                             .corner_radius(egui::CornerRadius::same(6))
                             .inner_margin(egui::Margin::same(8))
                             .show(ui, |ui| {

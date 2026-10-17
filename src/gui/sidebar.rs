@@ -769,7 +769,7 @@ impl App {
                 // Key chip.
                 egui::Frame::new()
                     .fill(pal::INPUT)
-                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {

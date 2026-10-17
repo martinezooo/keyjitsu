@@ -224,7 +224,7 @@ pub fn draw_keyboard(
                 painter.add(eframe::egui::Shape::convex_polygon(
                     key_poly(center, kw, kh, r, angle, 0.0),
                     fade(Color32::WHITE, alpha * fill_a),
-                    Stroke::new(if is_pressed { 2.6 } else { 1.6 }, fade(ink, alpha)),
+                    Stroke::new(if is_pressed { 2.6_f32 } else { 1.6_f32 }, fade(ink, alpha)),
                 ));
             } else {
                 if let Some(c) = color {
@@ -250,20 +250,20 @@ pub fn draw_keyboard(
                 painter.add(eframe::egui::Shape::convex_polygon(
                     key_poly(center, kw, kh, r, angle, 0.0),
                     fade(tint, alpha),
-                    Stroke::new(1.4, fade(edge, alpha)),
+                    Stroke::new(1.4_f32, fade(edge, alpha)),
                 ));
                 if is_pending {
                     painter.add(eframe::egui::Shape::convex_polygon(
                         key_poly(center, kw, kh, r, angle, 1.5),
                         Color32::TRANSPARENT,
-                        Stroke::new(2.2, fade(PENDING, alpha)),
+                        Stroke::new(2.2_f32, fade(PENDING, alpha)),
                     ));
                 }
                 if selected == Some(i) {
                     painter.add(eframe::egui::Shape::convex_polygon(
                         key_poly(center, kw, kh, r, angle, 3.0),
                         Color32::TRANSPARENT,
-                        Stroke::new(2.4, fade(SELECTED, alpha)),
+                        Stroke::new(2.4_f32, fade(SELECTED, alpha)),
                     ));
                 }
             }
@@ -363,14 +363,14 @@ pub fn draw_keyboard(
             painter.rect_stroke(
                 cap,
                 radius,
-                Stroke::new(if is_pressed { 2.6 } else { 1.6 }, fade(ink, alpha)),
+                Stroke::new(if is_pressed { 2.6_f32 } else { 1.6_f32 }, fade(ink, alpha)),
                 StrokeKind::Inside,
             );
             if selected == Some(i) {
                 painter.rect_stroke(
                     cap.expand(3.0),
                     CornerRadius::same(key_round + 2),
-                    Stroke::new(2.4, fade(SELECTED, alpha)),
+                    Stroke::new(2.4_f32, fade(SELECTED, alpha)),
                     StrokeKind::Outside,
                 );
             }
@@ -433,7 +433,7 @@ pub fn draw_keyboard(
         painter.rect_stroke(
             cap,
             radius,
-            Stroke::new(1.4, fade(edge, alpha)),
+            Stroke::new(1.4_f32, fade(edge, alpha)),
             StrokeKind::Inside,
         );
 
@@ -441,7 +441,7 @@ pub fn draw_keyboard(
             painter.rect_stroke(
                 cap.expand(0.5),
                 radius,
-                Stroke::new(2.2, fade(PENDING, alpha)),
+                Stroke::new(2.2_f32, fade(PENDING, alpha)),
                 StrokeKind::Inside,
             );
         }
@@ -451,13 +451,13 @@ pub fn draw_keyboard(
             painter.rect_stroke(
                 cap.expand(1.5),
                 radius,
-                Stroke::new(1.5, fade(SELECTED.gamma_multiply(0.4), alpha)),
+                Stroke::new(1.5_f32, fade(SELECTED.gamma_multiply(0.4), alpha)),
                 StrokeKind::Outside,
             );
             painter.rect_stroke(
                 cap.expand(3.0),
                 CornerRadius::same(key_round + 2),
-                Stroke::new(2.4, fade(SELECTED, alpha)),
+                Stroke::new(2.4_f32, fade(SELECTED, alpha)),
                 StrokeKind::Outside,
             );
         }

@@ -597,6 +597,7 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "macos")]
     pub(super) fn ui_guard(&mut self, ui: &mut egui::Ui) {
         #[cfg(target_os = "macos")]
         {

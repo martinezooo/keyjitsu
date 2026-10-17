@@ -482,6 +482,7 @@ pub fn load() -> Config {
 /// Read the current config without creating recovery files on parse errors.
 /// Used by the running GUI for hot reloads, where a third-party editor may
 /// briefly expose an incomplete write before its final atomic replacement.
+#[cfg(target_os = "macos")]
 pub fn load_snapshot() -> Result<Config> {
     let p = path()?;
     let bytes = match std::fs::read(&p) {

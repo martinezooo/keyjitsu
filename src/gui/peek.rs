@@ -783,7 +783,7 @@ impl App {
                 };
                 let card_stroke = if show_bg {
                     egui::Stroke::new(
-                        1.0,
+                        1.0_f32,
                         Color32::from_rgba_unmultiplied(
                             accent.r(),
                             accent.g(),
@@ -920,7 +920,7 @@ fn minimap_instruction_panel(
             (a as f32 * 0.82) as u8,
         ))
         .stroke(egui::Stroke::new(
-            1.0,
+            1.0_f32,
             Color32::from_rgba_unmultiplied(
                 accent.r(),
                 accent.g(),
