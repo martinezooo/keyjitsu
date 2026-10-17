@@ -483,7 +483,7 @@ pub fn any_cached_layout(geometry: &str) -> Option<(LayoutId, Layout)> {
             Some((mtime, e.path()))
         })
         .collect();
-    hits.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    hits.sort_by_key(|a| std::cmp::Reverse(a.0)); // newest first
     hits.into_iter().find_map(|(_, path)| {
         let bytes = read_layout_cache(&path).ok()?;
         let layout = parse_layout(&bytes).ok()?;

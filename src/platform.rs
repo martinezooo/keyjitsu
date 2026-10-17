@@ -1,4 +1,6 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -66,11 +68,7 @@ pub fn autostart_location() -> Option<PathBuf> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn autostart_location() -> Option<PathBuf> {
-    None
-}
-
+#[cfg(target_os = "macos")]
 pub fn autostart_enabled() -> bool {
     autostart_location().is_some_and(|p| p.exists())
 }

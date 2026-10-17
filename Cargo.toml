@@ -1,6 +1,6 @@
 [package]
 name = "keyjitsu"
-version = "0.9.14"
+version = "0.10.0-beta.1"
 edition = "2021"
 description = "GUI and CLI manager for the ZSA Voyager: live layout, heatmap, per-key RGB and effects, local QMK builds with tap dances, a layer minimap. No daemon, no cloud."
 repository = "https://github.com/martinezooo/keyjitsu"
@@ -27,7 +27,7 @@ eframe = "0.32.3"
 tempfile = "3.27"
 
 zapp-core = { git = "https://github.com/zsa/zapp" }
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

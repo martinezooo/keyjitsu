@@ -83,7 +83,7 @@ impl App {
         ui.add_space(10.0);
         egui::Frame::new()
             .fill(pal::CARD)
-            .stroke(egui::Stroke::new(1.0, pal::BORDER))
+            .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
             .corner_radius(egui::CornerRadius::same(12))
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
@@ -200,7 +200,7 @@ impl App {
                     ui.add_space(pad);
                     egui::Frame::new()
                         .fill(pal::CARD)
-                        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                         .corner_radius(egui::CornerRadius::same(14))
                         .inner_margin(egui::Margin::symmetric(14, 16))
                         .show(ui, |ui| {
@@ -283,7 +283,7 @@ impl App {
                 ui.set_width(right_w);
                 egui::Frame::new()
                     .fill(pal::CARD)
-                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                     .corner_radius(egui::CornerRadius::same(12))
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {

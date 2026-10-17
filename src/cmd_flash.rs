@@ -22,6 +22,73 @@ const ORYX_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_FIRMWARE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_LATEST_RESPONSE_BYTES: u64 = 64 * 1024;
 
+fn is_voyager_bootloader(vid: u16, pid: u16) -> bool {
+    vid == device::ids::ZSA_VID && matches!(pid, 0x0791 | 0x1791)
+}
+
+fn is_voyager_firmware_target(vid: u16, pid: u16) -> bool {
+    is_voyager_bootloader(vid, pid)
+}
+
+fn validate_voyager_firmware(firmware: &Firmware) -> Result<()> {
+    let is_voyager_image = match firmware {
+        Firmware::DfuBinary { vid, pid, .. } => is_voyager_firmware_target(*vid, *pid),
+        Firmware::IgnitionDual { primary, alternate } => {
+            is_voyager_bootloader(primary.vid, primary.pid)
+                && is_voyager_bootloader(alternate.vid, alternate.pid)
+                && primary.pid != alternate.pid
+        }
+        Firmware::IntelHex { .. } => false,
+    };
+    if !is_voyager_image {
+        bail!("refusing to flash firmware whose target is not Voyager Ignition");
+    }
+    Ok(())
+}
+
+fn validate_voyager_flash_target(vid: u16, pid: u16) -> Result<()> {
+    if !is_voyager_bootloader(vid, pid) {
+        bail!("refusing to flash non-Voyager bootloader {vid:04x}:{pid:04x}");
+    }
+    Ok(())
+}
+
+/// Fail closed unless the image matches the exact Ignition MCU variant.
+/// zapp-core checks the protocol family, but not the exact single-image PID.
+pub fn validate_voyager_flash_pair(vid: u16, pid: u16, firmware: &Firmware) -> Result<()> {
+    validate_voyager_flash_target(vid, pid)?;
+    validate_voyager_firmware(firmware)?;
+
+    match firmware {
+        Firmware::DfuBinary {
+            vid: image_vid,
+            pid: image_pid,
+            ..
+        } if *image_vid == vid && *image_pid == pid => Ok(()),
+        Firmware::IgnitionDual { primary, alternate }
+            if (primary.vid == vid && primary.pid == pid)
+                || (alternate.vid == vid && alternate.pid == pid) =>
+        {
+            Ok(())
+        }
+        _ => bail!(
+            "refusing to flash firmware variant that does not match Voyager bootloader {vid:04x}:{pid:04x}"
+        ),
+    }
+}
+
+/// Select a single candidate before opening USB; ambiguity must never result
+/// in flashing whichever device happened to enumerate first.
+fn unique_voyager_bootloader(ids: &[(u16, u16)]) -> Result<Option<usize>> {
+    let mut match_index = None;
+    for (index, &(vid, pid)) in ids.iter().enumerate() {
+        if is_voyager_bootloader(vid, pid) && match_index.replace(index).is_some() {
+            bail!("multiple Voyager bootloaders found; disconnect the others before flashing");
+        }
+    }
+    Ok(match_index)
+}
+
 /// Resolve a firmware image from `--latest` / URL / file path. Shared with
 /// the GUI flash tab.
 pub fn acquire_firmware(
@@ -29,7 +96,7 @@ pub fn acquire_firmware(
     latest: bool,
     current_serial: Option<&str>,
 ) -> Result<Firmware> {
-    match (latest, target) {
+    let firmware = match (latest, target) {
         (true, _) => {
             let serial = current_serial
                 .context("--latest needs the connected keyboard's firmware identity")?;
@@ -44,7 +111,9 @@ pub fn acquire_firmware(
         (false, None) => {
             bail!("pass a firmware file or an Oryx URL, or use --latest to update in place")
         }
-    }
+    }?;
+    validate_voyager_firmware(&firmware)?;
+    Ok(firmware)
 }
 
 pub fn wait_for_bootloader(
@@ -53,24 +122,70 @@ pub fn wait_for_bootloader(
     on_found: impl Fn(&'static str),
 ) -> Result<device::BootloaderDevice> {
     let deadline = Instant::now() + timeout;
+    // Require a fresh manual reset, rather than selecting a stale bootloader
+    // already connected when flashing is requested.
+    let initial: Vec<_> = nusb::list_devices()
+        .wait()
+        .context("listing USB devices")?
+        .map(|info| (info.vendor_id(), info.product_id()))
+        .collect();
+    if unique_voyager_bootloader(&initial)?.is_some() {
+        bail!(
+            "a Voyager is already in bootloader mode; disconnect it, restart flashing, then press RESET"
+        );
+    }
+
     loop {
         if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
             bail!("canceled");
         }
 
-        for info in nusb::list_devices().wait().context("listing USB devices")? {
-            let vid = info.vendor_id();
-            let pid = info.product_id();
-            let Some(kind) = device::ids::identify_bootloader(vid, pid) else {
-                continue;
-            };
+        let devices: Vec<_> = nusb::list_devices()
+            .wait()
+            .context("listing USB devices")?
+            .collect();
+        let identities: Vec<_> = devices
+            .iter()
+            .map(|info| (info.vendor_id(), info.product_id()))
+            .collect();
+        if let Some(index) = unique_voyager_bootloader(&identities)? {
+            let info = &devices[index];
+            let (vid, pid) = identities[index];
+            let original_bus = info.bus_id().to_owned();
+            let original_address = info.device_address();
+            let kind = device::ids::identify_bootloader(vid, pid)
+                .context("Voyager bootloader is not supported by zapp-core")?;
 
             std::thread::sleep(Duration::from_millis(500));
             if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
                 bail!("canceled");
             }
 
-            let usb = info.open().wait().context("opening bootloader device")?;
+            // Re-enumerate before opening so that a second device connected
+            // during the debounce interval cannot silently redirect flashing.
+            let current: Vec<_> = nusb::list_devices()
+                .wait()
+                .context("rechecking USB devices")?
+                .collect();
+            let current_ids: Vec<_> = current
+                .iter()
+                .map(|item| (item.vendor_id(), item.product_id()))
+                .collect();
+            let Some(current_index) = unique_voyager_bootloader(&current_ids)? else {
+                continue;
+            };
+            let current_info = &current[current_index];
+            if current_ids[current_index] != (vid, pid)
+                || current_info.bus_id() != original_bus
+                || current_info.device_address() != original_address
+            {
+                bail!("Voyager bootloader changed while waiting; refusing to flash");
+            }
+
+            let usb = current_info
+                .open()
+                .wait()
+                .context("opening bootloader device")?;
             let name = device::ids::friendly_name(vid, pid);
             on_found(name);
             return Ok(device::BootloaderDevice {
@@ -119,6 +234,7 @@ pub fn run(
     })
     .context("bootloader detection failed")?;
 
+    validate_voyager_flash_pair(dev.vid, dev.pid, &fw)?;
     flash::flash_device(&dev, &fw, &|p| match p {
         FlashProgress::Erasing {
             bytes_erased,
@@ -142,11 +258,7 @@ pub fn run(
 }
 
 fn pct(done: usize, total: usize) -> usize {
-    if total == 0 {
-        100
-    } else {
-        done * 100 / total
-    }
+    done.saturating_mul(100).checked_div(total).unwrap_or(100)
 }
 
 fn read_connected_firmware_serial(serial_filter: Option<&str>) -> Result<String> {
@@ -259,6 +371,7 @@ pub fn firmware_summary(fw: &Firmware) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zapp_core::firmware::DfuImage;
 
     #[test]
     fn latest_requires_a_captured_connected_identity() {
@@ -277,5 +390,125 @@ mod tests {
     fn percent_handles_empty_and_normal_progress() {
         assert_eq!(pct(0, 0), 100);
         assert_eq!(pct(50, 100), 50);
+    }
+
+    #[test]
+    fn voyager_ignition_bootloader_ids_are_allowed() {
+        assert!(is_voyager_bootloader(device::ids::ZSA_VID, 0x0791));
+        assert!(is_voyager_bootloader(device::ids::ZSA_VID, 0x1791));
+    }
+
+    #[test]
+    fn other_zapp_bootloader_ids_are_rejected() {
+        assert!(!is_voyager_bootloader(device::ids::ZSA_VID, 0x2003));
+        assert!(!is_voyager_bootloader(
+            device::ids::STM32_VID,
+            device::ids::STM32_DFU_PID
+        ));
+        assert!(!is_voyager_bootloader(
+            device::ids::HALFKAY_VID,
+            device::ids::HALFKAY_PID
+        ));
+        assert!(!is_voyager_bootloader(0x1234, 0x0791));
+    }
+
+    #[test]
+    fn flash_target_validation_rejects_wrong_device_and_firmware() {
+        let voyager = Firmware::DfuBinary {
+            data: vec![],
+            vid: device::ids::ZSA_VID,
+            pid: 0x0791,
+        };
+        assert!(validate_voyager_firmware(&voyager).is_ok());
+        assert!(validate_voyager_flash_target(device::ids::ZSA_VID, 0x0791).is_ok());
+        assert!(validate_voyager_flash_target(device::ids::ZSA_VID, 0x2003).is_err());
+
+        let voyager_normal_pid = Firmware::DfuBinary {
+            data: vec![],
+            vid: device::ids::ZSA_VID,
+            pid: 0x1977,
+        };
+        assert!(validate_voyager_firmware(&voyager_normal_pid).is_err());
+
+        let moonlander = Firmware::DfuBinary {
+            data: vec![],
+            vid: device::ids::ZSA_VID,
+            pid: 0x2003,
+        };
+        assert!(validate_voyager_firmware(&moonlander).is_err());
+
+        let voyager_dual = Firmware::IgnitionDual {
+            primary: DfuImage {
+                data: vec![],
+                vid: device::ids::ZSA_VID,
+                pid: 0x0791,
+            },
+            alternate: DfuImage {
+                data: vec![],
+                vid: device::ids::ZSA_VID,
+                pid: 0x1791,
+            },
+        };
+        assert!(validate_voyager_firmware(&voyager_dual).is_ok());
+    }
+
+    #[test]
+    fn flash_pair_rejects_cross_mcu_image_and_wrong_vendor() {
+        for image_pid in [0x0791, 0x1791] {
+            let firmware = Firmware::DfuBinary {
+                data: vec![1, 2, 3],
+                vid: device::ids::ZSA_VID,
+                pid: image_pid,
+            };
+            assert!(
+                validate_voyager_flash_pair(device::ids::ZSA_VID, image_pid, &firmware).is_ok()
+            );
+            let other_pid = if image_pid == 0x0791 { 0x1791 } else { 0x0791 };
+            assert!(
+                validate_voyager_flash_pair(device::ids::ZSA_VID, other_pid, &firmware).is_err()
+            );
+            assert!(validate_voyager_flash_pair(0x1234, image_pid, &firmware).is_err());
+        }
+    }
+
+    #[test]
+    fn dual_flash_pair_allows_both_mcu_variants() {
+        let firmware = Firmware::IgnitionDual {
+            primary: DfuImage {
+                data: vec![1],
+                vid: device::ids::ZSA_VID,
+                pid: 0x0791,
+            },
+            alternate: DfuImage {
+                data: vec![2],
+                vid: device::ids::ZSA_VID,
+                pid: 0x1791,
+            },
+        };
+        for pid in [0x0791, 0x1791] {
+            assert!(validate_voyager_flash_pair(device::ids::ZSA_VID, pid, &firmware).is_ok());
+        }
+    }
+
+    #[test]
+    fn bootloader_selection_fails_closed_on_ambiguity() {
+        assert_eq!(unique_voyager_bootloader(&[]).unwrap(), None);
+        assert_eq!(
+            unique_voyager_bootloader(&[(device::ids::ZSA_VID, 0x2003)]).unwrap(),
+            None
+        );
+        assert_eq!(
+            unique_voyager_bootloader(&[
+                (device::ids::ZSA_VID, 0x2003),
+                (device::ids::ZSA_VID, 0x0791),
+            ])
+            .unwrap(),
+            Some(1)
+        );
+        assert!(unique_voyager_bootloader(&[
+            (device::ids::ZSA_VID, 0x0791),
+            (device::ids::ZSA_VID, 0x1791),
+        ])
+        .is_err());
     }
 }

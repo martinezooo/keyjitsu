@@ -13,6 +13,10 @@ pub const ZSA_VID: u16 = 0x3297;
 pub const RAW_USAGE_PAGE: u16 = 0xFF60;
 pub const RAW_USAGE: u16 = 0x61;
 
+fn is_voyager(vid: u16, pid: u16) -> bool {
+    vid == ZSA_VID && matches!(pid, 0x1977 | 0x1978)
+}
+
 pub fn model_name(pid: u16) -> &'static str {
     match pid {
         0x1977 | 0x1978 => "Voyager",
@@ -44,7 +48,10 @@ pub fn hid_api() -> Result<HidApi> {
 pub fn enumerate(api: &HidApi) -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
     for d in api.device_list() {
-        if d.vendor_id() != ZSA_VID || d.usage_page() != RAW_USAGE_PAGE || d.usage() != RAW_USAGE {
+        if !is_voyager(d.vendor_id(), d.product_id())
+            || d.usage_page() != RAW_USAGE_PAGE
+            || d.usage() != RAW_USAGE
+        {
             continue;
         }
         if found.iter().any(|f| f.path.as_c_str() == d.path()) {
@@ -215,5 +222,23 @@ impl Keyboard {
     /// Politely tell the firmware to stop streaming (clears paired state).
     pub fn disconnect(&self) {
         let _ = self.send(Command::Disconnect);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voyager_normal_mode_ids_are_allowed() {
+        assert!(is_voyager(ZSA_VID, 0x1977));
+        assert!(is_voyager(ZSA_VID, 0x1978));
+    }
+
+    #[test]
+    fn non_voyager_normal_mode_ids_are_rejected() {
+        assert!(!is_voyager(ZSA_VID, 0x1969));
+        assert!(!is_voyager(ZSA_VID, 0x1972));
+        assert!(!is_voyager(0x1234, 0x1977));
     }
 }

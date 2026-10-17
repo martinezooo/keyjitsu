@@ -642,31 +642,31 @@ fn setup_style(ctx: &egui::Context) {
     v.override_text_color = Some(pal::TEXT);
     v.panel_fill = pal::SURFACE;
     v.window_fill = pal::SURFACE;
-    v.window_stroke = Stroke::new(1.0, pal::BORDER);
+    v.window_stroke = Stroke::new(1.0_f32, pal::BORDER);
     v.extreme_bg_color = pal::INPUT; // text-edit background
     v.faint_bg_color = pal::CARD;
     v.hyperlink_color = pal::CYAN;
     v.selection.bg_fill = pal::VIOLET.gamma_multiply(0.40);
-    v.selection.stroke = Stroke::new(1.0, pal::VIOLET);
+    v.selection.stroke = Stroke::new(1.0_f32, pal::VIOLET);
     v.window_corner_radius = CornerRadius::same(12);
     v.menu_corner_radius = CornerRadius::same(8);
 
     let round = CornerRadius::same(7);
     let w = &mut v.widgets;
     w.noninteractive.corner_radius = round;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, pal::BORDER);
+    w.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal::BORDER);
     w.inactive.corner_radius = round;
     w.inactive.bg_fill = pal::RAISED;
     w.inactive.weak_bg_fill = pal::RAISED;
-    w.inactive.bg_stroke = Stroke::new(1.0, pal::BORDER);
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, pal::BORDER);
     w.hovered.corner_radius = round;
     w.hovered.bg_fill = pal::HOVER;
     w.hovered.weak_bg_fill = pal::HOVER;
-    w.hovered.bg_stroke = Stroke::new(1.0, pal::VIOLET.gamma_multiply(0.7));
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, pal::VIOLET.gamma_multiply(0.7));
     w.active.corner_radius = round;
     w.active.bg_fill = pal::VIOLET.gamma_multiply(0.65);
     w.active.weak_bg_fill = pal::VIOLET.gamma_multiply(0.6);
-    w.active.bg_stroke = Stroke::new(1.0, pal::VIOLET);
+    w.active.bg_stroke = Stroke::new(1.0_f32, pal::VIOLET);
     w.open.corner_radius = round;
 
     style.visuals = v;
@@ -1599,7 +1599,7 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(pal::SURFACE)
-                    .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                    .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                     .inner_margin(egui::Margin::symmetric(12, 12)),
             )
             .show(ctx, |ui| {
@@ -1738,7 +1738,7 @@ impl App {
                 .frame(
                     egui::Frame::new()
                         .fill(pal::CARD)
-                        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                         .inner_margin(egui::Margin::symmetric(16, 9)),
                 )
                 .show(ctx, |ui| self.ui_publish_bar(ui));
@@ -1750,7 +1750,7 @@ impl App {
                 .frame(
                     egui::Frame::new()
                         .fill(pal::SURFACE)
-                        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+                        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
                         .inner_margin(egui::Margin::symmetric(14, 12)),
                 )
                 .show(ctx, |ui| {
@@ -2012,7 +2012,7 @@ fn sidebar_status_row(
 fn status_pill(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     egui::Frame::new()
         .fill(color.gamma_multiply(0.16))
-        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.55)))
+        .stroke(egui::Stroke::new(1.0_f32, color.gamma_multiply(0.55)))
         .corner_radius(egui::CornerRadius::same(20))
         .inner_margin(egui::Margin::symmetric(10, 3))
         .show(ui, |ui| {
@@ -2057,7 +2057,7 @@ fn tool_card(
 ) {
     egui::Frame::new()
         .fill(pal::CARD)
-        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
@@ -2198,7 +2198,7 @@ fn page_header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
 fn card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
         .fill(pal::CARD)
-        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
         .corner_radius(egui::CornerRadius::same(10))
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
@@ -2253,7 +2253,7 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(radius as u8),
-        egui::Stroke::new(1.0, if *on { pal::VIOLET } else { pal::BORDER }),
+        egui::Stroke::new(1.0_f32, if *on { pal::VIOLET } else { pal::BORDER }),
         egui::StrokeKind::Inside,
     );
     let cx = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
@@ -2307,7 +2307,7 @@ fn position_grid(ui: &mut egui::Ui, valign: &mut VAlign, halign: &mut HAlign) {
     ];
     egui::Frame::new()
         .fill(pal::INPUT)
-        .stroke(egui::Stroke::new(1.0, pal::BORDER))
+        .stroke(egui::Stroke::new(1.0_f32, pal::BORDER))
         .corner_radius(egui::CornerRadius::same(8))
         .inner_margin(egui::Margin::same(4))
         .show(ui, |ui| {
@@ -2415,7 +2415,10 @@ fn combo_strip(ui: &mut egui::Ui, entries: &[ComboChip], a: f32, accent: Color32
             };
             egui::Frame::new()
                 .fill(fill)
-                .stroke(egui::Stroke::new(if c.held { 1.6 } else { 1.0 }, border))
+                .stroke(egui::Stroke::new(
+                    if c.held { 1.6_f32 } else { 1.0_f32 },
+                    border,
+                ))
                 .corner_radius(egui::CornerRadius::same(6))
                 .inner_margin(egui::Margin::symmetric(7, 3))
                 .show(ui, |ui| {

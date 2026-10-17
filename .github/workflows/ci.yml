@@ -26,13 +26,17 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
           rustup default stable
       - name: Format
-        run: cargo fmt --all -- --check 2>&1 | tee fmt.log
+        shell: bash
+        run: set -o pipefail; cargo fmt --all -- --check 2>&1 | tee fmt.log
       - name: Build
-        run: cargo build --locked 2>&1 | tee build.log
+        shell: bash
+        run: set -o pipefail; cargo build --locked 2>&1 | tee build.log
       - name: Clippy (warnings are errors)
-        run: cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
+        shell: bash
+        run: set -o pipefail; cargo clippy --all-targets --locked -- -D warnings 2>&1 | tee clippy.log
       - name: Test
-        run: cargo test --locked 2>&1 | tee test.log
+        shell: bash
+        run: set -o pipefail; cargo test --locked 2>&1 | tee test.log
       - name: Upload CI diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

@@ -41,6 +41,7 @@ pub enum DevEvent {
 
 #[derive(Debug, Clone)]
 pub enum KbCmd {
+    #[cfg(target_os = "macos")]
     SetLayer {
         on: bool,
         layer: u8,
@@ -70,6 +71,7 @@ impl KbCmd {
     /// The discrete (non-frame) commands map 1:1 to a protocol command.
     fn to_protocol(&self) -> Option<Command> {
         match self {
+            #[cfg(target_os = "macos")]
             KbCmd::SetLayer { on, layer } => Some(Command::SetLayer {
                 on: *on,
                 layer: *layer,
@@ -100,7 +102,9 @@ impl Drop for DeviceWorkerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: device worker panicked during shutdown");
+            }
         }
     }
 }
@@ -257,6 +261,7 @@ fn device_loop(
                 let mut rgb_released = false;
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
+                        #[cfg(target_os = "macos")]
                         KbCmd::SetLayer { on: false, layer } => {
                             let _ = kb.send(Command::SetLayer { on: false, layer });
                         }
@@ -422,6 +427,10 @@ pub fn spawn_flash(
             Err(e) => return send(FlashState::Failed(format!("{e:#}"))),
         };
 
+        if let Err(e) = crate::cmd_flash::validate_voyager_flash_pair(dev.vid, dev.pid, &fw) {
+            return send(FlashState::Failed(format!("{e:#}")));
+        }
+
         let res = zapp_core::flash::flash_device(&dev, &fw, &|p| {
             use zapp_core::flash::FlashProgress as P;
             let state = match p {
@@ -481,7 +490,9 @@ impl Drop for AutolayerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: autolayer worker panicked during shutdown");
+            }
         }
     }
 }
