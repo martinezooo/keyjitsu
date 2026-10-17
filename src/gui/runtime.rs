@@ -103,7 +103,12 @@ impl App {
                     self.connection_generation = None;
                     self.pressed.iter_mut().for_each(|p| *p = false);
                     self.combo_down.clear();
+                    self.combo_log.clear();
+                    self.last_press_at.clear();
                     self.peek_until = None;
+                    if let Ok(mut anim) = self.anim.lock() {
+                        anim.events.clear();
+                    }
                     let heat_save_error = self
                         .heat
                         .as_mut()

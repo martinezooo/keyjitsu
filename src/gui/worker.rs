@@ -102,7 +102,9 @@ impl Drop for DeviceWorkerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: device worker panicked during shutdown");
+            }
         }
     }
 }
@@ -488,7 +490,9 @@ impl Drop for AutolayerHandle {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            if thread.join().is_err() {
+                eprintln!("keyjitsu: autolayer worker panicked during shutdown");
+            }
         }
     }
 }
