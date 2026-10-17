@@ -5,6 +5,26 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.1] - 2026-10-18
+
+### Added
+- Native CI and release archives for macOS, Linux x86_64 and Windows x86_64.
+- Cross-platform Voyager discovery and firmware-target validation, including
+  rejection of ambiguous or non-Voyager bootloaders and mismatched MCU images.
+- Regression coverage for safe generated QMK `rules.mk` assignments.
+
+### Changed
+- Updated release dependencies and removed obsolete audit exceptions.
+- Documented that stock Oryx firmware cannot expose enough state for an exact
+  readback; Keyjitsu-authored firmware embeds a state marker instead.
+
+### Fixed
+- CI failures now propagate through diagnostic log pipelines on every runner.
+- Local builds reject executable or unknown Oryx make rules instead of copying
+  them into generated firmware sources.
+- Disconnect and shutdown paths clear transient input/effect state, release RGB
+  ownership and report worker panics instead of silently discarding them.
+
 ## [0.9.14] - 2026-10-08
 
 ### Changed
