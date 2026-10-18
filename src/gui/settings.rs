@@ -113,6 +113,7 @@ impl App {
     }
 
     pub(super) fn ui_saved_layouts_and_migration(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Saved layouts").strong().color(pal::TEXT));
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add(
@@ -136,7 +137,70 @@ impl App {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(6.0);
+        ui.label(
+            RichText::new("Move to another computer")
+                .strong()
+                .color(pal::TEXT),
+        );
+        ui.label(
+            RichText::new(
+                "A portable backup includes settings, saved layouts, firmware-state records, heatmaps and cached Oryx sources. Logs, recordings and signing files stay out.",
+            )
+            .size(11.0)
+            .color(pal::TEXT_DIM),
+        );
+        ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
+            if ui.button("Export backup…").clicked() {
+                if let Some(destination) = rfd::FileDialog::new()
+                    .add_filter("Keyjitsu backup", &["zip"])
+                    .set_file_name(crate::portable_backup::suggested_file_name())
+                    .save_file()
+                {
+                    let result = crate::oryx_api::cache_dir().and_then(|data_dir| {
+                        let count = crate::portable_backup::export_to(&destination, &data_dir)?;
+                        crate::platform::reveal_path(&destination)?;
+                        Ok(count)
+                    });
+                    self.migration_status = Some(match result {
+                        Ok(count) => (
+                            true,
+                            format!(
+                                "Backup saved with {count} data file{}.",
+                                if count == 1 { "" } else { "s" }
+                            ),
+                        ),
+                        Err(error) => (false, format!("Backup failed: {error:#}")),
+                    });
+                }
+            }
+            if ui.button("Restore backup…").clicked() {
+                if let Some(source) = rfd::FileDialog::new()
+                    .add_filter("Keyjitsu backup", &["zip"])
+                    .pick_file()
+                {
+                    let result = crate::oryx_api::cache_dir().and_then(|data_dir| {
+                        crate::portable_backup::stage_import(&source, &data_dir)
+                    });
+                    match result {
+                        Ok(count) => {
+                            self.migration_restart_ready = true;
+                            self.migration_status = Some((
+                                true,
+                                format!(
+                                    "Backup checked: {count} data file{}. Restart to restore; conflicting files will be preserved.",
+                                    if count == 1 { "" } else { "s" }
+                                ),
+                            ));
+                        }
+                        Err(error) => {
+                            self.migration_restart_ready = false;
+                            self.migration_status =
+                                Some((false, format!("Backup rejected: {error:#}")));
+                        }
+                    }
+                }
+            }
             if ui.button("Open Keyjitsu data folder").clicked() {
                 let result = crate::oryx_api::cache_dir().and_then(|path| {
                     std::fs::create_dir_all(&path)?;
@@ -147,14 +211,25 @@ impl App {
                         Some(format!("could not open Keyjitsu data folder: {error:#}"));
                 }
             }
-            ui.label(
-                RichText::new(
-                    "Copy this folder while Keyjitsu is closed to move profiles, settings, heatmaps and firmware-state records.",
-                )
-                .size(11.0)
-                .color(pal::TEXT_DIM),
-            );
         });
+        if let Some((ok, message)) = &self.migration_status {
+            ui.add_space(4.0);
+            ui.colored_label(if *ok { pal::GREEN } else { pal::RED }, message);
+        }
+        if self.migration_restart_ready {
+            ui.add_space(4.0);
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Restart and restore").color(Color32::WHITE))
+                        .fill(pal::VIOLET),
+                )
+                .clicked()
+            {
+                self.restart_for_import = true;
+                self.egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
     }
 
     /// Performance as its own page using the same page shell as the rest of the app.

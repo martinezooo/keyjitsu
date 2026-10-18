@@ -472,6 +472,12 @@ struct App {
     /// Draft name for "save current as profile" (Settings).
     profile_draft: String,
     profile_error: Option<String>,
+    /// Result/progress for whole-installation export and restore.
+    migration_status: Option<(bool, String)>,
+    /// A validated archive is staged and can be applied on a controlled restart.
+    migration_restart_ready: bool,
+    /// Apply the staged archive only after the current GUI has shut down cleanly.
+    restart_for_import: bool,
     persist_error: Option<String>,
     window_title: String,
     /// Last failure while opening/revealing a build-related path.
@@ -797,6 +803,26 @@ impl App {
             },
             None => (None, None),
         };
+        let (migration_status, migration_restart_ready) = match crate::oryx_api::cache_dir() {
+            Ok(path) => {
+                let pending = crate::portable_backup::has_pending_import(&path);
+                let report = crate::portable_backup::take_last_report(&path)
+                    .ok()
+                    .flatten()
+                    .map(|report| (report.ok, report.message));
+                let status = report.or_else(|| {
+                    pending.then(|| {
+                        (
+                            true,
+                            "A checked backup is waiting. Restart to restore it; conflicting files will be preserved."
+                                .to_string(),
+                        )
+                    })
+                });
+                (status, pending)
+            }
+            Err(_) => (None, false),
+        };
         let key_count = geometry::voyager().len();
         // RGB animation engine: a background thread drives the LEDs when an
         // effect is active (Off by default, so it just idles).
@@ -887,6 +913,9 @@ impl App {
             shortcut_import_path: String::new(),
             profile_draft: String::new(),
             profile_error: profile_load_error,
+            migration_status,
+            migration_restart_ready,
+            restart_for_import: false,
             persist_error: config_load_error,
             window_title: String::new(),
             file_action_error: None,

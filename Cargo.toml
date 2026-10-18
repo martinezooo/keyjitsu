@@ -25,6 +25,7 @@ crossterm = "0.28"
 ctrlc = { version = "3", features = ["termination"] }
 eframe = "0.32.3"
 tempfile = "3.27"
+rfd = "0.17.2"
 
 zapp-core = { git = "https://github.com/zsa/zapp" }
 zip = { version = "9", default-features = false, features = ["deflate"] }

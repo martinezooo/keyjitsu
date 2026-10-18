@@ -210,7 +210,7 @@ replace what Live claims is on the physical keyboard.
   the keyboard's "Service" HID layer but not a separate raw "Device" layer
   that can still deliver key presses: run the test on your own Mac if you
   plan to rely on the guard, and don't treat it as absolute.
-- **Storage.** State is kept in the platform data directory returned by the OS (`~/Library/Application Support/keyjitsu/` on macOS, the corresponding user data directory on Linux/Windows): `config.json`, `profiles/*.json`, `firmware-states/*.json`, heatmap stats, and cached layouts/sources. Before a first real layout has been cached, the GUI displays ZSA's official Voyager default layout (`E5AmY/B495Jd`) as a bundled offline fallback; it is never flashed automatically and a connected keyboard always replaces it with its own layout.
+- **Storage.** State is kept in the platform data directory returned by the OS (`~/Library/Application Support/keyjitsu/` on macOS, the corresponding user data directory on Linux/Windows): `config.json`, `profiles/*.json`, `firmware-states/*.json`, heatmap stats, and cached layouts/sources. Settings can export those portable items to a bounded ZIP and restore them on a controlled restart; conflicting local files are preserved, while unrelated logs, recordings and signing material are excluded. Before a first real layout has been cached, the GUI displays ZSA's official Voyager default layout (`E5AmY/B495Jd`) as a bundled offline fallback; it is never flashed automatically and a connected keyboard always replaces it with its own layout.
 
 ## Install
 
