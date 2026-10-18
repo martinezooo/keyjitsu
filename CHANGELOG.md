@@ -5,6 +5,18 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+- Add portable ZIP export and restore controls to Settings for moving config,
+  saved layouts, firmware-state records, heatmaps and cached Oryx data between
+  computers. Restore validates bounded archive contents, preserves conflicting
+  local files, mirrors firmware-state recovery copies and applies only during a
+  controlled app restart.
+
+### Security
+- Keep logs, recordings, signing experiments, symlinks and unrelated data out
+  of portable backups; reject path traversal, duplicate paths, oversized
+  archives, invalid JSON/config schemas and mismatched firmware-state ids.
+
 ## [0.10.0-beta.3] - 2026-10-18
 
 ### Added

@@ -386,6 +386,12 @@ fn migrate(mut cfg: Config) -> Result<Config> {
     Ok(cfg)
 }
 
+/// Validate a config before a portable restore can replace the live copy.
+pub fn validate_portable_bytes(bytes: &[u8]) -> Result<()> {
+    let cfg: Config = serde_json::from_slice(bytes).context("parsing portable config")?;
+    migrate(cfg).map(|_| ())
+}
+
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()

@@ -476,5 +476,33 @@ impl eframe::App for App {
             self.guard = None;
             crate::macos_kb::force_restore_if_active();
         }
+        if self.restart_for_import {
+            let data_dir = crate::oryx_api::cache_dir();
+            match data_dir {
+                Ok(data_dir) => {
+                    if let Err(error) = crate::portable_backup::apply_pending_import(&data_dir) {
+                        crate::portable_backup::record_failure(
+                            &data_dir,
+                            format!("Backup restore failed: {error:#}"),
+                        );
+                    }
+                    let relaunched = std::env::current_exe().and_then(|exe| {
+                        std::process::Command::new(exe)
+                            .arg("gui")
+                            .spawn()
+                            .map(|_| ())
+                    });
+                    if let Err(error) = relaunched {
+                        crate::portable_backup::record_failure(
+                            &data_dir,
+                            format!(
+                                "Backup was processed, but Keyjitsu could not restart: {error}"
+                            ),
+                        );
+                    }
+                }
+                Err(error) => eprintln!("keyjitsu: cannot restore portable backup: {error:#}"),
+            }
+        }
     }
 }

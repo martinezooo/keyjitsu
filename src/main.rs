@@ -32,6 +32,7 @@ mod macos_status;
 mod oryx_api;
 mod perf;
 mod platform;
+mod portable_backup;
 mod protocol;
 mod shortcuts;
 mod ui;
