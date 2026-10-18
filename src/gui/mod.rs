@@ -2360,7 +2360,11 @@ fn format_thousands(n: u64) -> String {
 
 /// A tiny horizontal bar (0..1) for the performance table.
 fn perf_bar(ui: &mut egui::Ui, frac: f32, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(70.0, 10.0), egui::Sense::hover());
+    perf_bar_sized(ui, frac, color, 70.0);
+}
+
+fn perf_bar_sized(ui: &mut egui::Ui, frac: f32, color: egui::Color32, width: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, egui::CornerRadius::same(3), pal::INPUT);
     let mut fill = rect;
