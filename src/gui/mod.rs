@@ -491,6 +491,13 @@ struct App {
     draft_sc: config::CustomShortcut,
     /// Active step being painted in the custom-effect editor.
     fx_step: usize,
+    /// Last custom effect selected in this session.
+    fx_last_custom: usize,
+    /// Pending destructive actions require a second, explicit click.
+    fx_delete_confirm: Option<usize>,
+    fx_delete_step_confirm: Option<(usize, usize)>,
+    /// In-app preview of a custom sequence: effect index and start time.
+    fx_preview: Option<(usize, Instant)>,
     /// Delayed physical-keyboard test of the currently selected FX.
     fx_test_run: Option<FxTestRun>,
 
@@ -1048,6 +1055,10 @@ impl App {
             fx_bright: 0.9,
             custom_fx: cfg.custom_fx.clone(),
             fx_step: 0,
+            fx_last_custom: cfg.custom_fx.len().saturating_sub(1),
+            fx_delete_confirm: None,
+            fx_delete_step_confirm: None,
+            fx_preview: None,
             fx_test_run: None,
             csv_saved: None,
         };

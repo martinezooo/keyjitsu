@@ -14,6 +14,26 @@ fn fx_test_active_ms(spec: &FxTestSpec) -> u64 {
     }
 }
 
+fn fx_preview_step(custom: &CustomFx, elapsed: Duration) -> usize {
+    if custom.steps.is_empty() {
+        return 0;
+    }
+    let total_ms: u64 = custom.steps.iter().map(|step| step.ms.max(30)).sum();
+    if total_ms == 0 {
+        return 0;
+    }
+    let speed = custom.speed.max(0.01);
+    let cursor_ms = ((elapsed.as_secs_f32() * speed * 1000.0) as u64) % total_ms;
+    let mut boundary = 0;
+    for (index, step) in custom.steps.iter().enumerate() {
+        boundary += step.ms.max(30);
+        if cursor_ms < boundary {
+            return index;
+        }
+    }
+    custom.steps.len() - 1
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FxLibraryGroup {
     BuiltIn,
@@ -43,7 +63,13 @@ impl App {
                 _ => false,
             };
 
-            if ui.available_width() >= 780.0 {
+            if custom_sequence {
+                self.fx_tune_card(ui);
+                ui.add_space(8.0);
+                self.fx_step_keyboard_card(ui);
+                ui.add_space(8.0);
+                card(ui, "Active keyboard RGB", |ui| self.ui_rgb_effects(ui));
+            } else if ui.available_width() >= 780.0 {
                 ui.columns(2, |cols| {
                     self.fx_tune_card(&mut cols[0]);
                     card(&mut cols[1], "Active keyboard RGB", |ui| {
@@ -54,11 +80,6 @@ impl App {
                 self.fx_tune_card(ui);
                 ui.add_space(8.0);
                 card(ui, "Active keyboard RGB", |ui| self.ui_rgb_effects(ui));
-            }
-
-            if custom_sequence {
-                ui.add_space(8.0);
-                self.fx_step_keyboard_card(ui);
             }
         });
     }
@@ -85,6 +106,9 @@ impl App {
                         .find(|effect| *effect != Effect::Off)
                         .unwrap_or(Effect::Layout);
                     self.fx_sel = FxSel::Const(effect);
+                    self.fx_preview = None;
+                    self.fx_delete_confirm = None;
+                    self.fx_delete_step_confirm = None;
                 }
                 if ui
                     .selectable_value(&mut group, FxLibraryGroup::Press, "On key press")
@@ -96,6 +120,9 @@ impl App {
                         .find(|effect| *effect != PressEffect::None)
                         .unwrap_or(PressEffect::Ripple);
                     self.fx_sel = FxSel::Press(effect);
+                    self.fx_preview = None;
+                    self.fx_delete_confirm = None;
+                    self.fx_delete_step_confirm = None;
                 }
                 let mine = ui
                     .add_enabled(
@@ -104,8 +131,10 @@ impl App {
                     )
                     .on_disabled_hover_text("Create your first custom effect with + New");
                 if mine.clicked() {
-                    self.fx_sel = FxSel::Custom(0);
+                    let last = self.fx_last_custom.min(self.custom_fx.len() - 1);
+                    self.fx_sel = FxSel::Custom(last);
                     self.fx_step = 0;
+                    self.fx_preview = None;
                 }
             });
             ui.add_space(6.0);
@@ -175,7 +204,11 @@ impl App {
                                         .clicked()
                                     {
                                         self.fx_sel = FxSel::Custom(i);
+                                        self.fx_last_custom = i;
                                         self.fx_step = 0;
+                                        self.fx_preview = None;
+                                        self.fx_delete_confirm = None;
+                                        self.fx_delete_step_confirm = None;
                                     }
                                 }
                             });
@@ -183,13 +216,13 @@ impl App {
                 }
 
                 if ui
-                    .button("＋ New")
-                    .on_hover_text("Create a custom sequence")
+                    .button("＋ New sequence")
+                    .on_hover_text("Create a new custom sequence")
                     .clicked()
                 {
                     let n = self.custom_fx.len() + 1;
                     self.custom_fx.push(CustomFx {
-                        name: format!("my effect {n}"),
+                        name: format!("Untitled sequence {n}"),
                         steps: vec![FxStep {
                             keys: Vec::new(),
                             color: [138, 92, 246],
@@ -199,8 +232,13 @@ impl App {
                         background: config::FxBackgroundMode::Preserve,
                         preset: None,
                     });
-                    self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
+                    let created = self.custom_fx.len() - 1;
+                    self.fx_sel = FxSel::Custom(created);
+                    self.fx_last_custom = created;
                     self.fx_step = 0;
+                    self.fx_preview = None;
+                    self.fx_delete_confirm = None;
+                    self.fx_delete_step_confirm = None;
                     self.save_custom_fx();
                 }
             });
@@ -254,7 +292,10 @@ impl App {
             background: config::FxBackgroundMode::Preserve,
             preset: Some(preset),
         });
-        self.fx_sel = FxSel::Custom(self.custom_fx.len() - 1);
+        let created = self.custom_fx.len() - 1;
+        self.fx_sel = FxSel::Custom(created);
+        self.fx_last_custom = created;
+        self.fx_preview = None;
         self.save_custom_fx();
     }
 
@@ -338,6 +379,7 @@ impl App {
     }
 
     fn fx_preset_editor(&mut self, ui: &mut egui::Ui, i: usize) {
+        self.fx_last_custom = i;
         card(ui, "My effect", |ui| {
             let mut dirty = false;
             let mut name = self.custom_fx[i].name.clone();
@@ -458,36 +500,42 @@ impl App {
             }
 
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.weak("Your copy · built-in preset stays unchanged.");
-                if ui.button("Delete").clicked() {
-                    self.remove_custom_fx(i);
-                    self.fx_sel = FxSel::Press(PressEffect::Ripple);
-                    dirty = false;
-                }
-            });
             if dirty {
                 self.save_custom_fx();
             }
+            self.fx_delete_effect_row(ui, i, "Your copy · built-in preset stays unchanged.");
         });
     }
 
-    /// Step editor only. The keyboard below is a key picker, not an animated
-    /// preview; actual FX testing happens on the physical Voyager.
+    /// Step editor paired with an animated in-app preview below it.
     pub(super) fn fx_custom_editor(&mut self, ui: &mut egui::Ui, i: usize) {
+        self.fx_last_custom = i;
         card(ui, "Custom sequence", |ui| {
             let mut dirty = false;
             let mut name = self.custom_fx[i].name.clone();
-            if ui
-                .add_sized(
-                    [280.0, 24.0],
-                    egui::TextEdit::singleline(&mut name).hint_text("effect name"),
-                )
-                .changed()
-            {
-                self.rename_custom_fx(i, name);
-            }
-            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add_sized(
+                        [320.0, 26.0],
+                        egui::TextEdit::singleline(&mut name).hint_text("effect name"),
+                    )
+                    .changed()
+                {
+                    self.rename_custom_fx(i, name);
+                }
+                if let Some(error) = self.persist_error.as_deref() {
+                    ui.colored_label(pal::RED, "Save failed")
+                        .on_hover_text(error);
+                } else {
+                    ui.colored_label(pal::GREEN, "✓ Saved automatically");
+                }
+            });
+            ui.label(
+                RichText::new("Build the sequence, preview it here, then test it on the keyboard.")
+                    .size(11.5)
+                    .color(pal::TEXT_DIM),
+            );
+            ui.add_space(10.0);
 
             if self.custom_fx[i].steps.is_empty() {
                 self.custom_fx[i].steps.push(FxStep {
@@ -495,112 +543,185 @@ impl App {
                     color: [138, 92, 246],
                     ms: 220,
                 });
+                dirty = true;
             }
             let n_steps = self.custom_fx[i].steps.len();
             self.fx_step = self.fx_step.min(n_steps.saturating_sub(1));
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("STEPS").size(10.5).color(pal::TEXT_DIM));
                 for step_i in 0..n_steps {
-                    if ui
-                        .selectable_label(self.fx_step == step_i, format!("{}", step_i + 1))
-                        .clicked()
-                    {
+                    let step = &self.custom_fx[i].steps[step_i];
+                    let label = format!(
+                        "Step {} · {} keys · {} ms",
+                        step_i + 1,
+                        step.keys.len(),
+                        step.ms
+                    );
+                    if ui.selectable_label(self.fx_step == step_i, label).clicked() {
                         self.fx_step = step_i;
+                        self.fx_preview = None;
+                        self.fx_delete_step_confirm = None;
                     }
                 }
                 if ui
-                    .button("＋")
-                    .on_hover_text("duplicate the selected step")
+                    .button("＋ Duplicate step")
+                    .on_hover_text("Copy the selected step and insert it after this one")
                     .clicked()
                 {
                     let copy = self.custom_fx[i].steps[self.fx_step].clone();
                     self.custom_fx[i].steps.insert(self.fx_step + 1, copy);
                     self.fx_step += 1;
+                    self.fx_preview = None;
+                    self.fx_delete_step_confirm = None;
                     dirty = true;
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(10.0);
 
-            let step_i = self.fx_step;
-            let step = &mut self.custom_fx[i].steps[step_i];
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("Step {} · {} keys", step_i + 1, step.keys.len()))
-                        .size(12.0)
-                        .color(pal::TEXT_MUTED),
-                );
-                dirty |= ui.color_edit_button_srgb(&mut step.color).changed();
-                dirty |= ui
-                    .add(
-                        egui::DragValue::new(&mut step.ms)
-                            .range(40..=2000)
-                            .speed(10)
-                            .suffix(" ms"),
-                    )
-                    .changed();
-            });
-            ui.horizontal(|ui| {
-                let mut mv: Option<(f32, f32)> = None;
-                if ui.small_button("←").on_hover_text("nudge left").clicked() {
-                    mv = Some((-1.0, 0.0));
-                }
-                if ui.small_button("↑").on_hover_text("nudge up").clicked() {
-                    mv = Some((0.0, -1.0));
-                }
-                if ui.small_button("↓").on_hover_text("nudge down").clicked() {
-                    mv = Some((0.0, 1.0));
-                }
-                if ui.small_button("→").on_hover_text("nudge right").clicked() {
-                    mv = Some((1.0, 0.0));
-                }
-                if let Some((dx, dy)) = mv {
-                    self.shift_step(i, step_i, dx, dy);
-                }
-                if ui.small_button("Clear keys").clicked() {
-                    self.custom_fx[i].steps[step_i].keys.clear();
-                    dirty = true;
-                }
-                if n_steps > 1 && ui.small_button("Delete step").clicked() {
-                    self.custom_fx[i].steps.remove(step_i);
-                    self.fx_step = self.fx_step.saturating_sub(1);
-                    dirty = true;
-                }
-            });
-
-            fx_field(ui, "Tempo", |ui| {
-                dirty |= ui
-                    .add_sized(
-                        [220.0, 20.0],
-                        egui::Slider::new(&mut self.custom_fx[i].speed, 0.2..=3.0)
-                            .show_value(false),
-                    )
-                    .changed();
-            });
-            fx_field(ui, "Other LEDs", |ui| {
-                ui.vertical(|ui| {
-                    dirty |= ui
-                        .radio_value(
-                            &mut self.custom_fx[i].background,
-                            config::FxBackgroundMode::Preserve,
-                            "Keep current RGB",
-                        )
-                        .changed();
-                    dirty |= ui
-                        .radio_value(
-                            &mut self.custom_fx[i].background,
-                            config::FxBackgroundMode::Blackout,
-                            "Turn other LEDs off",
-                        )
-                        .changed();
+            if ui.available_width() >= 700.0 {
+                ui.columns(2, |cols| {
+                    self.fx_step_controls(&mut cols[0], i, &mut dirty);
+                    self.fx_playback_controls(&mut cols[1], i, &mut dirty);
                 });
-            });
+            } else {
+                self.fx_step_controls(ui, i, &mut dirty);
+                ui.add_space(8.0);
+                self.fx_playback_controls(ui, i, &mut dirty);
+            }
 
+            if dirty {
+                self.save_custom_fx();
+            }
+            ui.add_space(8.0);
+            self.fx_delete_effect_row(
+                ui,
+                i,
+                "Assign it from Layout → On press, or use it as keyboard RGB.",
+            );
+        });
+    }
+
+    fn fx_step_controls(&mut self, ui: &mut egui::Ui, i: usize, dirty: &mut bool) {
+        let step_i = self.fx_step;
+        let key_count = self.custom_fx[i].steps[step_i].keys.len();
+        ui.label(
+            RichText::new(format!("CURRENT STEP · {} KEYS", key_count))
+                .size(10.5)
+                .color(pal::TEXT_DIM),
+        );
+        fx_field(ui, "Color", |ui| {
+            *dirty |= ui
+                .color_edit_button_srgb(&mut self.custom_fx[i].steps[step_i].color)
+                .changed();
+        });
+        fx_field(ui, "Duration", |ui| {
+            *dirty |= ui
+                .add(
+                    egui::DragValue::new(&mut self.custom_fx[i].steps[step_i].ms)
+                        .range(40..=2000)
+                        .speed(10)
+                        .suffix(" ms"),
+                )
+                .changed();
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Move keys").size(11.0).color(pal::TEXT_DIM));
+            let mut mv = None;
+            if ui.small_button("←").on_hover_text("Nudge left").clicked() {
+                mv = Some((-1.0, 0.0));
+            }
+            if ui.small_button("↑").on_hover_text("Nudge up").clicked() {
+                mv = Some((0.0, -1.0));
+            }
+            if ui.small_button("↓").on_hover_text("Nudge down").clicked() {
+                mv = Some((0.0, 1.0));
+            }
+            if ui.small_button("→").on_hover_text("Nudge right").clicked() {
+                mv = Some((1.0, 0.0));
+            }
+            if let Some((dx, dy)) = mv {
+                self.shift_step(i, step_i, dx, dy);
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("Clear keys").clicked() {
+                self.custom_fx[i].steps[step_i].keys.clear();
+                self.fx_preview = None;
+                *dirty = true;
+            }
+            if self.custom_fx[i].steps.len() > 1 {
+                if self.fx_delete_step_confirm == Some((i, step_i)) {
+                    ui.colored_label(pal::RED, "Delete this step?");
+                    if ui.small_button("Keep").clicked() {
+                        self.fx_delete_step_confirm = None;
+                    }
+                    if ui.small_button("Delete step").clicked() {
+                        self.custom_fx[i].steps.remove(step_i);
+                        self.fx_step = self.fx_step.saturating_sub(1);
+                        self.fx_delete_step_confirm = None;
+                        self.fx_preview = None;
+                        *dirty = true;
+                    }
+                } else if ui.small_button("Delete step").clicked() {
+                    self.fx_delete_step_confirm = Some((i, step_i));
+                }
+            }
+        });
+    }
+
+    fn fx_playback_controls(&mut self, ui: &mut egui::Ui, i: usize, dirty: &mut bool) {
+        ui.label(RichText::new("PLAYBACK").size(10.5).color(pal::TEXT_DIM));
+        let speed_text = format!("{:.2}×", self.custom_fx[i].speed);
+        fx_field(ui, "Tempo", |ui| {
+            *dirty |= ui
+                .add_sized(
+                    [220.0, 20.0],
+                    egui::Slider::new(&mut self.custom_fx[i].speed, 0.2..=3.0)
+                        .show_value(false)
+                        .text(speed_text),
+                )
+                .changed();
+        });
+        fx_field(ui, "Other LEDs", |ui| {
+            ui.vertical(|ui| {
+                *dirty |= ui
+                    .radio_value(
+                        &mut self.custom_fx[i].background,
+                        config::FxBackgroundMode::Preserve,
+                        "Keep current RGB",
+                    )
+                    .changed();
+                *dirty |= ui
+                    .radio_value(
+                        &mut self.custom_fx[i].background,
+                        config::FxBackgroundMode::Blackout,
+                        "Turn other LEDs off",
+                    )
+                    .changed();
+            });
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            let previewing = self.fx_preview.is_some_and(|(fx, _)| fx == i);
+            let label = if previewing {
+                "■ Stop preview"
+            } else {
+                "▶ Preview here"
+            };
+            if ui.button(label).clicked() {
+                self.fx_preview = if previewing {
+                    None
+                } else {
+                    Some((i, Instant::now()))
+                };
+            }
             if ui
                 .add_enabled(
                     self.connected.is_some(),
                     egui::Button::new(RichText::new("⚡ Test on keyboard").color(Color32::WHITE))
                         .fill(pal::VIOLET),
                 )
+                .on_disabled_hover_text("Plug in the Voyager to test effects")
                 .clicked()
             {
                 self.queue_fx_test(FxTestSpec::Custom {
@@ -613,20 +734,41 @@ impl App {
                     ),
                 });
             }
+        });
+    }
 
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.weak("Assign it from Layout → On press, or use it as keyboard RGB.");
-                if ui.button("Delete effect").clicked() {
+    fn fx_delete_effect_row(&mut self, ui: &mut egui::Ui, i: usize, helper: &str) {
+        if self.fx_delete_confirm == Some(i) {
+            let name = self.custom_fx[i].name.clone();
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(pal::RED, format!("Delete “{name}”?"));
+                if ui.button("Keep").clicked() {
+                    self.fx_delete_confirm = None;
+                }
+                if ui.button("Delete permanently").clicked() {
                     self.remove_custom_fx(i);
-                    self.fx_sel = FxSel::Press(PressEffect::Ripple);
-                    dirty = false;
+                    self.fx_preview = None;
+                    self.fx_delete_confirm = None;
+                    self.fx_delete_step_confirm = None;
+                    if self.custom_fx.is_empty() {
+                        self.fx_sel = FxSel::Press(PressEffect::Ripple);
+                        self.fx_last_custom = 0;
+                    } else {
+                        let next = i.min(self.custom_fx.len() - 1);
+                        self.fx_sel = FxSel::Custom(next);
+                        self.fx_last_custom = next;
+                        self.fx_step = 0;
+                    }
                 }
             });
-            if dirty {
-                self.save_custom_fx();
-            }
-        });
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                ui.weak(helper);
+                if ui.button("Delete effect…").clicked() {
+                    self.fx_delete_confirm = Some(i);
+                }
+            });
+        }
     }
 
     fn fx_step_keyboard_card(&mut self, ui: &mut egui::Ui) {
@@ -639,13 +781,31 @@ impl App {
         if custom.preset.is_some() || custom.steps.is_empty() {
             return;
         }
-        let step_i = self.fx_step.min(custom.steps.len() - 1);
+        let preview_started = self
+            .fx_preview
+            .and_then(|(fx, started)| (fx == i).then_some(started));
+        let previewing = preview_started.is_some();
+        let step_i = preview_started
+            .map(|started| fx_preview_step(custom, started.elapsed()))
+            .unwrap_or_else(|| self.fx_step.min(custom.steps.len() - 1));
         let step = custom.steps[step_i].clone();
-        card(ui, &format!("Keys in step {}", step_i + 1), |ui| {
+        let title = if previewing {
+            format!("Preview · Step {} of {}", step_i + 1, custom.steps.len())
+        } else {
+            format!("Keys in step {}", step_i + 1)
+        };
+        if previewing {
+            ui.ctx().request_repaint_after(Duration::from_millis(33));
+        }
+        card(ui, &title, |ui| {
             ui.label(
-                RichText::new("Click keys to include or remove them from this step.")
-                    .size(11.5)
-                    .color(pal::TEXT_DIM),
+                RichText::new(if previewing {
+                    "Live in-app preview · stop it above to edit the selected keys."
+                } else {
+                    "Click keys to include or remove them from this step."
+                })
+                .size(11.5)
+                .color(pal::TEXT_DIM),
             );
             ui.add_space(6.0);
             let n = self.geometry().len();
@@ -674,19 +834,21 @@ impl App {
                 1.0,
                 false,
             );
-            if let Some(key) = kb.clicked {
-                if let Some(step) = self
-                    .custom_fx
-                    .get_mut(i)
-                    .and_then(|custom| custom.steps.get_mut(step_i))
-                {
-                    match step.keys.iter().position(|&k| k as usize == key) {
-                        Some(pos) => {
-                            step.keys.remove(pos);
+            if !previewing {
+                if let Some(key) = kb.clicked {
+                    if let Some(step) = self
+                        .custom_fx
+                        .get_mut(i)
+                        .and_then(|custom| custom.steps.get_mut(step_i))
+                    {
+                        match step.keys.iter().position(|&k| k as usize == key) {
+                            Some(pos) => {
+                                step.keys.remove(pos);
+                            }
+                            None => step.keys.push(key as u16),
                         }
-                        None => step.keys.push(key as u16),
+                        self.save_custom_fx();
                     }
-                    self.save_custom_fx();
                 }
             }
         });
@@ -824,6 +986,32 @@ fn fx_field(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui)) {
 mod fx_ui_tests {
     use super::*;
 
+    fn preview_sequence(speed: f32) -> CustomFx {
+        CustomFx {
+            name: "preview".to_string(),
+            steps: vec![
+                FxStep {
+                    keys: vec![0],
+                    color: [255, 0, 0],
+                    ms: 100,
+                },
+                FxStep {
+                    keys: vec![1],
+                    color: [0, 255, 0],
+                    ms: 200,
+                },
+                FxStep {
+                    keys: vec![2],
+                    color: [0, 0, 255],
+                    ms: 300,
+                },
+            ],
+            speed,
+            background: config::FxBackgroundMode::Preserve,
+            preset: None,
+        }
+    }
+
     #[test]
     fn press_tests_are_shorter_than_board_tests() {
         let press = FxTestSpec::Press {
@@ -837,5 +1025,24 @@ mod fx_ui_tests {
             brightness: 0.8,
         };
         assert!(fx_test_active_ms(&press) < fx_test_active_ms(&board));
+    }
+
+    #[test]
+    fn preview_uses_step_durations_and_loops() {
+        let sequence = preview_sequence(1.0);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(0)), 0);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(99)), 0);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(100)), 1);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(299)), 1);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(300)), 2);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(599)), 2);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(600)), 0);
+    }
+
+    #[test]
+    fn preview_applies_sequence_tempo() {
+        let sequence = preview_sequence(2.0);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(49)), 0);
+        assert_eq!(fx_preview_step(&sequence, Duration::from_millis(50)), 1);
     }
 }
