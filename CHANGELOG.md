@@ -5,6 +5,15 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.2] - 2026-10-18
+
+### Fixed
+- Kept Heatmap ranking values and percentages inside their card at supported
+  window widths by sizing the label, intensity bar and combined metric from the
+  available row width.
+- Added regression coverage for the Heatmap ranking layout and completed a
+  visual smoke pass across every app screen with a physical Voyager connected.
+
 ## [0.10.0-beta.1] - 2026-10-18
 
 ### Added
