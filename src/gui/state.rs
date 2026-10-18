@@ -899,7 +899,7 @@ impl App {
 
     /// With no keyboard attached, show the last layout we saw (from cache)
     /// instead of a grid of blank keys. Cache-only, so it never blocks on the
-    /// network; a no-op on the very first run (nothing cached yet).
+    /// network. A first run with no cache uses ZSA's bundled Voyager default.
     pub(super) fn load_last_layout(&mut self) {
         if self.layout.is_some() {
             return;
@@ -915,8 +915,17 @@ impl App {
                 })
             })
             .or_else(|| crate::oryx_api::any_cached_layout("voyager").map(|(id, l)| (None, id, l)));
-        let Some((serial, id, layout)) = found else {
-            return;
+        let (serial, id, layout) = match found {
+            Some(found) => found,
+            None => match crate::oryx_api::bundled_default_voyager_layout() {
+                Ok((id, layout)) => (None, id, layout),
+                Err(error) => {
+                    self.layout_error = Some(format!(
+                        "could not load bundled Voyager default layout: {error:#}"
+                    ));
+                    return;
+                }
+            },
         };
 
         let state_marker = serial
