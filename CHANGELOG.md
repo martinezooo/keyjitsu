@@ -5,6 +5,8 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.3] - 2026-10-18
+
 ### Added
 - Bundle ZSA's official Voyager default layout (`E5AmY/B495Jd`) as the offline
   first-run view when no real keyboard layout has been cached. The fallback is
