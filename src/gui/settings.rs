@@ -11,6 +11,27 @@ impl App {
                 "Firmware, guard, profiles and app housekeeping.",
             );
 
+            let backup_pill = if self.migration_restart_ready {
+                ("Ready to restore".to_string(), pal::AMBER)
+            } else if let Some((ok, _)) = &self.migration_status {
+                if *ok {
+                    ("Last action succeeded".to_string(), pal::GREEN)
+                } else {
+                    ("Needs attention".to_string(), pal::RED)
+                }
+            } else {
+                ("Portable ZIP".to_string(), pal::TEXT_DIM)
+            };
+            tool_card(
+                ui,
+                "⤓",
+                "Portable backup",
+                "Back up all portable Keyjitsu data, or restore it on this or another computer.",
+                Some(backup_pill),
+                self,
+                |ui, app| app.ui_portable_backup(ui),
+            );
+
             let profile_pill = match list_profiles() {
                 Ok(saved) => match self.active_profile.as_deref() {
                     Some(active) => (format!("Active · {active}"), pal::GREEN),
@@ -29,11 +50,11 @@ impl App {
             tool_card(
                 ui,
                 "💾",
-                "Saved layouts & migration",
-                "Save a firmware target, restore it later, or move Keyjitsu data to another computer.",
+                "Saved firmware layouts",
+                "Keep named firmware targets that you can return to later.",
                 Some(profile_pill),
                 self,
-                |ui, app| app.ui_saved_layouts_and_migration(ui),
+                |ui, app| app.ui_saved_layouts(ui),
             );
 
             let fw_pill = if self.env.is_ready() {
@@ -112,8 +133,7 @@ impl App {
         });
     }
 
-    pub(super) fn ui_saved_layouts_and_migration(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Saved layouts").strong().color(pal::TEXT));
+    pub(super) fn ui_saved_layouts(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add(
@@ -133,30 +153,31 @@ impl App {
             self.layout_profile_controls(ui);
         });
         self.layout_profile_editor(ui);
+    }
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(6.0);
-        ui.label(
-            RichText::new("Move to another computer")
-                .strong()
-                .color(pal::TEXT),
-        );
+    pub(super) fn ui_portable_backup(&mut self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new(
-                "A portable backup includes settings, saved layouts, firmware-state records, heatmaps and cached Oryx sources. Logs, recordings and signing files stay out.",
+                "Includes settings, effects, saved layouts, firmware state, heatmaps and cached Oryx data. Logs, recordings and signing files are excluded.",
             )
             .size(11.0)
             .color(pal::TEXT_DIM),
         );
-        ui.add_space(4.0);
+        ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Export backup…").clicked() {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Back up everything…").color(Color32::WHITE))
+                        .fill(pal::VIOLET),
+                )
+                .clicked()
+            {
                 if let Some(destination) = rfd::FileDialog::new()
                     .add_filter("Keyjitsu backup", &["zip"])
                     .set_file_name(crate::portable_backup::suggested_file_name())
                     .save_file()
                 {
+                    let destination_label = destination.display().to_string();
                     let result = crate::oryx_api::cache_dir().and_then(|data_dir| {
                         let count = crate::portable_backup::export_to(&destination, &data_dir)?;
                         crate::platform::reveal_path(&destination)?;
@@ -166,15 +187,15 @@ impl App {
                         Ok(count) => (
                             true,
                             format!(
-                                "Backup saved with {count} data file{}.",
-                                if count == 1 { "" } else { "s" }
+                                "Backup saved: {destination_label} ({count} data file{}).",
+                                if count == 1 { "" } else { "s" },
                             ),
                         ),
                         Err(error) => (false, format!("Backup failed: {error:#}")),
                     });
                 }
             }
-            if ui.button("Restore backup…").clicked() {
+            if ui.button("Restore from backup…").clicked() {
                 if let Some(source) = rfd::FileDialog::new()
                     .add_filter("Keyjitsu backup", &["zip"])
                     .pick_file()
