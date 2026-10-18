@@ -5,6 +5,8 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.4] - 2026-10-18
+
 ### Added
 - Add portable ZIP export and restore controls to Settings for moving config,
   saved layouts, firmware-state records, heatmaps and cached Oryx data between
