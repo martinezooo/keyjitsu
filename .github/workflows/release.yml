@@ -119,6 +119,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          release_flags=()
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release view "${RELEASE_TAG}" >/dev/null 2>&1 || \
-            gh release create "${RELEASE_TAG}" --verify-tag --title "keyjitsu ${RELEASE_TAG}" --notes-file CHANGELOG.md
+            gh release create "${RELEASE_TAG}" --verify-tag --title "keyjitsu ${RELEASE_TAG}" --notes-file CHANGELOG.md "${release_flags[@]}"
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            gh release edit "${RELEASE_TAG}" --prerelease
+          fi
           gh release upload "${RELEASE_TAG}" dist/* --clobber
