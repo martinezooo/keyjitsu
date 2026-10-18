@@ -11,6 +11,31 @@ impl App {
                 "Firmware, guard, profiles and app housekeeping.",
             );
 
+            let profile_pill = match list_profiles() {
+                Ok(saved) => match self.active_profile.as_deref() {
+                    Some(active) => (format!("Active · {active}"), pal::GREEN),
+                    None if saved.is_empty() => ("No saved layouts".to_string(), pal::TEXT_DIM),
+                    None => (
+                        format!(
+                            "{} saved layout{}",
+                            saved.len(),
+                            if saved.len() == 1 { "" } else { "s" }
+                        ),
+                        pal::TEXT_DIM,
+                    ),
+                },
+                Err(_) => ("Storage error".to_string(), pal::RED),
+            };
+            tool_card(
+                ui,
+                "💾",
+                "Saved layouts & migration",
+                "Save a firmware target, restore it later, or move Keyjitsu data to another computer.",
+                Some(profile_pill),
+                self,
+                |ui, app| app.ui_saved_layouts_and_migration(ui),
+            );
+
             let fw_pill = if self.env.is_ready() {
                 ("Ready".to_string(), pal::GREEN)
             } else {
@@ -84,6 +109,51 @@ impl App {
                 },
             );
             ui.add_space(10.0);
+        });
+    }
+
+    pub(super) fn ui_saved_layouts_and_migration(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Save current layout…").color(Color32::WHITE))
+                        .fill(pal::VIOLET),
+                )
+                .clicked()
+            {
+                self.prof_new_open = true;
+                self.profile_draft.clear();
+            }
+            ui.label(
+                RichText::new("Restore target:")
+                    .size(11.5)
+                    .color(pal::TEXT_DIM),
+            );
+            self.layout_profile_controls(ui);
+        });
+        self.layout_profile_editor(ui);
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Open Keyjitsu data folder").clicked() {
+                let result = crate::oryx_api::cache_dir().and_then(|path| {
+                    std::fs::create_dir_all(&path)?;
+                    crate::platform::reveal_path(&path)
+                });
+                if let Err(error) = result {
+                    self.profile_error =
+                        Some(format!("could not open Keyjitsu data folder: {error:#}"));
+                }
+            }
+            ui.label(
+                RichText::new(
+                    "Copy this folder while Keyjitsu is closed to move profiles, settings, heatmaps and firmware-state records.",
+                )
+                .size(11.0)
+                .color(pal::TEXT_DIM),
+            );
         });
     }
 
