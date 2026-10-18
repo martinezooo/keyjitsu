@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 const ENDPOINT: &str = "https://oryx.zsa.io/graphql";
 const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
+// Source: https://configure.zsa.io/voyager/layouts/E5AmY/B495Jd/0
+const DEFAULT_VOYAGER_LAYOUT_JSON: &[u8] =
+    include_bytes!("../resources/voyager_default_layout.json");
 
 fn null_vec<'de, D, T>(deserializer: D) -> std::result::Result<Vec<T>, D::Error>
 where
@@ -573,6 +576,23 @@ fn parse_layout(bytes: &[u8]) -> Result<Layout> {
     serde_json::from_slice(bytes).context("unexpected layout JSON shape")
 }
 
+/// Official ZSA Voyager default layout bundled for a useful first-run view.
+///
+/// This is display/editing state only: it is never selected as a firmware
+/// image and never overrides a connected keyboard or a cached real layout.
+pub fn bundled_default_voyager_layout() -> Result<(LayoutId, Layout)> {
+    let layout = parse_layout(DEFAULT_VOYAGER_LAYOUT_JSON)
+        .context("parsing bundled Voyager default layout")?;
+    if layout.geometry != "voyager" {
+        bail!(
+            "bundled Voyager default layout has unexpected geometry {:?}",
+            layout.geometry
+        );
+    }
+    let id = LayoutId::new(layout.hash_id.clone(), layout.revision.hash_id.clone())?;
+    Ok((id, layout))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,6 +638,35 @@ mod tests {
         }"#;
         let layout = parse_layout(json).unwrap();
         assert!(layout.revision.combos.is_empty());
+    }
+
+    #[test]
+    fn bundled_voyager_default_is_complete_and_identified() {
+        let (id, layout) = bundled_default_voyager_layout().unwrap();
+        assert_eq!(id.hash, "E5AmY");
+        assert_eq!(id.revision, "B495Jd");
+        assert_eq!(layout.title, "Voyager default layout");
+        assert_eq!(layout.geometry, "voyager");
+        assert_eq!(layout.revision.layers.len(), 3);
+        assert!(layout
+            .revision
+            .layers
+            .iter()
+            .all(|layer| layer.keys.len() == 52));
+        assert_eq!(
+            layout.revision.layers[0].keys[0]
+                .tap
+                .as_ref()
+                .and_then(|action| action.code.as_deref()),
+            Some("KC_EQUAL")
+        );
+        assert_eq!(
+            layout.revision.layers[0].keys[0]
+                .hold
+                .as_ref()
+                .and_then(|action| action.code.as_deref()),
+            Some("KC_ESCAPE")
+        );
     }
 
     #[test]

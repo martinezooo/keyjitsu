@@ -143,7 +143,7 @@ impl App {
         if let Some(target) = switch {
             self.switch_profile(target);
         }
-        ui.menu_button("Manage", |ui| {
+        ui.menu_button("Profile actions", |ui| {
             if ui.button("Save current layout…").clicked() {
                 self.prof_new_open = true;
                 self.profile_draft.clear();
