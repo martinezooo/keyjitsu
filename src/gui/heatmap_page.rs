@@ -2,6 +2,13 @@
 
 use super::*;
 
+fn heatmap_rank_widths(available: f32) -> (f32, f32, f32) {
+    let label = (available * 0.2).clamp(36.0, 48.0);
+    let metric = (available * 0.4).clamp(70.0, 94.0);
+    let bar = (available - 18.0 - label - metric - 18.0).clamp(0.0, 70.0);
+    (label, bar, metric)
+}
+
 impl App {
     fn heatmap_key_label(&self, scope: Option<u8>, key: usize) -> String {
         if let Some(layer) = scope {
@@ -320,6 +327,9 @@ impl App {
                                 .then(|| self.heatmap_key_context(*idx));
                             let pct = *count as f64 / layer_total.max(1) as f64 * 100.0;
                             ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                let (label_width, bar_width, metric_width) =
+                                    heatmap_rank_widths(ui.available_width());
                                 ui.add_sized(
                                     [18.0, 16.0],
                                     egui::Label::new(
@@ -329,27 +339,30 @@ impl App {
                                     ),
                                 );
                                 let response = ui.add_sized(
-                                    [56.0, 16.0],
+                                    [label_width, 16.0],
                                     egui::Label::new(RichText::new(label).strong().size(12.0))
                                         .halign(egui::Align::LEFT),
                                 );
                                 if let Some(context) = &context {
                                     response.on_hover_text(context);
                                 }
-                                perf_bar(
+                                perf_bar_sized(
                                     ui,
                                     *count as f32 / max,
                                     widget::heat_color((*count as f32 / max) as f64),
+                                    bar_width,
                                 );
-                                ui.label(
-                                    RichText::new(format_thousands(*count))
-                                        .size(11.5)
-                                        .color(pal::TEXT),
-                                );
-                                ui.label(
-                                    RichText::new(format!("· {pct:.1}%"))
-                                        .size(11.0)
+                                ui.add_sized(
+                                    [metric_width, 16.0],
+                                    egui::Label::new(
+                                        RichText::new(format!(
+                                            "{} · {pct:.1}%",
+                                            format_thousands(*count)
+                                        ))
+                                        .size(10.5)
                                         .color(pal::TEXT_DIM),
+                                    )
+                                    .halign(egui::Align::RIGHT),
                                 );
                             });
                         }
@@ -396,5 +409,20 @@ impl App {
             )?;
         }
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod heatmap_layout_tests {
+    use super::heatmap_rank_widths;
+
+    #[test]
+    fn ranking_row_stays_inside_supported_card_widths() {
+        for available in [152.0_f32, 180.0, 222.0, 250.0, 320.0] {
+            let (label, bar, metric) = heatmap_rank_widths(available);
+            let used = 18.0 + label + bar + metric + 18.0;
+            assert!(used <= available + f32::EPSILON);
+            assert!(bar <= 70.0);
+        }
     }
 }
