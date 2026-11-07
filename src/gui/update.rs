@@ -266,7 +266,7 @@ mod tests {
         let listing = serde_json::from_slice(&body).expect("parse release listing");
         match newer_release(&listing, "0.10.0-beta.4").expect("select newest release") {
             UpdateCheck::Available { tag, asset, .. } => {
-                assert!(tag.starts_with("signed-macos-v0.10.0-beta.5-"), "{tag}");
+                assert!(tag.starts_with("signed-macos-v0.10.0-beta."), "{tag}");
                 if cfg!(target_os = "macos") {
                     assert!(asset.is_some(), "signed macOS asset not selectable");
                 }

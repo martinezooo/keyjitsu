@@ -420,7 +420,7 @@ mod tests {
             .arg("--version")
             .output()
             .unwrap();
-        assert!(String::from_utf8_lossy(&version.stdout).contains("0.10.0-beta.5"));
+        assert!(String::from_utf8_lossy(&version.stdout).contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

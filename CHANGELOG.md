@@ -5,6 +5,17 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.6] - 2026-11-07
+
+### Security
+- Updated rustls-webpki to 0.103.16 and webpki-roots to 1.0.10,
+  addressing two certificate-chain trust advisories in the HTTPS stack
+  used by the update checker and signed release downloader.
+
+### Verified
+- Tested the signed beta.5-to-beta.6 replacement path on a separate app
+  bundle without modifying the user's installed application.
+
 ## [0.10.0-beta.5] - 2026-11-07
 
 ### Fixed
