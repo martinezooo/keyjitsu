@@ -5,6 +5,13 @@ set -eu
 
 cd "$(dirname "$0")/.."
 VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+# Apple's CFBundleShortVersionString must be a three-component numeric version.
+SHORT_VERSION=${VERSION%%-*}
+case "$VERSION" in
+    *-beta.*) BUILD_VERSION=$((10000 + ${VERSION##*.})) ;;
+    *-rc.*)   BUILD_VERSION=$((20000 + ${VERSION##*.})) ;;
+    *)        BUILD_VERSION=30000 ;;
+esac
 APP=target/release/Keyjitsu.app
 
 echo "▸ cargo build --release --locked (v$VERSION)"
@@ -26,8 +33,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>keyjitsu</string>
     <key>CFBundleIconFile</key><string>Keyjitsu</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$SHORT_VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_VERSION</string>
     <key>LSMinimumSystemVersion</key><string>12.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSHumanReadableCopyright</key><string>MIT - keyjitsu contributors</string>
@@ -35,9 +42,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature: keeps Gatekeeper happy on THIS machine (distribution
-# to others needs a real Developer ID + notarization).
-codesign --force --deep -s - "$APP"
+# Release signing is opt-in, because distributing a Developer ID signed app
+# without notarization is not a valid public release. CI's legacy build remains
+# ad hoc until the dedicated notarization release job is configured.
+if [ -n "${KEYJITSU_CODESIGN_IDENTITY:-}" ]; then
+    codesign --force --options runtime --timestamp --sign "$KEYJITSU_CODESIGN_IDENTITY" "$APP"
+else
+    codesign --force --deep -s - "$APP"
+fi
 
 echo "✓ built $APP"
 if [ "${1:-}" = "--install" ]; then

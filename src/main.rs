@@ -29,6 +29,8 @@ mod macos_lockwatch;
 mod macos_overlay;
 #[cfg(target_os = "macos")]
 mod macos_status;
+#[cfg(target_os = "macos")]
+mod macos_updater;
 mod oryx_api;
 mod perf;
 mod platform;
@@ -285,6 +287,18 @@ enum Direction {
 }
 
 fn main() {
+    // The already-signed candidate runs a detached helper after the GUI exits.
+    #[cfg(target_os = "macos")]
+    if std::env::args().nth(1).as_deref() == Some("__apply-update") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        if let Err(error) = macos_updater::run_helper(&args) {
+            macos_updater::log_helper_error(&error, &args);
+            eprintln!("Keyjitsu update failed: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
         eprintln!("error: {e:#}");

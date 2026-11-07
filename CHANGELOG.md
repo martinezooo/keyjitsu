@@ -5,6 +5,21 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.5] - 2026-11-07
+
+### Fixed
+- macOS updater now compares full prerelease versions and checks signed
+  macOS GitHub releases instead of the stable-only releases/latest endpoint.
+- Downloaded updates are checked against the GitHub SHA-256 digest, the
+  expected Developer ID, bundle identifier, and Apple notarization ticket.
+- Installing an update asks for confirmation, waits for Keyjitsu to exit,
+  installs using a same-volume staged copy, and restores the previous app
+  if the replacement cannot be activated. User data is never replaced.
+
+### Changed
+- macOS release bundles now use Apple-compatible numeric bundle versions
+  and allow an explicitly configured Developer ID identity at build time.
+
 ## [0.10.0-beta.4] - 2026-10-18
 
 ### Added

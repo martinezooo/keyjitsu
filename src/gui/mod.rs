@@ -488,6 +488,16 @@ struct App {
     /// In-flight "check for updates" request (manual, from Settings).
     update_rx: Option<std::sync::mpsc::Receiver<UpdateCheck>>,
     update_state: Option<UpdateCheck>,
+    #[cfg(target_os = "macos")]
+    update_download_rx: Option<
+        std::sync::mpsc::Receiver<
+            std::result::Result<crate::macos_updater::PreparedUpdate, String>,
+        >,
+    >,
+    #[cfg(target_os = "macos")]
+    update_ready: Option<crate::macos_updater::PreparedUpdate>,
+    #[cfg(target_os = "macos")]
+    update_download_error: Option<String>,
     draft_sc: config::CustomShortcut,
     /// Active step being painted in the custom-effect editor.
     fx_step: usize,
@@ -930,6 +940,12 @@ impl App {
             autostart_error: None,
             update_rx: None,
             update_state: None,
+            #[cfg(target_os = "macos")]
+            update_download_rx: None,
+            #[cfg(target_os = "macos")]
+            update_ready: None,
+            #[cfg(target_os = "macos")]
+            update_download_error: None,
             draft_sc: config::CustomShortcut {
                 category: String::new(),
                 keys: String::new(),
@@ -1585,6 +1601,26 @@ impl App {
             if let Ok(r) = rx.try_recv() {
                 self.update_state = Some(r);
                 self.update_rx = None;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(rx) = &self.update_download_rx {
+            match rx.try_recv() {
+                Ok(Ok(ready)) => {
+                    self.update_ready = Some(ready);
+                    self.update_download_error = None;
+                    self.update_download_rx = None;
+                }
+                Ok(Err(error)) => {
+                    self.update_download_error = Some(error);
+                    self.update_download_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_download_error =
+                        Some("the update worker stopped unexpectedly".into());
+                    self.update_download_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
         #[cfg(target_os = "macos")]

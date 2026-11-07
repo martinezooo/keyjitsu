@@ -216,18 +216,27 @@ replace what Live claims is on the physical keyboard.
 
 ### Release downloads
 
-The release workflow builds:
-- macOS: `Keyjitsu.app` plus a CLI binary (artifact name records the runner architecture),
-- Linux x86_64: a tarball containing the `keyjitsu` binary,
-- Windows x86_64: a zip containing `keyjitsu.exe`.
+For **macOS on Apple Silicon**, select the latest **Signed macOS** prerelease
+from [GitHub Releases](https://github.com/martinezooo/keyjitsu/releases).
+Download the DMG and drag Keyjitsu.app into Applications. These dedicated
+macOS packages are Developer ID signed, notarized by Apple and verified by
+Gatekeeper. Each release also contains a ZIP and `SHA256SUMS.txt`.
 
-Each release also includes `SHA256SUMS.txt`. Windows/Linux artifacts remain beta until their CI and smoke-test release gates are green.
+Starting with **0.10.0-beta.5**, Settings checks signed macOS prereleases in
+addition to the normal version history. If a newer signed build is available,
+select **Download and verify update**. The app checks the GitHub SHA-256,
+Developer ID identity, bundle ID, and Apple notarization, then offers **Install
+update and restart**. It never replaces the app without your confirmation.
+The updater preserves settings, profiles, heatmaps, and firmware data, and
+attempts to roll back if activation fails. Installing in a folder without
+write permission requires a manual DMG install.
 
-On macOS the app is not notarized, so the first launch may require right-click -> Open or:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Keyjitsu.app
-```
+**One-time migration:** versions up to beta.4 used the old stable-only update
+checker, which does not discover beta prereleases correctly. Install beta.5
+manually once using the signed DMG; subsequent signed macOS releases can use
+the in-app updater. The legacy cross-platform release workflow still publishes
+ad-hoc signed macOS development artifacts; use only the **Signed macOS** builds
+for trusted distribution. Linux and Windows releases are separate betas.
 
 ### Build from source
 
@@ -259,9 +268,10 @@ to exactly two places on the network, and both are easy to find in the source:
 - `oryx.zsa.io`: an anonymous, read-only fetch of your layout (for the legends),
   cached on disk after the first time. Local firmware builds fetch the layout's
   generated source the same way, once. It never writes to Oryx.
-- `api.github.com`: the latest release tag, once at startup (Settings can turn
-  that off) and when you click Check for updates. Nothing is downloaded or
-  installed by itself.
+- `api.github.com`: a bounded list of release metadata, once at startup
+  (Settings can disable this) and on demand. With your explicit permission,
+  the macOS updater downloads a verified signed ZIP from `github.com`
+  (which can redirect to GitHub's asset CDN). No telemetry or silent updates.
 
 On macOS, the keyboard guard uses the system `hidutil` tool. Persistent files live in the platform user data directory selected by the `directories` crate; the app does not write system-wide state.
 

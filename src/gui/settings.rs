@@ -343,7 +343,7 @@ impl App {
         ui.label(RichText::new("Updates").strong().color(pal::TEXT));
         ui.label(
             RichText::new(format!(
-                "You are on v{}. Checking asks GitHub for the latest release tag. Nothing is downloaded or installed.",
+                "Installed: v{}. Updates are checked against GitHub Releases. Nothing installs without confirmation.",
                 env!("CARGO_PKG_VERSION")
             ))
             .size(11.5)
@@ -368,6 +368,11 @@ impl App {
             {
                 self.update_rx = Some(spawn_update_check());
                 self.update_state = None;
+                #[cfg(target_os = "macos")]
+                {
+                    self.update_ready = None;
+                    self.update_download_error = None;
+                }
             }
             if busy {
                 ui.spinner();
@@ -378,10 +383,18 @@ impl App {
             Some(UpdateCheck::UpToDate) => {
                 ui.colored_label(pal::GREEN, "You are up to date.");
             }
-            Some(UpdateCheck::Available { tag, url }) => {
+            Some(UpdateCheck::Available {
+                tag,
+                url,
+                asset: _asset,
+            }) => {
                 let (tag, url) = (tag.clone(), url.clone());
+                #[cfg(target_os = "macos")]
+                let asset = _asset.clone();
+                #[cfg(target_os = "macos")]
+                let missing_asset = _asset.is_none();
                 ui.colored_label(pal::AMBER, format!("{tag} is available."));
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("Open release page").clicked() {
                         if let Err(e) = crate::platform::open_url(&url) {
                             self.update_state = Some(UpdateCheck::Error(format!(
@@ -390,20 +403,72 @@ impl App {
                         }
                     }
                     #[cfg(target_os = "macos")]
-                    {
-                        ui.label(
-                            RichText::new("then rebuild: ")
-                                .size(11.5)
-                                .color(pal::TEXT_DIM),
-                        );
-                        ui.code("scripts/bundle.sh --install");
+                    if let Some(asset) = asset {
+                        if self.update_ready.is_none()
+                            && self.update_download_rx.is_none()
+                            && ui.button("Download and verify update").clicked()
+                        {
+                            self.update_download_error = None;
+                            self.update_download_rx = Some(crate::macos_updater::spawn_download(
+                                asset.download_url,
+                                asset.sha256,
+                                tag.clone(),
+                            ));
+                        }
                     }
                 });
+                #[cfg(target_os = "macos")]
+                if missing_asset {
+                    ui.label(RichText::new(
+                        "This release has no verified signed macOS archive. Use the release page.",
+                    ).size(11.0).color(pal::TEXT_DIM));
+                }
             }
             Some(UpdateCheck::Error(e)) => {
                 ui.colored_label(pal::RED, format!("could not check: {e}"));
             }
             None => {}
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if self.update_download_rx.is_some() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Downloading and verifying Developer ID, notarization and SHA-256…");
+                });
+            }
+            if let Some(error) = &self.update_download_error {
+                ui.colored_label(pal::RED, format!("Update failed: {error}"));
+                ui.label("Your installed app has not been changed.");
+            }
+            if let Some(ready) = &self.update_ready {
+                ui.colored_label(
+                    pal::GREEN,
+                    format!("{} is verified and ready to install.", ready.release_tag),
+                );
+                ui.label(RichText::new(
+                    "Keyjitsu will quit, replace the installed app, and restart. User files are preserved.",
+                ).size(11.0).color(pal::TEXT_DIM));
+                if ui
+                    .add_enabled(
+                        !flash_is_writing(self.flash_state.as_ref()),
+                        egui::Button::new("Install update and restart"),
+                    )
+                    .clicked()
+                {
+                    let staged = ready.clone();
+                    match crate::macos_updater::begin_install(&staged) {
+                        Ok(()) => {
+                            self.tray_quit_armed = true;
+                            self.egui_ctx
+                                .send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        Err(error) => {
+                            self.update_download_error = Some(format!("{error:#}"));
+                        }
+                    }
+                }
+            }
         }
     }
 
