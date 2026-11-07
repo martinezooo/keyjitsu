@@ -104,8 +104,8 @@ Apple-notarized and stapled app and installer DMG.
 Includes the in-app update checker, SHA-256 and Developer ID verification,
 and an explicitly confirmed update and restart flow. macOS only.
 
-Source commit: `$(git rev-parse HEAD)`.
-Checksums: `$NAME-SHA256SUMS.txt`.
+Source commit: $(git rev-parse HEAD).
+Checksums: $NAME-SHA256SUMS.txt.
 EOF
   gh release create "$TAG" --repo martinezooo/keyjitsu --verify-tag --prerelease     --title "Keyjitsu $VERSION — Signed macOS"     --notes-file "$WORK/release-notes.md"     "$DIST/$NAME.zip" "$DIST/$NAME.dmg" "$DIST/$NAME-SHA256SUMS.txt"
   gh release view "$TAG" --repo martinezooo/keyjitsu --json tagName,assets

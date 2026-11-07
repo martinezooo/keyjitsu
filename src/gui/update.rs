@@ -244,6 +244,35 @@ mod tests {
         }
     }
 
+    /// Proves that the real GitHub API exposes a verified signed beta release
+    /// to a client that has not yet installed it. Only run when online.
+    #[test]
+    #[ignore]
+    fn signed_release_discovery_live() {
+        let response = ureq::get(RELEASES_API)
+            .set("User-Agent", "keyjitsu-updater-live-test")
+            .timeout(Duration::from_secs(15))
+            .call()
+            .expect("GitHub release query");
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(MAX_RELEASE_RESPONSE_BYTES + 1)
+            .read_to_end(&mut body)
+            .expect("read release listing");
+        assert!(body.len() as u64 <= MAX_RELEASE_RESPONSE_BYTES);
+        let listing = serde_json::from_slice(&body).expect("parse release listing");
+        match newer_release(&listing, "0.10.0-beta.4").expect("select newest release") {
+            UpdateCheck::Available { tag, asset, .. } => {
+                assert!(tag.starts_with("signed-macos-v0.10.0-beta.5-"), "{tag}");
+                if cfg!(target_os = "macos") {
+                    assert!(asset.is_some(), "signed macOS asset not selectable");
+                }
+            }
+            other => panic!("older beta failed to detect signed release: {other:?}"),
+        }
+    }
+
     #[test]
     #[ignore]
     fn update_check_live() {
