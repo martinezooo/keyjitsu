@@ -5,6 +5,16 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+## [0.10.0-beta.7] - 2026-11-08
+
+### Fixed
+- Keyjitsu now finds QMK installed with pipx and the ARM compiler installed with Homebrew when launched from Finder.
+- Local firmware builds include those tool directories in the compiler environment.
+
+### Documentation
+- Updated screenshots for Layout, Heatmap and FX Studio, plus two Voyager RGB recordings.
+- Added a macOS QMK troubleshooting guide and a read-only prerequisites check.
+
 ## [0.10.0-beta.6] - 2026-11-07
 
 ### Security

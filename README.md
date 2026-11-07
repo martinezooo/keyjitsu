@@ -1,63 +1,62 @@
-# Keyjitsu ⌨️🥋
+# Keyjitsu
 
 [![CI](https://github.com/martinezooo/keyjitsu/actions/workflows/ci.yml/badge.svg)](https://github.com/martinezooo/keyjitsu/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/martinezooo/keyjitsu)](https://github.com/martinezooo/keyjitsu/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![Keyjitsu, the Live view: your Voyager layout with real legends and per-key colours](docs/app.png)
+**A local keyboard manager for the [ZSA Voyager](https://www.zsa.io/voyager), built for macOS.**
 
-Voyager management, a local app. A GUI and CLI manager for the
-[ZSA Voyager](https://www.zsa.io/voyager).
+View your layers, remap keys, set up RGB effects, track key usage and build QMK firmware without leaving the app. Keyjitsu can read your existing Oryx layout; edits and firmware builds stay on your computer. No account or background daemon.
 
-It aims for Keymapp feature parity and adds what Keymapp doesn't do: 100% local
-firmware builds (with generated tap dances), per-key RGB and press effects, a
-custom-effect sequencer, an app-aware autolayer, a Karabiner-style
-built-in-keyboard guard, and a transparent layer minimap.
+**[Download for macOS (Apple Silicon)](https://github.com/martinezooo/keyjitsu/releases)** · [Install and update](#install) · [Build from source](#build-from-source)
 
-No daemon, no login, no cloud. Everything talks straight to the keyboard over
-raw HID. The only network use is an anonymous read of your Oryx layout and a
-check for a newer release (once at startup, can be turned off, plus on demand).
-Nothing is downloaded or installed by itself.
+![Keyjitsu layout editor showing the Voyager keys and the selected key inspector](docs/app.png)
 
-> Quit Keymapp before running keyjitsu. The raw HID channel is exclusive.
-
-## Status
-
-**Beta.** Only tested on **macOS** with the **ZSA Voyager**. Other operating
-systems and other ZSA boards are unsupported for now: the code is portable
-Rust, but nothing else has been verified, so treat it as "may or may not
-work". The config format can still change before 1.0.
+Keyjitsu is still in beta. The Voyager is the only keyboard tested so far, and macOS is the primary supported platform. Linux and Windows builds are experimental. Quit Keymapp before connecting to Keyjitsu: the raw HID channel can only be used by one app at a time.
 
 ## Screenshots
 
-The **Live** editor: pick a key, set its keycode, glow color, and on-press effect.
+### Heatmap
 
-![Live key editor](docs/live.png)
+Key usage by layer or across the whole keyboard, with a ranking and CSV export.
 
-The **Heatmap**: press counts across the board, with a ranking and CSV export.
+![Keyjitsu heatmap with per-key press counts](docs/heatmap.png)
 
-![Heatmap](docs/heatmap.png)
+### FX Studio
 
-The **Minimap** overlay: a see-through map of the current layer that floats,
-click-through, over whatever you are doing (here, a media and navigation layer).
+Set an effect for key presses or create an RGB sequence. FX Studio is experimental.
 
-![Minimap layer overlay](docs/peek.png)
+![Keyjitsu FX Studio with a selected key-press effect](docs/fx-studio.png)
 
-## What's in the app
+### On the keyboard
 
-Run `keyjitsu` with no arguments for the windowed app. The left sidebar is the
-menu, and the active tab expands its sub-items below it. Profiles sit at the
-top: snapshot the whole setup under a name and switch between them without
-losing anything.
+Two recordings from a physical Voyager. The first shows a key-press lighting effect; the second shows a longer RGB animation. The recordings show lighting on the actual keyboard.
 
-- **Live.** Your layout with real Oryx legends, keys lighting up as you type.
+**Key-press effect**
+
+![A finger presses a key on a Voyager, changing the RGB lighting](docs/media/key-press-rgb.gif)
+
+**RGB animation**
+
+![A Voyager keyboard runs through a multicolour RGB animation](docs/media/rgb-animation.gif)
+
+### Minimap
+
+A transparent layer reference that stays above your other windows and can ignore mouse input.
+
+![Transparent Voyager layer minimap over the macOS desktop](docs/peek.png)
+
+## Features
+
+Start Keyjitsu from Applications or run `keyjitsu` in Terminal. Use profiles to save different keyboard setups and switch between them.
+
+- **Layout editor.** Your layout with Oryx legends and live key feedback.
   Click a key to edit its four slots (tap, hold, double tap, tap+hold), pick
   keycodes from an Oryx-style picker, set a per-key glow color and an on-press
   effect, then hit Build & flash. Firmware is compiled locally, and double-tap
   or tap+hold become generated QMK tap dances. Staged edits survive restarts
   (shown as pending) until you build.
 - **Heatmap.** Per-layer or summed press counts, a ranking, and CSV export.
-- **Peek.** A small, see-through overlay that shows the current layer's keys,
+- **Minimap.** A transparent overlay that shows the current layer's keys,
   so you can glance at what a layer does without leaving what you are doing. It
   appears when you switch layers (and can stay up the whole time you are on a
   non-base layer), floats click-through over everything; on macOS you can choose any monitor, and can
@@ -76,33 +75,11 @@ losing anything.
 
 The connection auto-reconnects on unplug, replug, and after flashing.
 
-## Compared to Keymapp
+## Keyjitsu and ZSA's tools
 
-ZSA gives you two separate tools: **[Oryx](https://configure.zsa.io)**, a website
-where you design your layout and it builds the firmware in the cloud, and
-**[Keymapp](https://blog.zsa.io/keymapp/)**, a desktop app that flashes that
-firmware and shows a live layout reference. Keymapp itself does not edit or build,
-that is Oryx's job. keyjitsu is one desktop app that edits, builds, flashes, and
-shows your layout, all locally on macOS. This table compares the two desktop apps.
+[Oryx](https://configure.zsa.io) is ZSA's web-based layout editor; [Keymapp](https://blog.zsa.io/keymapp/) is its desktop companion. Keyjitsu is an independent alternative for the Voyager. It reads an Oryx layout, lets you edit it locally, and can compile and flash firmware using the ZSA QMK fork.
 
-| Feature | Keymapp | keyjitsu |
-| --- | :---: | :---: |
-| Remap keys in the app | ❌ (only in Oryx, the website) | ✅ locally |
-| Build firmware | ❌ (Oryx builds it in the cloud) | ✅ 100% local, no login |
-| Flash firmware | ✅ (Oryx-built firmware, fetched from the cloud) | ✅ (its own local build) |
-| Tap dances (double-tap, tap+hold) | ❌ (in Oryx) | ✅ generated locally |
-| Per-key RGB | ❌ (in Oryx) | ✅ in the app |
-| Custom RGB effect sequencer | ❌ | ✅ FX Studio |
-| Heatmap | ✅ per layer | ✅ + summed, ranking, CSV |
-| Live layer minimap | ✅ a plain always-on-top window | ✅ **Peek** |
-| Minimap: transparent + click-through | ❌ (cannot be made see-through) | ✅ opacity slider, ignores the mouse |
-| Minimap: position and triggers | drag the window | ✅ per-monitor anchor, shown on a key or chord, auto-hide, monochrome, combo and timing readout |
-| ⭐ **Rest the Voyager on top of the MacBook keyboard** (built-in ignored, no ghost presses) | ❌ | ✅ guard + a self-test to confirm it, cannot lock you out |
-| Autolayer (switch layers by app) | ❌ | ✅ |
-| CLI / scripting | Zapp CLI + API | ✅ built-in CLI |
-| Platforms | ✅ Windows, macOS, Linux | macOS primary; Windows/Linux hardening in progress |
-| All ZSA boards | ✅ | Voyager only (tested) |
-| Signed download + support | ✅ | ❌ beta, build from source |
+Changes made in Keyjitsu are not sent back to Oryx. If you flash firmware from Oryx again, it replaces the layout previously built by Keyjitsu. The [firmware state notes](#device-state-oryx-and-mixing-workflows) explain how Keyjitsu keeps track of this.
 
 ## CLI
 
@@ -126,14 +103,15 @@ Add `--serial <substr>` to pick one of several keyboards.
 
 ## Local firmware builds
 
-One-time setup (about 2 GB, plus an ARM GCC toolchain):
+On macOS, see **[QMK setup and troubleshooting](docs/QMK_MACOS.md)**. The guide covers a fresh Mac, ARM GCC, the ZSA `firmware25` checkout and recent Homebrew tap-trust errors.
+
+You can check the local prerequisites without changing anything:
 
 ```sh
-pipx install qmk
-qmk setup zsa/qmk_firmware -b firmware25
+scripts/check-qmk-macos.sh
 ```
 
-Install the ARM GNU toolchain with your platform package manager or the official Arm distribution. Settings reports exactly which prerequisite is missing before enabling a local build.
+Firmware builds use the `zsa/qmk_firmware` fork, a working `qmk` CLI and `arm-none-eabi-gcc`. The compiler and firmware checkout are separate from installing Keyjitsu itself.
 
 Settings shows a green "Ready" pill once the toolchain is in place. A build
 fetches your layout's generated source from Oryx once (cached, offline
@@ -231,12 +209,13 @@ The updater preserves settings, profiles, heatmaps, and firmware data, and
 attempts to roll back if activation fails. Installing in a folder without
 write permission requires a manual DMG install.
 
-**One-time migration:** versions up to beta.4 used the old stable-only update
-checker, which does not discover beta prereleases correctly. Install beta.5
-manually once using the signed DMG; subsequent signed macOS releases can use
-the in-app updater. The legacy cross-platform release workflow still publishes
-ad-hoc signed macOS development artifacts; use only the **Signed macOS** builds
-for trusted distribution. Linux and Windows releases are separate betas.
+**One-time migration:** versions through beta.4 used an update checker that
+missed beta releases. Install a recent signed DMG manually once. Versions
+from beta.5 onward can detect signed macOS prereleases in Settings.
+
+The cross-platform workflow still produces ad-hoc signed macOS development
+artifacts. Use the **Signed macOS** downloads for normal installation. Linux
+and Windows releases are experimental.
 
 ### Build from source
 
@@ -294,10 +273,10 @@ hidutil property --matching '{"Product":"Apple Internal Keyboard / Trackpad"}' -
 
 ## Support
 
-Keyjitsu is a hobby project and is free to use. If you find it useful, you can
-[support my work on GitHub Sponsors](https://github.com/sponsors/martinezooo)
-or [buy me a coffee on Ko-fi](https://ko-fi.com/martinezooo).
-Feedback and kind words mean a lot too.
+Keyjitsu is a free personal project. Bug reports and practical feedback are welcome.
+If you want to support development, there is
+[GitHub Sponsors](https://github.com/sponsors/martinezooo) and
+[Ko-fi](https://ko-fi.com/martinezooo).
 
 ## Acknowledgements
 

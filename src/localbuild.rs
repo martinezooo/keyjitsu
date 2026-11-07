@@ -70,14 +70,45 @@ impl BuildEnv {
     }
 }
 
-fn which(cmd: &str) -> bool {
-    Command::new(cmd)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+/// Finder-launched apps often lack ~/.local/bin (pipx) and Homebrew in PATH.
+/// Probe the usual macOS locations without requiring a shell profile.
+fn tool_path(cmd: &str) -> Option<PathBuf> {
+    let mut search_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
+        search_dirs.push(home.join(".local/bin"));
+    }
+    search_dirs.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+    ]);
+    search_dirs
+        .into_iter()
+        .map(|dir| dir.join(cmd))
+        .find(|candidate| {
+            candidate.is_file()
+                && Command::new(candidate)
+                    .arg("--version")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+        })
+}
+
+fn build_tool_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
+        dirs.push(home.join(".local/bin"));
+    }
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// Where `qmk setup` clones the firmware by default, plus a couple of common
@@ -96,8 +127,8 @@ pub fn detect_env() -> BuildEnv {
     let firmware_dir = candidates.into_iter().find(|p| is_qmk_tree(p));
 
     BuildEnv {
-        qmk_cli: which("qmk"),
-        arm_gcc: which("arm-none-eabi-gcc"),
+        qmk_cli: tool_path("qmk").is_some(),
+        arm_gcc: tool_path("arm-none-eabi-gcc").is_some(),
         firmware_dir,
     }
 }
@@ -345,14 +376,13 @@ pub fn build(spec: &BuildSpec, cancel: &Arc<AtomicBool>, log: &dyn Fn(String)) -
     clear_build_artifact(&bin)?;
 
     log("Compiling with qmk (this can take a minute)…".into());
+    let qmk =
+        tool_path("qmk").ok_or_else(|| anyhow!("QMK CLI was not found; see docs/QMK_MACOS.md"))?;
     run_streamed(
-        Command::new("qmk").current_dir(&firmware).args([
-            "compile",
-            "-kb",
-            "zsa/voyager",
-            "-km",
-            "keyjitsu",
-        ]),
+        Command::new(qmk)
+            .current_dir(&firmware)
+            .env("PATH", build_tool_path())
+            .args(["compile", "-kb", "zsa/voyager", "-km", "keyjitsu"]),
         cancel,
         log,
     )?;
