@@ -2,6 +2,8 @@ use std::io::Read;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+// Only the macOS frontend consumes the downloaded installer fields.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub(super) struct UpdateAsset {
     pub download_url: String,
