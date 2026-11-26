@@ -5,6 +5,8 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ## [Unreleased]
 
+- Use the signed release channel for macOS and attach experimental Linux and Windows archives built from the same source tag.
+
 ## [0.10.0-beta.7] - 2026-11-08
 
 ### Fixed
@@ -24,7 +26,7 @@ All notable changes to Keyjitsu are documented here. This project follows
 
 ### Verified
 - Tested the signed beta.5-to-beta.6 replacement path on a separate app
-  bundle without modifying the user's installed application.
+  bundle without replacing the installed application.
 
 ## [0.10.0-beta.5] - 2026-11-07
 

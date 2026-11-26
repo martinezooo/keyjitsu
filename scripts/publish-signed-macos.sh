@@ -96,17 +96,18 @@ if [[ "$PUBLISH" == 1 ]]; then
   git tag -a "$TAG" -m "Signed notarized Keyjitsu $VERSION ($SHA)"
   git push origin "refs/tags/$TAG"
   cat > "$WORK/release-notes.md" <<EOF
-## Keyjitsu $VERSION — signed macOS release
+## Keyjitsu $VERSION
 
 Apple Silicon (arm64). Developer ID Application (Team TVQDVS8HK4),
 Apple-notarized and stapled app and installer DMG.
 
 Includes the in-app update checker, SHA-256 and Developer ID verification,
-and an explicitly confirmed update and restart flow. macOS only.
+and an explicitly confirmed update and restart flow on macOS. Experimental Linux and Windows archives are built separately from the same source tag.
 
 Source commit: $(git rev-parse HEAD).
 Checksums: $NAME-SHA256SUMS.txt.
 EOF
-  gh release create "$TAG" --repo martinezooo/keyjitsu --verify-tag --prerelease     --title "Keyjitsu $VERSION — Signed macOS"     --notes-file "$WORK/release-notes.md"     "$DIST/$NAME.zip" "$DIST/$NAME.dmg" "$DIST/$NAME-SHA256SUMS.txt"
+  gh release create "$TAG" --repo martinezooo/keyjitsu --verify-tag --prerelease     --title "Keyjitsu $VERSION"     --notes-file "$WORK/release-notes.md"     "$DIST/$NAME.zip" "$DIST/$NAME.dmg" "$DIST/$NAME-SHA256SUMS.txt"
   gh release view "$TAG" --repo martinezooo/keyjitsu --json tagName,assets
+  gh workflow run release.yml --repo martinezooo/keyjitsu --ref master -f "tag=$TAG"
 fi

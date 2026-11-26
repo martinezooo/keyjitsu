@@ -21,4 +21,4 @@ reporting instead: open the repository's **Security** tab and choose
 
 ## Supported versions
 
-Only the latest release gets fixes.
+Security fixes are developed on the default branch and released with the latest beta. Older releases are not maintained.

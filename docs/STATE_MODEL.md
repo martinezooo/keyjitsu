@@ -10,7 +10,7 @@ Profiles, cached layouts, glow settings and UI selection are not device truth.
 
 ## Device-state confidence
 
-The runtime derives one of four states. It does not store a separate "synced" boolean.
+The runtime derives one of five states. It does not store a separate "synced" boolean.
 
 | State | Meaning | UI/build rule |
 | --- | --- | --- |

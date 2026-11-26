@@ -2,7 +2,7 @@
 
 Keyjitsu can display layouts and collect heatmap data without installing QMK. Compiling your own firmware currently requires QMK and an ARM compiler. Installing the toolchain is a one-time step; subsequent builds reuse it. A managed toolchain installer is planned, but it isn't included in the current release.
 
-The setup below is for a ZSA Voyager running firmware from the `firmware25` branch. Run commands in a normal Terminal window, one line at a time. Don't paste terminal prompts, Zellij decorations, or multiple commands as a single line.
+The setup below is for a ZSA Voyager running firmware from the `firmware25` branch. Run the commands below in Terminal.
 
 ## Install on a new Mac
 
@@ -54,10 +54,8 @@ The setup below is for a ZSA Voyager running firmware from the `firmware25` bran
 | Symptom | What to check |
 | --- | --- |
 | `zsh: command not found: qmk` | QMK CLI did not install or `~/.local/bin` is missing from the shell's `PATH`. Try `~/.local/bin/qmk --version`. |
-| `brew install qmk/qmk/` fails | The package name is incomplete. This project recommends installing the CLI via pipx rather than depending on the QMK tap. |
 | `Refusing to load formula ... from untrusted tap` | Don't add a third-party tap for this setup. Use the standard `brew install arm-none-eabi-gcc` formula instead. |
 | `No available formula ... arm-none-eabi-gcc@8` | The older versioned formula isn't required for the basic setup. Use Homebrew core's `arm-none-eabi-gcc` and check that the firmware compiles. |
-| `qmk setup: invalid option: -b` from brew | The shell received a broken command. `-b firmware25` is an option to `qmk setup`, not `brew tap`. |
 | QMK works in Terminal but Keyjitsu says missing | On macOS, launchers may not inherit your shell `PATH`. Recent Keyjitsu versions also check `~/.local/bin` and Homebrew paths directly. Check the QMK CLI, ARM GCC and checkout separately in Settings. |
 | Firmware checkout not detected | Check for `~/qmk_firmware/keyboards/zsa/voyager`. If your checkout is elsewhere, set its path in Keyjitsu Settings. |
 

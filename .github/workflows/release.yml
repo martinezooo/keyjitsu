@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to build and attach assets to'
+        description: 'Existing v* or signed-macos-v* tag'
         required: true
 
 permissions:
@@ -17,7 +17,8 @@ env:
 
 jobs:
   macos:
-    name: macOS
+    name: macOS (development archive)
+    if: ${{ !startsWith(github.event.inputs.tag || github.ref_name, 'signed-macos-v') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
@@ -59,10 +60,10 @@ jobs:
         run: cargo build --release --locked
       - name: Package
         run: |
-          base="keyjitsu-${RELEASE_TAG}-linux-x86_64"
+          base="keyjitsu-${RELEASE_TAG#signed-macos-}-linux-x86_64"
           mkdir "${base}"
           cp target/release/keyjitsu "${base}/"
-          cp README.md "${base}/"
+          cp README.md LICENSE "${base}/"
           tar -czf "${base}.tar.gz" "${base}"
       - uses: actions/upload-artifact@v7
         with:
@@ -85,10 +86,11 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $base = "keyjitsu-$env:RELEASE_TAG-windows-x86_64"
+          $tag = $env:RELEASE_TAG -replace '^signed-macos-', ''
+          $base = "keyjitsu-$tag-windows-x86_64"
           New-Item -ItemType Directory -Path $base | Out-Null
           Copy-Item target/release/keyjitsu.exe "$base/keyjitsu.exe"
-          Copy-Item README.md "$base/README.md"
+          Copy-Item README.md, LICENSE -Destination "$base/"
           Compress-Archive -Path "$base/*" -DestinationPath "$base.zip"
       - uses: actions/upload-artifact@v7
         with:
@@ -98,6 +100,7 @@ jobs:
   publish:
     name: Publish release assets
     needs: [macos, linux, windows]
+    if: ${{ !cancelled() && needs.linux.result == 'success' && needs.windows.result == 'success' && (needs.macos.result == 'success' || (needs.macos.result == 'skipped' && startsWith(github.event.inputs.tag || github.ref_name, 'signed-macos-v'))) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -113,12 +116,31 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          if [[ "$RELEASE_TAG" == signed-macos-v* ]]; then
+            sha256sum * > SHA256SUMS-linux-windows.txt
+            cat SHA256SUMS-linux-windows.txt
+          else
+            sha256sum * > SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          fi
       - name: Attach assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [[ "$RELEASE_TAG" == signed-macos-v* ]]; then
+            # A signed macOS release must already exist. Do not replace its assets.
+            gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -q -- '-macos-arm64.dmg$'
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+            version="${RELEASE_TAG#signed-macos-v}"
+            version="${version%-*}"
+            notes="$RUNNER_TEMP/keyjitsu-release-notes.md"
+            gh release view "$RELEASE_TAG" --json body --jq .body > "$notes"
+            if ! grep -q '^### Linux and Windows' "$notes"; then
+              printf '\n### Linux and Windows\n\nExperimental x86_64 builds from the same source commit. Extract the Linux TAR.GZ or Windows ZIP and run Keyjitsu. USB access and firmware flashing still need hardware validation. See SHA256SUMS-linux-windows.txt for checksums.\n' >> "$notes"
+            fi
+            gh release edit "$RELEASE_TAG" --title "Keyjitsu $version" --notes-file "$notes"
+            exit 0
+          fi
           release_flags=()
           if [[ "${RELEASE_TAG}" == *-* ]]; then
             release_flags+=(--prerelease)

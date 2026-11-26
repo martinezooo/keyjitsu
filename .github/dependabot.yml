@@ -9,7 +9,7 @@ updates:
       cargo-minor-and-patch:
         update-types: ["minor", "patch"]
     ignore:
-      # Major bumps change APIs (ureq 3, zip 8, ...) and are done by hand.
+      # Review major dependency upgrades separately.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
